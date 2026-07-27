@@ -1,0 +1,213 @@
+{
+  "main": {
+    "id": "36873e5f065f86ff",
+    "type": "split",
+    "children": [
+      {
+        "id": "bb30a51ce3095283",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "910fec3fa36a1967",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "新标签页"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "d1c2cc91cc7943ab",
+    "type": "split",
+    "children": [
+      {
+        "id": "499103a228d5b242",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2d7ea6f9383a17de",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "076dad6fc237fe97",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "1c1f048451b93e81",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "2df6650c8e0aea5e",
+    "type": "split",
+    "children": [
+      {
+        "id": "edf25e5f49d2aa47",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "14e93637b6ffb24c",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "股票大作手回忆录/股票大作手回忆录_读书笔记与投资体系.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "股票大作手回忆录_读书笔记与投资体系 的反向链接列表"
+            }
+          },
+          {
+            "id": "7e753d26d95d97ae",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "股票大作手回忆录/股票大作手回忆录_读书笔记与投资体系.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "股票大作手回忆录_读书笔记与投资体系 的出链列表"
+            }
+          },
+          {
+            "id": "9dc0f76ae3869f24",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "77e69b68cd1cc641",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "679185bec7899e35",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "股票大作手回忆录/股票大作手回忆录_读书笔记与投资体系.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "股票大作手回忆录_读书笔记与投资体系 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "910fec3fa36a1967",
+  "lastOpenFiles": [
+    "海龟交易法则/05_基于海龟交易法则的个人投资体系.md",
+    "海龟交易法则/04_海龟交易法则_A股案例验证.md",
+    "海龟交易法则/03_海龟交易法则_20条投资原则.md",
+    "海龟交易法则/02_海龟交易法则_读书笔记.md",
+    "海龟交易法则/01_海龟交易法则_思维导图.md",
+    "海龟交易法则/00_阅读成果索引.md",
+    "海龟交易法则",
+    "海龟交易法则_阅读学习包/05_基于海龟交易法则的个人投资体系.md",
+    "海龟交易法则_阅读学习包/04_海龟交易法则_A股案例验证.md",
+    "海龟交易法则_阅读学习包/03_海龟交易法则_20条投资原则.md",
+    "海龟交易法则_阅读学习包/02_海龟交易法则_读书笔记.md",
+    "海龟交易法则_阅读学习包/01_海龟交易法则_思维导图.md",
+    "海龟交易法则_阅读学习包/00_阅读成果索引.md",
+    "海龟交易法则_阅读学习包",
+    "海龟交易法则_阅读学习包.zip",
+    "未命名.base",
+    "未命名 1.base",
+    "证券分析/00_阅读成果索引.md",
+    "股票大作手回忆录/股票大作手回忆录_读书笔记与投资体系.md",
+    "日志.md",
+    "未命名.canvas",
+    "竞争战略/竞争战略_读书笔记_投资体系.md",
+    "竞争战略/竞争战略_思维导图.md",
+    "经济学原理-宏观/economics_principles_macro_reading_notes_investment_system.md",
+    "经济学原理-宏观/economics_principles_macro_mindmap.md",
+    "股票大作手回忆录/股票大作手回忆录_思维导图.md",
+    "原则/dizal_case_study.md",
+    "周期_霍华德马克斯/01_周期_思维导图.md"
+  ]
+}
