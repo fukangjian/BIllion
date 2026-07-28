@@ -352,7 +352,7 @@ def fetch_limit_stats(trade_date: Optional[str] = None) -> pd.DataFrame:
 
     # 跌停池
     try:
-        dt = _retry_fetch(ak.stock_dt_pool_em, date=date_str)
+        dt = _retry_fetch(ak.stock_zt_pool_dtgc_em, date=date_str)
         limit_down_count = len(dt) if dt is not None and not dt.empty else 0
     except Exception as e:
         logger.warning("跌停池获取失败: %s", e)
