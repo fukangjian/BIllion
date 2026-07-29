@@ -1,2 +1,0 @@
-# 数据管道依赖（与上级目录 requirements.txt 相同）
--r ../requirements.txt
