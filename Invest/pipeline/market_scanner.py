@@ -8,6 +8,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import json
 import logging
 from datetime import datetime
 
@@ -101,8 +102,65 @@ def run_scan(
 
     md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols)
     report_path.write_text(md, encoding="utf-8")
+
+    json_path = output_dir / f"market_scan_{today}.json"
+    scan_json = _build_scan_json(today, state_info, breakout_20, breakout_55, sector_rank)
+    json_path.write_text(json.dumps(scan_json, ensure_ascii=False, indent=2), encoding="utf-8")
+
     logger.info("扫描报告已生成: %s", report_path)
+    logger.info("扫描 JSON 已生成: %s", json_path)
     return report_path
+
+
+def _df_to_breakout_list(df: pd.DataFrame) -> list[dict]:
+    """将突破候选 DataFrame 转为 JSON 可序列化列表"""
+    if df.empty:
+        return []
+    records = []
+    for _, r in df.iterrows():
+        records.append({
+            "symbol": r["symbol"],
+            "close": round(float(r["close"]), 2),
+            "channel_high": round(float(r["channel_high"]), 2),
+            "breakout_pct": round(float(r["breakout_pct"]), 2),
+            "atr_20": round(float(r.get("atr_20", 0) or 0), 2),
+            "period": int(r.get("period", 0)),
+        })
+    return records
+
+
+def _df_to_sector_list(df: pd.DataFrame) -> list[dict]:
+    """将板块排名 DataFrame 转为 JSON 可序列化列表"""
+    if df.empty:
+        return []
+    records = []
+    for _, r in df.head(15).iterrows():
+        rs = r.get("relative_strength", 0)
+        ret = r.get("period_return", 0)
+        records.append({
+            "rank": int(r["rank"]),
+            "sector_name": r["sector_name"],
+            "relative_strength": round(float(rs), 4) if pd.notna(rs) else None,
+            "period_return": round(float(ret), 4) if pd.notna(ret) else None,
+        })
+    return records
+
+
+def _build_scan_json(
+    date: str,
+    state_info: dict,
+    breakout_20: pd.DataFrame,
+    breakout_55: pd.DataFrame,
+    sector_rank: pd.DataFrame,
+) -> dict:
+    """构建市场扫描结构化 JSON"""
+    return {
+        "date": date,
+        "market_state": state_info.get("state", "C"),
+        "breakout_s1a": _df_to_breakout_list(breakout_20),
+        "breakout_s2a": _df_to_breakout_list(breakout_55),
+        "sector_ranking": _df_to_sector_list(sector_rank),
+    }
 
 
 def _build_sector_ranking(benchmark_df: pd.DataFrame) -> pd.DataFrame:

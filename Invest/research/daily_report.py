@@ -16,10 +16,11 @@ import pandas as pd
 
 from config import (
     DEFAULT_SECTORS,
-    DEFAULT_WATCHLIST,
+    RESEARCH_WATCHLIST,
     DAILY_REPORT_OUTPUT_DIR,
     MARKET_SCANNER_OUTPUT,
 )
+from review.positions import get_position_for_watchlist
 from shared.llm_client import call_llm, has_llm_api_key
 from shared.prompts import DAILY_REPORT_SUMMARY
 from shared.utils import (
@@ -173,12 +174,23 @@ def generate_executive_summary(materials: str) -> str:
     return result or "_摘要生成失败_"
 
 
+def resolve_watchlist(watchlist: list[str] | None = None) -> list[str]:
+    """解析关注列表：CLI 覆盖 > 持仓 + 研究默认列表"""
+    if watchlist:
+        return watchlist
+    merged = list(RESEARCH_WATCHLIST)
+    for sym in get_position_for_watchlist():
+        if sym not in merged:
+            merged.append(sym)
+    return merged
+
+
 def generate_report(
     watchlist: list[str] | None = None,
     sectors: list[str] | None = None,
     output_dir: Path | None = None,
 ) -> Path:
-    watchlist = watchlist or DEFAULT_WATCHLIST
+    watchlist = resolve_watchlist(watchlist)
     sectors = sectors or DEFAULT_SECTORS
     output_dir = output_dir or DAILY_REPORT_OUTPUT_DIR
     today = datetime.now().strftime("%Y-%m-%d")

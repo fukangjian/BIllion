@@ -10,13 +10,14 @@ if str(_ROOT) not in sys.path:
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional
 
 import akshare as ak
 import pandas as pd
 
-from config import SECTOR_FETCH_LIMIT, WATCHLIST
+from config import FETCH_MAX_WORKERS, SECTOR_FETCH_LIMIT, WATCHLIST
 from shared.utils import retry_fetch
 
 logger = logging.getLogger(__name__)
@@ -468,6 +469,99 @@ def fetch_and_save_all(
     except Exception as e:
         logger.error("ETF 失败: %s", e)
 
+    try:
+        lhb_df = fetch_dragon_tiger()
+        stats["lhb"] += save_dragon_tiger(lhb_df)
+    except Exception as e:
+        logger.error("龙虎榜失败: %s", e)
+
+    return stats
+
+
+def _fetch_and_save_single_stock(sym: str, start_date: str) -> tuple[str, int, Optional[str]]:
+    """并行 worker：获取并保存单只股票日线，返回 (代码, 行数, 错误信息)"""
+    from pipeline.database import save_daily_quotes
+
+    try:
+        df = fetch_stock_daily(sym, start_date=start_date)
+        rows = save_daily_quotes(df)
+        return sym, rows, None
+    except Exception as e:
+        return sym, 0, str(e)
+
+
+def fetch_and_save_all_parallel(
+    symbols: list[str],
+    start_date: str = "20230101",
+    sector_limit: int = SECTOR_FETCH_LIMIT,
+    max_workers: int = FETCH_MAX_WORKERS,
+) -> dict:
+    """并行批量获取并保存数据（日线并行，全局数据串行），返回各模块写入行数统计"""
+    from pipeline.database import (
+        init_database,
+        save_daily_quotes,
+        save_dragon_tiger,
+        save_etf_flow,
+        save_limit_stats,
+        save_sector_quotes,
+    )
+
+    init_database()
+    stats = {"daily": 0, "sector": 0, "limit": 0, "etf": 0, "lhb": 0}
+
+    # 日线数据：ThreadPoolExecutor 并行获取
+    logger.info("开始并行获取 %d 只股票日线 (workers=%d)...", len(symbols), max_workers)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_fetch_and_save_single_stock, sym, start_date): sym
+            for sym in symbols
+        }
+        for future in as_completed(futures):
+            sym, rows, err = future.result()
+            if err:
+                logger.error("股票 %s 失败: %s", sym, err)
+            else:
+                stats["daily"] += rows
+                logger.info("已保存 %s 日线 %d 条", sym, rows)
+
+    # 沪深300 指数（串行）
+    try:
+        idx_df = fetch_index_daily("000300", start_date=start_date)
+        stats["daily"] += save_daily_quotes(idx_df)
+        logger.info("已保存沪深300 日线 %d 条", len(idx_df))
+    except Exception as e:
+        logger.error("沪深300 失败: %s", e)
+
+    # 板块数据（串行，全局数据不宜并行）
+    try:
+        sectors = fetch_sector_list()
+        for _, srow in sectors.head(sector_limit).iterrows():
+            name = srow.get("name", srow.get("板块名称", ""))
+            if not name and len(srow) > 1:
+                name = str(srow.iloc[0])
+            if not name:
+                continue
+            df = fetch_sector_daily(str(name), start_date=start_date)
+            stats["sector"] += save_sector_quotes(df)
+            time.sleep(0.5)
+    except Exception as e:
+        logger.error("板块数据失败: %s", e)
+
+    # 涨跌停统计（串行）
+    try:
+        limit_df = fetch_limit_stats()
+        stats["limit"] += save_limit_stats(limit_df)
+    except Exception as e:
+        logger.error("涨跌停统计失败: %s", e)
+
+    # ETF 资金流向（串行）
+    try:
+        etf_df = fetch_etf_flow()
+        stats["etf"] += save_etf_flow(etf_df)
+    except Exception as e:
+        logger.error("ETF 失败: %s", e)
+
+    # 龙虎榜（串行）
     try:
         lhb_df = fetch_dragon_tiger()
         stats["lhb"] += save_dragon_tiger(lhb_df)

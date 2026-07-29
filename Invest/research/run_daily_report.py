@@ -33,7 +33,7 @@ def main():
         "-w", "--watchlist",
         nargs="*",
         default=None,
-        help="关注股票代码（默认使用 config.DEFAULT_WATCHLIST）",
+        help="关注股票代码（默认: 持仓 + config.RESEARCH_WATCHLIST）",
     )
     parser.add_argument(
         "-s", "--sectors",

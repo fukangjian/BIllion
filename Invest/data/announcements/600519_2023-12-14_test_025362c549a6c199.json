@@ -1,0 +1,9 @@
+{
+  "symbol": "600519",
+  "date": "2023-12-14",
+  "title": "test",
+  "content": "{{month}}\n{{date}}\n{{hourSecond}}\n{{bulletinStatus}}\n{{stockName}}\n{{stockName}}\n{{stockCode}}\n{{stockCode}}\n{{price}}\n{{isRise ? '+' : ''}}{{change}}\n{{viewNum ? viewNum : '浏览'}}\n{{isCollect ? \"已收藏\" : \"收藏公告\"}}\n{{fundtitle}}\n{{isDownloading? '下载中' : '公告下载'}}",
+  "cached_at": "2026-07-29T16:57:06",
+  "url": "http://www.cninfo.com.cn/new/disclosure/detail?stockCode=600519&announcementId=1218606528&orgId=gssh0600519&announcementTime=2023-12-14",
+  "content_type": "html"
+}

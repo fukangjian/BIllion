@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported ve
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import ACCOUNT_EQUITY, DRAWDOWN_STATE
+from config import ACCOUNT_EQUITY, DRAWDOWN_STATE, MARKET_SCAN_OUTPUT_DIR
 from review.compliance_check import run_compliance_check, report_to_markdown
 from review.metrics import compute_stats, enrich_trade_metrics, group_by_account, group_by_strategy, stats_to_markdown
 from review.report_generator import generate_monthly_report, generate_weekly_report
@@ -158,6 +158,75 @@ def cmd_check(args):
     print(report_to_markdown(report))
 
 
+def _load_scan_json(date: str | None = None) -> dict | None:
+    """加载指定日期的市场扫描 JSON"""
+    scan_date = date or datetime.now().strftime("%Y-%m-%d")
+    json_path = MARKET_SCAN_OUTPUT_DIR / f"market_scan_{scan_date}.json"
+    if not json_path.exists():
+        return None
+    with open(json_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _find_breakout_in_scan(scan_data: dict, symbol: str) -> tuple[dict | None, str | None]:
+    """在扫描 JSON 中查找股票突破数据，返回 (数据, 入场系统)"""
+    symbol = symbol.zfill(6)[-6:]
+    for item in scan_data.get("breakout_s1a", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            return item, "S1-A"
+    for item in scan_data.get("breakout_s2a", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            return item, "S2-A"
+    return None, None
+
+
+def cmd_from_scan(args):
+    """从当天扫描 JSON 读取突破数据，输出建议入场参数"""
+    scan_data = _load_scan_json(args.date)
+    if not scan_data:
+        scan_date = args.date or datetime.now().strftime("%Y-%m-%d")
+        print(f"[ERROR] 未找到扫描 JSON: market_scan_{scan_date}.json")
+        print("       请先运行: python pipeline/market_scanner.py")
+        return
+
+    symbol = args.symbol.zfill(6)[-6:]
+    breakout, entry_system = _find_breakout_in_scan(scan_data, symbol)
+    if not breakout:
+        print(f"[ERROR] {symbol} 不在今日突破候选列表中")
+        print(f"       扫描日期: {scan_data.get('date')}")
+        print(f"       市场状态: {scan_data.get('market_state')}")
+        s1 = [x["symbol"] for x in scan_data.get("breakout_s1a", [])]
+        s2 = [x["symbol"] for x in scan_data.get("breakout_s2a", [])]
+        if s1:
+            print(f"       S1-A 候选: {', '.join(s1)}")
+        if s2:
+            print(f"       S2-A 候选: {', '.join(s2)}")
+        return
+
+    close = breakout["close"]
+    channel_high = breakout["channel_high"]
+    atr = breakout.get("atr_20", 0) or 0
+    suggested_stop = round(close - atr * 2, 2) if atr > 0 else round(close * 0.95, 2)
+
+    print(f"[OK] 从扫描 JSON 读取 {symbol} 突破数据")
+    print(f"     扫描日期:   {scan_data.get('date')}")
+    print(f"     市场状态:   {scan_data.get('market_state')}")
+    print(f"     入场系统:   {entry_system}")
+    print(f"     收盘价:     {close:.2f}")
+    print(f"     通道高点:   {channel_high:.2f}")
+    print(f"     突破幅度:   {breakout.get('breakout_pct', 0):.2f}%")
+    print(f"     ATR(20):    {atr:.2f}")
+    print(f"     建议止损:   {suggested_stop:.2f}  (收盘价 - ATR×2)")
+    print()
+    print("添加交易示例:")
+    print(
+        f"  python review/cli.py add {symbol} "
+        f"--account 产业 --system {entry_system} "
+        f"--entry {close} --stop {suggested_stop} "
+        f"--risk 0.5 --shares 100"
+    )
+
+
 def cmd_show(args):
     log = TradeLog()
     trade = log.get(args.id)
@@ -231,6 +300,11 @@ def main():
     p_check.add_argument("--drawdown", default=None, help="回撤状态: Normal/Caution/Defensive/Review")
     p_check.add_argument("--equity", type=float, default=None, help="账户权益")
     p_check.set_defaults(func=cmd_check)
+
+    p_scan = sub.add_parser("from-scan", help="从扫描 JSON 读取突破数据")
+    p_scan.add_argument("symbol", help="股票代码")
+    p_scan.add_argument("--date", default=None, help="扫描日期 YYYY-MM-DD（默认今天）")
+    p_scan.set_defaults(func=cmd_from_scan)
 
     args = parser.parse_args()
     if not args.command:

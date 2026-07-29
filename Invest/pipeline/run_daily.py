@@ -16,7 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config import DB_PATH, MARKET_SCAN_OUTPUT_DIR, WATCHLIST
 from pipeline.database import init_database
 from pipeline.market_scanner import run_scan
-from shared.data_fetcher import fetch_and_save_all
+from shared.data_fetcher import fetch_and_save_all_parallel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,7 +67,7 @@ def main():
     if not args.skip_fetch:
         logger.info("开始获取数据 (%d 只股票)...", len(args.symbols))
         try:
-            stats = fetch_and_save_all(args.symbols, start_date=args.start_date)
+            stats = fetch_and_save_all_parallel(args.symbols, start_date=args.start_date)
             logger.info("数据获取完成: %s", stats)
         except Exception as e:
             logger.error("数据获取失败: %s", e)

@@ -391,6 +391,11 @@ def main():
         default="",
         help="现有持仓 JSON 文件路径",
     )
+    parser.add_argument(
+        "--check-existing",
+        action="store_true",
+        help="自动从 trades.json 加载已有持仓进行簇风险检查",
+    )
     args = parser.parse_args()
 
     account_type = AccountType(args.account_type)
@@ -410,7 +415,22 @@ def main():
 
     # 加载现有持仓
     existing = []
-    if args.positions_file:
+    if args.check_existing:
+        try:
+            from review.positions import export_open_positions
+
+            for p in export_open_positions():
+                existing.append(Position(
+                    symbol=p.get("股票代码", ""),
+                    shares=int(p.get("股数", 0)),
+                    entry_price=float(p.get("入场价", 0)),
+                    stop_price=float(p.get("止损价", 0)),
+                    industry=p.get("风险簇", ""),
+                    is_innovative_pharma=p.get("风险簇", "") == "创新药",
+                ))
+        except Exception as e:
+            print(f"警告: 无法从 trades.json 加载持仓: {e}", file=sys.stderr)
+    elif args.positions_file:
         try:
             with open(args.positions_file, "r", encoding="utf-8") as f:
                 data = json.load(f)

@@ -39,15 +39,6 @@ LLM_RETRY_DELAY = 2  # 秒
 FETCH_RETRY = 3
 FETCH_RETRY_DELAY = 2  # 秒
 
-# --- 研究模块：默认关注列表 ---
-DEFAULT_WATCHLIST = [
-    "688192",  # 迪哲医药
-    "600519",  # 贵州茅台
-    "300750",  # 宁德时代
-    "601012",  # 隆基绿能
-    "300760",  # 迈瑞医疗
-]
-
 DEFAULT_SECTORS = ["创新药", "AI算力", "半导体", "新能源"]
 ANNOUNCEMENT_LIMIT = 10
 
@@ -68,7 +59,7 @@ MARKET_STATE = {
 
 SECTOR_FETCH_LIMIT = 30
 
-# 管道默认扫描股票池
+# 统一股票池（管道扫描 + 研究关注的基础列表）
 WATCHLIST = [
     "000001",  # 平安银行
     "600519",  # 贵州茅台
@@ -78,6 +69,14 @@ WATCHLIST = [
     "002594",  # 比亚迪
     "600036",  # 招商银行
     "000333",  # 美的集团
+    "601012",  # 隆基绿能
+    "300760",  # 迈瑞医疗
+]
+
+# 研究模块默认关注列表（WATCHLIST 子集，侧重产业研究标的）
+RESEARCH_WATCHLIST = [
+    "600519",  # 贵州茅台
+    "300750",  # 宁德时代
     "601012",  # 隆基绿能
     "300760",  # 迈瑞医疗
 ]
@@ -147,3 +146,37 @@ FORBIDDEN_IN_DRAWDOWN = {
 }
 
 VALID_ENTRY_SYSTEMS = ["S1-A", "S2-A", "预埋", "S1-A快速", "S2-A慢速"]
+
+# --- 数据获取并行度 ---
+FETCH_MAX_WORKERS = 4  # 并行抓取线程数，避免被数据源限流
+
+# --- 依赖说明（requirements.txt 中部分包为预留，当前代码未直接 import）---
+# python-dotenv: 预留，用于未来 .env 自动加载 API 密钥
+# requests: AkShare / openai 等库的间接依赖，显式声明便于版本锁定
+# tabulate: 研究/管道模块 Markdown 表格输出的间接依赖
+
+# --- 公告全文抓取与缓存 ---
+ANNOUNCEMENT_CACHE_DIR = DATA_DIR / "announcements"
+ANNOUNCEMENT_MAX_CHARS = 3000
+
+# --- 多 LLM 提供商 ---
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+CUSTOM_LLM_API_KEY = os.getenv("CUSTOM_LLM_API_KEY", "")
+CUSTOM_LLM_BASE_URL = os.getenv("CUSTOM_LLM_BASE_URL", "")
+CUSTOM_LLM_MODEL = os.getenv("CUSTOM_LLM_MODEL", "")
+
+LLM_CACHE_DIR = DATA_DIR / "llm_cache"
+LLM_CACHE_TTL = 24 * 3600
+LLM_PROVIDER_PRIORITY = ["kimi", "deepseek", "custom"]
+
+# Kimi 长文模型（公告等 task_type=announcement 时使用）
+KIMI_MODEL_LONG = os.getenv("KIMI_MODEL_LONG", "moonshot-v1-32k")
+
+# --- FastAPI 服务与定时调度 ---
+SCHEDULER_ENABLED = os.getenv("ENABLE_SCHEDULER", "").lower() == "true"
+SCHEDULER_TIME = os.getenv("SCHEDULER_TIME", "08:30")
+SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1")
+SERVER_PORT = int(os.getenv("SERVER_PORT", "8900"))

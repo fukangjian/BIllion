@@ -1,0 +1,16 @@
+{
+  "date": "2026-07-29",
+  "market_state": "C",
+  "breakout_s1a": [
+    {
+      "symbol": "600519",
+      "close": 1800.0,
+      "channel_high": 1750.0,
+      "breakout_pct": 2.86,
+      "atr_20": 25.0,
+      "period": 20
+    }
+  ],
+  "breakout_s2a": [],
+  "sector_ranking": []
+}

@@ -14,7 +14,8 @@ from datetime import datetime
 
 import pandas as pd
 
-from config import ANNOUNCEMENT_LIMIT, ANNOUNCEMENT_OUTPUT_DIR
+from config import ANNOUNCEMENT_LIMIT, ANNOUNCEMENT_MAX_CHARS, ANNOUNCEMENT_OUTPUT_DIR
+from research.announcement_fetcher import fetch_announcement_full_text, summarize_long_announcement
 from shared.llm_client import call_llm, has_llm_api_key
 from shared.prompts import ANNOUNCEMENT_ANALYSIS, ANNOUNCEMENT_SYSTEM
 from shared.utils import (
@@ -81,10 +82,31 @@ def fetch_announcements(symbol: str, limit: int = ANNOUNCEMENT_LIMIT) -> pd.Data
     return df.head(limit)
 
 
-def fetch_announcement_content(url: str) -> str:
-    if not url or pd.isna(url):
+def fetch_announcement_content(
+    url: str,
+    symbol: str = "",
+    title: str = "",
+    date: str = "",
+) -> str:
+    """获取公告全文：巨潮 HTML 解析 / PDF 标注 / 本地缓存"""
+    if not url and not (symbol and title):
         return "（公告正文需手动查阅巨潮资讯网）"
-    return f"公告链接: {url}\n（完整正文请访问上述链接）"
+
+    raw_content = fetch_announcement_full_text(url, symbol=symbol, title=title, date=date)
+
+    # PDF 或解析失败时直接返回
+    if "PDF 公告需手动查看" in raw_content or "解析失败" in raw_content:
+        return raw_content
+    if not raw_content or len(raw_content) < 50:
+        link = url or "巨潮资讯网"
+        return f"公告链接: {link}\n（完整正文请访问上述链接）"
+
+    # 长公告分块摘要后截断
+    if len(raw_content) > ANNOUNCEMENT_MAX_CHARS:
+        return summarize_long_announcement(
+            raw_content, symbol=symbol, title=title, max_chars=ANNOUNCEMENT_MAX_CHARS
+        )
+    return raw_content[:ANNOUNCEMENT_MAX_CHARS]
 
 
 def analyze_announcement(
@@ -102,9 +124,13 @@ def analyze_announcement(
         stock_name=stock_name or symbol,
         title=title,
         date=date,
-        content=content[:3000],
+        content=content[:ANNOUNCEMENT_MAX_CHARS],
     )
-    result = call_llm(prompt, system_prompt=ANNOUNCEMENT_SYSTEM)
+    result = call_llm(
+        prompt,
+        system_prompt=ANNOUNCEMENT_SYSTEM,
+        task_type="announcement",
+    )
     return result or _fallback_analysis(title, date)
 
 
@@ -168,7 +194,7 @@ def generate_report(
         title = str(latest.get("title", ""))
         date = str(latest.get("date", ""))[:10]
         url = str(latest.get("url", ""))
-        content = fetch_announcement_content(url)
+        content = fetch_announcement_content(url, symbol=symbol, title=title, date=date)
 
         lines.append("---")
         lines.append("")
@@ -179,7 +205,7 @@ def generate_report(
 
         if not has_llm_api_key():
             lines.append("")
-            lines.append("> ⚠️ 未配置 KIMI_API_KEY，以上为降级输出。")
+            lines.append("> ⚠️ 未配置 LLM API 密钥，以上为降级输出。")
 
     output_path = output_dir / f"{today}_{symbol}_{stock_name}_公告摘要.md"
     return write_markdown("\n".join(lines), output_path)
