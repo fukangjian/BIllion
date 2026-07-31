@@ -23,11 +23,13 @@ if str(_ROOT) not in sys.path:
 from config import (
     DAILY_REPORT_OUTPUT_DIR,
     MARKET_SCAN_OUTPUT_DIR,
+    MONTHLY_REVIEW_TIME,
     SCHEDULER_ENABLED,
     SCHEDULER_TIME,
     SERVER_HOST,
     SERVER_PORT,
     WATCHLIST,
+    WEEKLY_REVIEW_TIME,
 )
 
 logging.basicConfig(
@@ -45,6 +47,8 @@ _run_state: dict[str, Any] = {
     "last_pre_market": None,
     "last_pipeline": None,
     "last_research": None,
+    "last_weekly_review": None,
+    "last_monthly_review": None,
     "running": False,
     "current_task": None,
 }
@@ -119,6 +123,26 @@ def _do_pre_market(skip_fetch: bool = False, symbols: list[str] | None = None) -
     scan = _do_pipeline(skip_fetch=skip_fetch, symbols=symbols)
     report = _do_research()
     return {"scan": scan, "report": report}
+
+
+def _do_weekly_review() -> dict:
+    """生成周报（review.report_generator，写入 vault 每周复盘目录）"""
+    from review.report_generator import generate_weekly_report
+
+    t0 = time.time()
+    path = generate_weekly_report()
+    elapsed = round(time.time() - t0, 1)
+    return {"output": str(path), "elapsed_seconds": elapsed}
+
+
+def _do_monthly_review() -> dict:
+    """生成月报（review.report_generator，写入 vault 每月复盘目录）"""
+    from review.report_generator import generate_monthly_report
+
+    t0 = time.time()
+    path = generate_monthly_report()
+    elapsed = round(time.time() - t0, 1)
+    return {"output": str(path), "elapsed_seconds": elapsed}
 
 
 def _execute_task(task_name: str, func, state_key: str) -> dict:
@@ -255,6 +279,8 @@ def status():
         "last_pre_market": _run_state["last_pre_market"],
         "last_pipeline": _run_state["last_pipeline"],
         "last_research": _run_state["last_research"],
+        "last_weekly_review": _run_state["last_weekly_review"],
+        "last_monthly_review": _run_state["last_monthly_review"],
         "outputs": {
             "market_scans": _list_output_files(MARKET_SCAN_OUTPUT_DIR),
             "daily_reports": _list_output_files(DAILY_REPORT_OUTPUT_DIR),
@@ -262,6 +288,8 @@ def status():
         "scheduler": {
             "enabled": SCHEDULER_ENABLED,
             "time": SCHEDULER_TIME,
+            "weekly_review_time": WEEKLY_REVIEW_TIME,
+            "monthly_review_time": MONTHLY_REVIEW_TIME,
         },
     }
 
@@ -316,8 +344,34 @@ def _scheduled_pre_market():
         logger.error("定时盘前流程失败: %s", e.detail)
 
 
+def _scheduled_weekly_review():
+    """定时任务回调：每周五生成周报（失败仅记日志，不影响其他 job）"""
+    logger.info("定时任务触发: 周报生成")
+    if _run_state["running"]:
+        logger.warning("跳过周报生成：已有任务运行中")
+        return
+    try:
+        _execute_task("scheduled-weekly-review", _do_weekly_review, "last_weekly_review")
+        logger.info("定时周报生成完成")
+    except HTTPException as e:
+        logger.error("定时周报生成失败: %s", e.detail)
+
+
+def _scheduled_monthly_review():
+    """定时任务回调：每月最后一天生成月报（失败仅记日志，不影响其他 job）"""
+    logger.info("定时任务触发: 月报生成")
+    if _run_state["running"]:
+        logger.warning("跳过月报生成：已有任务运行中")
+        return
+    try:
+        _execute_task("scheduled-monthly-review", _do_monthly_review, "last_monthly_review")
+        logger.info("定时月报生成完成")
+    except HTTPException as e:
+        logger.error("定时月报生成失败: %s", e.detail)
+
+
 def _start_scheduler():
-    """启动 APScheduler 定时调度"""
+    """启动 APScheduler 定时调度（每日盘前 + 每周五周报 + 每月末月报）"""
     global _scheduler
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
@@ -334,8 +388,27 @@ def _start_scheduler():
         id="pre_market_daily",
         replace_existing=True,
     )
+
+    weekly_hour, weekly_minute = _parse_schedule_time(WEEKLY_REVIEW_TIME)
+    _scheduler.add_job(
+        _scheduled_weekly_review,
+        CronTrigger(day_of_week="fri", hour=weekly_hour, minute=weekly_minute),
+        id="weekly_review_fri",
+        replace_existing=True,
+    )
+
+    monthly_hour, monthly_minute = _parse_schedule_time(MONTHLY_REVIEW_TIME)
+    _scheduler.add_job(
+        _scheduled_monthly_review,
+        CronTrigger(day="last", hour=monthly_hour, minute=monthly_minute),
+        id="monthly_review_last_day",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("定时调度已启动: 每日 %02d:%02d 运行盘前流程", hour, minute)
+    logger.info("定时调度已启动: 每周五 %02d:%02d 生成周报", weekly_hour, weekly_minute)
+    logger.info("定时调度已启动: 每月最后一天 %02d:%02d 生成月报", monthly_hour, monthly_minute)
 
 
 @app.on_event("startup")

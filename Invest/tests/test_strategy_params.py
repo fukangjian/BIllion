@@ -129,9 +129,9 @@ class TestModuleDefaultsMatchConfig:
 # ---------- 策略枚举（STRATEGY_CODES） ----------
 
 class TestStrategyCodes:
-    def test_codes_cover_five_strategies(self):
-        """五策略清单（策略评估筛选框架 §1.1），INFO 与 CODES 一一对应"""
-        assert STRATEGY_CODES == ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C"]
+    def test_codes_cover_six_strategies(self):
+        """六策略清单（策略评估筛选框架 §1.1 五策略 + HOT-S 超短热点池），INFO 与 CODES 一一对应"""
+        assert STRATEGY_CODES == ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C", "HOT-S"]
         assert set(STRATEGY_INFO) == set(STRATEGY_CODES)
         for info in STRATEGY_INFO.values():
             assert info["名称"] and info["适用账户"] and info["典型持有期"]
@@ -213,7 +213,7 @@ class TestRiskClusterMapping:
         assert lookup_cluster("999999") is None
 
     def test_mapped_cluster_limit_enforced_at_portfolio_level(self):
-        """映射后的创新药簇：两只持仓合计止损风险 1.6% > 上限 1.2% → 组合级违规生效"""
+        """映射后的创新药簇：两只持仓合计止损风险 1.6% > 上限 1.0% → 组合级违规生效"""
         from review.compliance_check import check_risk_cluster
         from review.trade_log import Trade
 

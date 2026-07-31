@@ -57,7 +57,8 @@ def _scan_args(**kw) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-def _write_scan(tmp_path, monkeypatch, s1a: list[dict] | None = None, s2a: list[dict] | None = None):
+def _write_scan(tmp_path, monkeypatch, s1a: list[dict] | None = None, s2a: list[dict] | None = None,
+                hot: list[dict] | None = None):
     """写临时扫描 JSON 并重定向 cli 的扫描目录"""
     scan_dir = tmp_path / "scans"
     scan_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,12 @@ def _write_scan(tmp_path, monkeypatch, s1a: list[dict] | None = None, s2a: list[
         "market_state": "A",
         "breakout_s1a": s1a or [],
         "breakout_s2a": s2a or [],
+        "hot_pool": {
+            "available": bool(hot),
+            "limit_up": [], "lianban": [], "broken": [],
+            "hot_breakout": hot or [],
+            "note": "",
+        },
     }
     (scan_dir / "market_scan_2026-07-29.json").write_text(
         json.dumps(data, ensure_ascii=False), encoding="utf-8"
@@ -87,6 +94,15 @@ def _s1_item(**kw):
     return d
 
 
+def _hot_item(**kw):
+    """热点池突破候选（字段口径同 market_scanner._build_hot_section 的 hot_breakout）"""
+    d = {"symbol": "600519", "close": 100.0, "channel_high": 98.0,
+         "breakout_pct": 2.04, "atr_20": 2.5, "period": 20,
+         "source": "连板", "sector": "食品饮料"}
+    d.update(kw)
+    return d
+
+
 def _read_trades(log_file: Path) -> list[dict]:
     return json.loads(log_file.read_text(encoding="utf-8"))
 
@@ -95,14 +111,14 @@ def _read_trades(log_file: Path) -> list[dict]:
 
 class TestCalcPosition:
     @pytest.mark.parametrize("account,expected", [
-        ("核心", 0.6), ("产业", 0.5), ("事件", 0.35), ("实验", 0.5),
+        ("核心", 1.0), ("产业", 1.0), ("事件", 1.0), ("实验", 0.5),
     ])
     def test_normal_rates_match_config(self, account, expected):
         calc = calc_position(1_000_000, 100, 95, account, "Normal")
         assert calc["风险率"] == expected
 
     @pytest.mark.parametrize("account,expected", [
-        ("核心", 0.3), ("产业", 0.25), ("事件", 0.18), ("实验", 0.25),
+        ("核心", 0.5), ("产业", 0.5), ("事件", 0.5), ("实验", 0.25),
     ])
     @pytest.mark.parametrize("state", ["Caution", "Defensive", "Review"])
     def test_drawdown_rates_match_config(self, account, state, expected):
@@ -117,20 +133,20 @@ class TestCalcPosition:
             assert rate >= 0.15
 
     def test_shares_math_and_limit_reduction(self):
-        """R=6000、每股风险 2 → 3000 股，仓位 30% 超核心 10% 上限 → 缩减至 1000 股"""
+        """R=10000、每股风险 2 → 5000 股，仓位 50% 超核心 30% 上限 → 缩减至 3000 股"""
         calc = calc_position(1_000_000, 100, 98, "核心", "Normal")
-        assert calc["风险预算"] == pytest.approx(6000.0)
+        assert calc["风险预算"] == pytest.approx(10000.0)
         assert calc["每股风险"] == pytest.approx(2.0)
-        assert calc["股数"] == 1000
-        assert calc["仓位金额"] == pytest.approx(100000.0)
+        assert calc["股数"] == 3000
+        assert calc["仓位金额"] == pytest.approx(300000.0)
         assert calc["是否超限"] is True
         assert any("缩减" in n for n in calc["备注"])
 
     def test_no_reduction_within_limit(self):
-        """事件 0.35% → R=3500、每股风险 10 → 300 股，仓位 3% 未超 4% 上限"""
+        """事件 1.0% → R=10000、每股风险 10 → 1000 股，仓位 10% 未超 60% 上限"""
         calc = calc_position(1_000_000, 100, 90, "事件", "Normal")
-        assert calc["股数"] == 300
-        assert calc["仓位比例"] == pytest.approx(3.0)
+        assert calc["股数"] == 1000
+        assert calc["仓位比例"] == pytest.approx(10.0)
         assert calc["是否超限"] is False
 
     def test_zero_risk_rate_pauses(self):
@@ -178,9 +194,9 @@ class TestAddEntryGate:
         assert "⚠️ 强制建仓，违规：单笔风险超限" in trades[0]["备注"]
 
     def test_medium_violation_warns_but_writes(self, tmp_path, monkeypatch, capsys):
-        """风险率 0.8% 超核心 0.6% 上限（中级）→ 警告但写入"""
+        """风险率 0.8% 超实验 0.5% 上限但未达绝对上限 1.0%（中级）→ 警告但写入"""
         log_file, _ = _patch_cli(tmp_path, monkeypatch)
-        cli.cmd_add(_add_args(risk=0.8))
+        cli.cmd_add(_add_args(account="实验", risk=0.8))
         out = capsys.readouterr().out
         assert "[警告]" in out
         assert "[拒绝]" not in out
@@ -226,7 +242,7 @@ class TestAddEntryGate:
         monkeypatch.setattr("review.entry_gate.derive_state_safe", lambda log=None: "Normal")
         log_file, _ = _patch_cli(tmp_path, monkeypatch)
         log_file.write_text(json.dumps([existing], ensure_ascii=False), encoding="utf-8")
-        # 新笔同属创新药簇，簇止损风险合计 1.0 + 0.5 = 1.5 > 上限 1.2
+        # 新笔同属创新药簇，簇止损风险合计 1.0 + 0.5 = 1.5 > 上限 1.0
         cli.cmd_add(_add_args(symbol="688331", cluster="创新药", risk=0.5))
         out = capsys.readouterr().out
         assert "风险簇止损风险超限" in out
@@ -251,9 +267,9 @@ class TestFromScanExecute:
         assert t["账户类型"] == "核心"
         assert t["入场价"] == pytest.approx(100.0)
         assert t["止损价"] == pytest.approx(95.0)  # 收盘 − 2×ATR
-        assert t["风险率"] == pytest.approx(0.6)
-        # R=6000 / 每股风险 5 = 1200 股 → 仓位 12% 超核心 10% → 缩减为 1000 股
-        assert t["股数"] == 1000
+        assert t["风险率"] == pytest.approx(1.0)
+        # R=10000 / 每股风险 5 = 2000 股 → 仓位 20% 未超核心 30% → 不缩减
+        assert t["股数"] == 2000
         assert t["风险簇"] == "未指定"  # 600519 已核对不在 V5.0 六簇内
         assert t["是否系统内交易"] is True
         cards = list(card_dir.glob("*_买入卡.md"))
@@ -321,6 +337,80 @@ class TestFromScanExecute:
         cli.cmd_from_scan(args)
         out = capsys.readouterr().out
         assert "建议止损" in out
+        assert _read_trades(log_file) == []
+
+
+# ---------- from-scan 热点候选（HOT-S） ----------
+
+class TestFromScanHot:
+    def test_find_breakout_hot_returns_hot_s(self, tmp_path, monkeypatch):
+        """hot_pool.hot_breakout 命中 → 返回 (记录, "HOT-S")"""
+        _write_scan(tmp_path, monkeypatch, hot=[_hot_item()])
+        scan = json.loads(
+            (tmp_path / "scans" / "market_scan_2026-07-29.json").read_text(encoding="utf-8")
+        )
+        item, system = cli._find_breakout_in_scan(scan, "600519")
+        assert system == "HOT-S"
+        assert item["source"] == "连板"
+        assert item["atr_20"] == pytest.approx(2.5)
+
+    def test_execute_hot_defaults_account_event(self, tmp_path, monkeypatch, capsys):
+        """仅热点信号 → 默认 HOT-S 建仓、账户映射「事件」、止损同为 ATR 口径"""
+        log_file, _ = _patch_cli(tmp_path, monkeypatch)
+        _write_scan(tmp_path, monkeypatch, hot=[_hot_item()])
+        cli.cmd_from_scan(_scan_args())
+        out = capsys.readouterr().out
+        assert "[OK] 信号: HOT-S" in out
+        t = _read_trades(log_file)[0]
+        assert t["入场系统"] == "HOT-S"
+        assert t["账户类型"] == "事件"  # HOT-S → 事件
+        assert t["入场价"] == pytest.approx(100.0)
+        assert t["止损价"] == pytest.approx(95.0)  # 收盘 − 2×ATR，与 S1/S2 同口径
+        assert "热点来源 连板" in t["核心逻辑"]
+        assert t["是否系统内交易"] is True
+
+    def test_hot_and_s1_selected_by_system(self, tmp_path, monkeypatch, capsys):
+        """S1-A 与热点信号并存：默认按 S1-A，--system HOT-S 时按热点候选建仓"""
+        # 默认：走既有 S1/S2 链，热点仅提示
+        _write_scan(tmp_path / "a", monkeypatch,
+                    s1a=[_s1_item()], hot=[_hot_item(close=101.0)])
+        log_file, _ = _patch_cli(tmp_path / "a", monkeypatch)
+        cli.cmd_from_scan(_scan_args())
+        out = capsys.readouterr().out
+        assert "--system HOT-S" in out  # 提示另有热点信号
+        t = _read_trades(log_file)[0]
+        assert t["入场系统"] == "S1-A"
+        assert t["账户类型"] == "产业"
+
+        # --system HOT-S：按热点候选建仓（取热点记录的收盘价）
+        _write_scan(tmp_path / "b", monkeypatch,
+                    s1a=[_s1_item()], hot=[_hot_item(close=101.0)])
+        log_file2, _ = _patch_cli(tmp_path / "b", monkeypatch)
+        cli.cmd_from_scan(_scan_args(system="HOT-S"))
+        t2 = _read_trades(log_file2)[0]
+        assert t2["入场系统"] == "HOT-S"
+        assert t2["账户类型"] == "事件"
+        assert t2["入场价"] == pytest.approx(101.0)
+
+    def test_print_only_hot_shows_stop_and_event_account(self, tmp_path, monkeypatch, capsys):
+        """热点候选只打印建议：输出突破参数 + 建议止损，add 示例账户为事件"""
+        log_file, _ = _patch_cli(tmp_path, monkeypatch)
+        _write_scan(tmp_path, monkeypatch, hot=[_hot_item()])
+        cli.cmd_from_scan(_scan_args(execute=False))
+        out = capsys.readouterr().out
+        assert "入场系统:   HOT-S" in out
+        assert "建议止损:   95.00" in out
+        assert "--account 事件 --system HOT-S" in out
+        assert _read_trades(log_file) == []
+
+    def test_not_in_any_list_error_shows_hot_candidates(self, tmp_path, monkeypatch, capsys):
+        """不在任何候选列表 → 报错并列出 HOT-S 候选（只打印分支）"""
+        log_file, _ = _patch_cli(tmp_path, monkeypatch)
+        _write_scan(tmp_path, monkeypatch, hot=[_hot_item(symbol="605388")])
+        cli.cmd_from_scan(_scan_args(symbol="999999", execute=False))
+        out = capsys.readouterr().out
+        assert "[ERROR]" in out
+        assert "HOT-S 候选: 605388" in out
         assert _read_trades(log_file) == []
 
 

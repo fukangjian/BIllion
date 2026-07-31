@@ -103,7 +103,7 @@ MONTHLY_OUTPUT_DIR = VAULT_ROOT / "【10】实盘记录" / "每月复盘"
 STATS_OUTPUT_DIR = VAULT_ROOT / "【10】实盘记录" / "统计"
 TRADE_LOG_OUTPUT_DIR = VAULT_ROOT / "【10】实盘记录" / "交易日志"  # 买入卡等建仓文档输出目录
 
-ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", "1000000"))
+ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", "32500"))  # 默认本金 3.25 万（2026-07 实盘），env 可覆盖
 DRAWDOWN_STATE = os.getenv("DRAWDOWN_STATE", "Normal")
 
 # --- 回撤状态阈值（投资体系 V5.0 §6，相对初始权益的峰值回撤 %） ---
@@ -140,55 +140,63 @@ HOT_POOL_MAX = 120          # 热点池总量上限（控制日线补抓量）
 HOT_HISTORY_DAYS = 90       # 热点池日线补抓长度（交易日目标，超短不需要长历史）
 HOT_SIGNAL_SYSTEM = "HOT-S"  # 超短热点信号系统标识（signals 表 system 列）
 
-# --- 合规规则（投资体系 V5.0） ---
+# --- 合规规则（投资体系 V5.0；限额已按 3.25 万小资金校准，2026-07） ---
 MAX_SINGLE_RISK_PCT = 1.0
 
 RISK_LIMITS_NORMAL = {
-    "核心": 0.6,
-    "核心复利": 0.6,
-    "产业": 0.5,
-    "产业趋势": 0.5,
-    "创新药": 0.5,
-    "事件": 0.35,
-    "事件交易": 0.35,
+    "核心": 1.0,
+    "核心复利": 1.0,
+    "产业": 1.0,
+    "产业趋势": 1.0,
+    "创新药": 1.0,
+    "事件": 1.0,
+    "事件交易": 1.0,
     "实验": 0.5,
     "预埋": 0.15,
 }
 
 RISK_LIMITS_DRAWDOWN = {
-    "核心": 0.3,
-    "核心复利": 0.3,
-    "产业": 0.25,
-    "产业趋势": 0.25,
-    "创新药": 0.25,
-    "事件": 0.18,
-    "事件交易": 0.18,
+    "核心": 0.5,
+    "核心复利": 0.5,
+    "产业": 0.5,
+    "产业趋势": 0.5,
+    "创新药": 0.5,
+    "事件": 0.5,
+    "事件交易": 0.5,
     "实验": 0.25,
     "预埋": 0.0,
 }
 
 POSITION_LIMITS = {
-    "核心": 10.0,
-    "核心复利": 10.0,
-    "产业": 8.0,
-    "产业趋势": 8.0,
-    "创新药": 6.0,
-    "创新药期权": 6.0,
-    "事件": 4.0,
-    "事件交易": 4.0,
-    "事件驱动": 4.0,
-    "实验": 1.0,
-    "实验策略": 1.0,
+    "核心": 30.0,
+    "核心复利": 30.0,
+    "产业": 20.0,
+    "产业趋势": 20.0,
+    "创新药": 20.0,
+    "创新药期权": 20.0,
+    "事件": 60.0,
+    "事件交易": 60.0,
+    "事件驱动": 60.0,
+    "实验": 15.0,
+    "实验策略": 15.0,
 }
 
+# 小资金集中轮动（一次一只），簇限与单票上限对齐
 RISK_CLUSTER_LIMITS = {
-    "创新药": {"exposure": 25.0, "stop_risk": 1.2},
-    "AI算力": {"exposure": 25.0, "stop_risk": 1.2},
-    "半导体": {"exposure": 20.0, "stop_risk": 1.0},
-    "能源资源": {"exposure": 20.0, "stop_risk": 1.0},
-    "商业航天": {"exposure": 15.0, "stop_risk": 0.8},
-    "单一事件链": {"exposure": 15.0, "stop_risk": 0.7},
+    "创新药": {"exposure": 60.0, "stop_risk": 1.0},
+    "AI算力": {"exposure": 60.0, "stop_risk": 1.0},
+    "半导体": {"exposure": 60.0, "stop_risk": 1.0},
+    "能源资源": {"exposure": 60.0, "stop_risk": 1.0},
+    "商业航天": {"exposure": 60.0, "stop_risk": 1.0},
+    "单一事件链": {"exposure": 60.0, "stop_risk": 1.0},
 }
+
+# 禁买板块（代码前缀）：用户自有纪律「不买创业板」（2026-07 交易日志，壹连科技/通源石油两次违规实亏）
+# 建仓闸门高级违规默认拒绝；置空元组即关闭
+BANNED_BOARD_PREFIXES = ("300", "301")
+
+# 纪律审计：闪电换仓判定阈值（分钟）——卖出后 N 分钟内买入视为计划外冲动换仓
+DISCIPLINE_SWITCH_MINUTES = 30
 
 FORBIDDEN_IN_DRAWDOWN = {
     "Caution": ["预埋"],
@@ -199,7 +207,7 @@ FORBIDDEN_IN_DRAWDOWN = {
 # --- 建仓链路（仓位计算 / from-scan 落库） ---
 # 策略代码枚举（【11】统一体系/策略评估筛选框架.md §1.1 五策略清单，与投资体系 V5.0 对应）：
 # 建仓 --system 校验与「非系统内交易」合规检查共用；list/show 等展示场景不校验历史值
-STRATEGY_CODES = ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C"]
+STRATEGY_CODES = ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C", "HOT-S"]
 
 STRATEGY_INFO = {
     "S1-A":  {"名称": "20日突破（快速系统）", "适用账户": "产业/事件", "典型持有期": "2—8周"},
@@ -207,6 +215,7 @@ STRATEGY_INFO = {
     "STR-A": {"名称": "创新药价值重估",       "适用账户": "产业",      "典型持有期": "3—12月"},
     "STR-B": {"名称": "事件驱动第二波",       "适用账户": "事件",      "典型持有期": "1—4周"},
     "STR-C": {"名称": "核心复利",             "适用账户": "核心",      "典型持有期": "1—5年"},
+    "HOT-S": {"名称": "超短热点池",           "适用账户": "事件",      "典型持有期": "1—5天"},
 }
 
 # 账户类型中文枚举（投资体系 V5.0，仓位计算器 CLI 与合规检查共用）
@@ -258,5 +267,8 @@ KIMI_MODEL_LONG = os.getenv("KIMI_MODEL_LONG", "moonshot-v1-32k")
 # --- FastAPI 服务与定时调度 ---
 SCHEDULER_ENABLED = os.getenv("ENABLE_SCHEDULER", "").lower() == "true"
 SCHEDULER_TIME = os.getenv("SCHEDULER_TIME", "08:30")
+# 自动复盘调度（server.py 定时 job）：每周五生成周报、每月最后一天生成月报
+WEEKLY_REVIEW_TIME = os.getenv("WEEKLY_REVIEW_TIME", "15:45")
+MONTHLY_REVIEW_TIME = os.getenv("MONTHLY_REVIEW_TIME", "16:00")
 SERVER_HOST = os.getenv("SERVER_HOST", "127.0.0.1")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8900"))

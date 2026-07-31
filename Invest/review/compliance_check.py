@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from config import (
     ACCOUNT_EQUITY,
+    BANNED_BOARD_PREFIXES,
     DRAWDOWN_STATE,
     FORBIDDEN_IN_DRAWDOWN,
     MAX_SINGLE_RISK_PCT,
@@ -86,6 +87,18 @@ def check_single_trade(
             建议="所有交易必须在入场前定义止损价",
         ))
 
+    if BANNED_BOARD_PREFIXES and trade.股票代码:
+        symbol = trade.股票代码.zfill(6)[-6:]
+        if any(symbol.startswith(p) for p in BANNED_BOARD_PREFIXES):
+            violations.append(Violation(
+                交易编号=trade.交易编号,
+                股票代码=trade.股票代码,
+                违规类型="禁买板块",
+                严重程度="高",
+                描述=f"代码 {symbol} 命中禁买板块前缀 {'/'.join(BANNED_BOARD_PREFIXES)}（自有纪律：不买创业板）",
+                建议="放弃该标的；确有把握需 --force 强制并在备注留痕",
+            ))
+
     risk_limit = get_risk_limit(trade.账户类型, drawdown_state)
     if trade.风险率 > MAX_SINGLE_RISK_PCT:
         violations.append(Violation(
@@ -142,7 +155,7 @@ def check_single_trade(
             建议="复盘原因，避免重复",
         ))
     elif trade.入场系统 and trade.入场系统 not in STRATEGY_CODES:
-        # 入场系统不在五策略清单内（STRATEGY_CODES），同样视为非系统内交易
+        # 入场系统不在策略清单内（STRATEGY_CODES），同样视为非系统内交易
         violations.append(Violation(
             交易编号=trade.交易编号,
             股票代码=trade.股票代码,

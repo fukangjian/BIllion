@@ -6,7 +6,7 @@ import json
 import logging
 import sys
 import warnings
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
@@ -19,15 +19,19 @@ from config import (
     ATR_STOP_MULT,
     DRAWDOWN_STATE,
     MARKET_SCAN_OUTPUT_DIR,
+    SIGNAL_MAX_HOLDING_BY_SYSTEM,
     STATS_OUTPUT_DIR,
     STRATEGY_CODES,
     SYSTEM_DEFAULT_ACCOUNT,
 )
+from pipeline.database import load_hot_pool
 from position_calculator import calc_position, format_calc_text, lookup_cluster
 from review.buy_card import calc_dict_from_trade, generate_buy_card
 from review.compliance_check import run_compliance_check, report_to_markdown
+from review.discipline_audit import audit_discipline, audit_to_markdown
 from review.entry_gate import check_entry, derive_state_safe, force_note, format_violations, split_by_severity
 from review.metrics import compute_stats, enrich_trade_metrics, group_by_account, group_by_strategy, stats_to_markdown
+from review.monitor import _check_single_position
 from review.report_generator import generate_monthly_report, generate_weekly_report, signal_verification_section
 from review.trade_log import Trade, TradeLog
 from shared.utils import df_to_markdown_table, obsidian_frontmatter, write_markdown
@@ -75,6 +79,7 @@ def cmd_add(args):
     equity = args.equity or ACCOUNT_EQUITY
     trade = Trade(
         日期=args.date or datetime.now().strftime("%Y-%m-%d"),
+        入场时间=getattr(args, "time", "") or "",
         股票代码=args.symbol,
         股票名称=args.name or "",
         账户类型=args.account,
@@ -106,6 +111,8 @@ def cmd_update(args):
         updates["实际退出价"] = args.exit_price
     if args.exit_date:
         updates["退出日期"] = args.exit_date
+    if getattr(args, "exit_time", None):
+        updates["退出时间"] = args.exit_time
     if args.exit_reason:
         updates["退出原因"] = args.exit_reason
     if args.shares is not None:
@@ -235,6 +242,55 @@ def cmd_check(args):
     )
     print(report_to_markdown(report))
 
+    # 纪律审计摘要（全部 trades）；审计失败仅警告，不影响合规检查输出
+    try:
+        print("\n=== 纪律审计 ===\n")
+        print(audit_to_markdown(audit_discipline(trades)))
+    except Exception as e:
+        print(f"[警告] 纪律审计不可用: {e}")
+
+
+def cmd_import(args):
+    """券商成交导入：解析 → FIFO 配对 → 落库（历史事实，不过入场闸门）→ 导入后自动合规检查"""
+    from review.import_broker import (
+        import_records,
+        load_records_from_file,
+        parse_symbol_map,
+        print_import_summary,
+    )
+
+    path = Path(args.file)
+    if not path.exists():
+        print(f"[ERROR] 文件不存在: {path}")
+        return
+    try:
+        records = load_records_from_file(path, args.year)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        return
+    if not records:
+        print("[ERROR] 未解析到任何成交记录，请检查文件格式（参考 review/import_broker.py 模块 docstring）")
+        return
+    print(f"[OK] 解析成交记录 {len(records)} 条（年份 {args.year}）")
+
+    log = TradeLog()
+    result = import_records(
+        records,
+        log,
+        symbol_map=parse_symbol_map(args.symbol_map),
+        account_type=args.account,
+        entry_system=args.system,
+        dry_run=args.dry_run,
+    )
+    print_import_summary(result, dry_run=args.dry_run)
+    if args.dry_run:
+        return
+
+    # 导入后自动跑一遍合规检查（如实报告「缺少止损」等历史问题——这正是复盘价值）
+    print("\n=== 导入后合规检查 ===\n")
+    report = run_compliance_check(log.list_all())
+    print(report_to_markdown(report))
+
 
 def cmd_positions(args):
     """打印持仓摘要（未实现盈亏、总风险敞口、回撤状态）"""
@@ -243,6 +299,139 @@ def cmd_positions(args):
     log = TradeLog()
     print_portfolio_summary(log, account_equity=args.equity or ACCOUNT_EQUITY)
 
+
+# ---------- sell-check 卖出助手 ----------
+
+def _fmt_opt(v: float | None, signed: bool = False) -> str:
+    """可选数值格式化（卖点检查单用，None → "-"）"""
+    if v is None:
+        return "-"
+    return f"{v:+.2f}" if signed else f"{v:.2f}"
+
+
+def build_sell_check_lines(
+    trade: Trade,
+    position_info: dict | None,
+    in_hot_pool: bool | None,
+    close: float | None,
+    today: date | None = None,
+) -> list[str]:
+    """
+    组装卖点检查单文本（纯函数，便于单测）。
+
+    - position_info: monitor._check_single_position 的返回（None 表示检查执行失败）；
+    - in_hot_pool: None 表示热点池为空或读取失败（降级），True/False 为是否在池；
+    - close: 最新收盘价（None 表示无行情，建议挂单价不可用）；
+    - today: 持有天数基准日（默认今天，测试可注入）。
+    """
+    today = today or datetime.now().date()
+    lines = [
+        f"===== 卖点检查 {trade.股票代码} {trade.股票名称} =====",
+        f"交易编号: {trade.交易编号} | 账户: {trade.账户类型} | 入场系统: {trade.入场系统 or '未记录'}",
+        f"入场: {trade.日期} @ {trade.入场价:.2f} | 止损价: {trade.止损价:.2f}",
+    ]
+
+    # 1) 止损 / 退出通道状态（monitor._check_single_position 口径）
+    if position_info is None:
+        lines.append("行情检查: 不可用（持仓监控执行失败，已降级）")
+    elif position_info.get("现价") is None:
+        note = position_info.get("备注") or "market.db 无该股日线"
+        lines.append(f"行情检查: 无行情数据（{note}，止损/通道状态不可用）")
+    else:
+        lines.append(
+            f"最新收盘: {position_info['现价']:.2f}（数据日期 {position_info.get('数据日期')}）"
+            f" | 浮动R: {_fmt_opt(position_info.get('浮动R'), signed=True)}"
+            f" | 通道下轨: {_fmt_opt(position_info.get('通道下轨'))}"
+            f" | 距止损: {_fmt_opt(position_info.get('距止损N'))}N"
+        )
+        if position_info.get("类型"):
+            lines.append(f"⚠️ 警报 [{position_info['类型']}]: {position_info.get('建议动作')}")
+        else:
+            lines.append("警报: 无（未触发止损/退出通道）")
+
+    # 2) 持有天数（自然日）与 HOT-S 强制离场提示（交易日上限，自然日近似）
+    try:
+        entry_date = datetime.strptime(trade.日期, "%Y-%m-%d").date()
+        holding_days = (today - entry_date).days
+    except (ValueError, TypeError):
+        holding_days = None
+    if holding_days is None:
+        lines.append(f"持有天数: 不可用（入场日期无法解析: {trade.日期!r}）")
+    else:
+        lines.append(f"持有天数: {holding_days} 天（自然日，自 {trade.日期} 起）")
+        max_hold = SIGNAL_MAX_HOLDING_BY_SYSTEM.get(trade.入场系统)
+        if max_hold is not None:
+            remain = max_hold - holding_days
+            basis = f"自然日近似，口径 config.SIGNAL_MAX_HOLDING_BY_SYSTEM（{trade.入场系统} {max_hold} 个交易日强制离场）"
+            if remain > 0:
+                lines.append(f"强制离场: 约剩 {remain} 天（{basis}）")
+            else:
+                lines.append(f"⚠️ 强制离场: 已到期/超期，建议今日卖出（{basis}）")
+
+    # 3) 热点池标注
+    if in_hot_pool is None:
+        lines.append("热点池: 不可用（热点池为空或读取失败，已降级）")
+    elif in_hot_pool:
+        lines.append("热点池: 仍在热点池")
+    else:
+        lines.append("热点池: 已不在热点池（超短逻辑可能已失效，关注离场）")
+
+    # 4) 建议挂单价 = 最新收盘 × 0.99（日志教训：挂低 1% 防挂高未成交）
+    if close is not None and close > 0:
+        lines.append(
+            f"建议挂单价: {round(close * 0.99, 2):.2f}"
+            f"（= 最新收盘 {close:.2f} × 0.99；日志教训：挂低 1% 防挂高未成交）"
+        )
+    else:
+        lines.append("建议挂单价: 不可用（无行情数据）")
+
+    return lines
+
+
+def _symbol_in_hot_pool(symbol: str) -> bool | None:
+    """查询代码是否在最新一期热点池（离线 hot_pool 表）；池为空/读取失败返回 None（降级）"""
+    try:
+        pool = load_hot_pool()
+        if pool.empty:
+            return None
+        latest_date = pool["trade_date"].max()
+        latest = pool[pool["trade_date"] == latest_date]
+        symbols = {str(s).zfill(6)[-6:] for s in latest["symbol"]}
+        return symbol in symbols
+    except Exception as e:
+        logger.warning("热点池读取失败（sell-check 降级）: %s", e)
+        return None
+
+
+def cmd_sell_check(args):
+    """卖点检查单：止损/退出通道警报 + 持有天数 + 热点池 + 建议挂单价（全程离线，异常降级不崩）"""
+    log = TradeLog()
+    symbol = args.symbol.zfill(6)[-6:]
+
+    candidates = [t for t in log.get_by_symbol(symbol) if not t.is_closed]
+    if not candidates:
+        print(f"[提示] {symbol} 当前无持仓中交易，无需卖点检查")
+        open_trades = log.list_all(open_only=True)
+        if open_trades:
+            holdings = ", ".join(f"{t.股票代码} {t.股票名称}".strip() for t in open_trades)
+            print(f"       当前持仓代码: {holdings}")
+        else:
+            print("       当前无任何持仓")
+        return
+
+    trade = max(candidates, key=lambda t: (t.日期 or "", t.创建时间 or ""))  # 多笔持仓取最新一笔
+
+    position_info = None
+    try:
+        position_info = _check_single_position(trade)
+    except Exception as e:
+        logger.warning("持仓检查失败（sell-check 降级）: %s", e)
+
+    in_hot_pool = _symbol_in_hot_pool(symbol)
+    close = position_info.get("现价") if position_info else None
+
+    for line in build_sell_check_lines(trade, position_info, in_hot_pool, close):
+        print(line)
 
 def _load_scan_json(date: str | None = None) -> dict | None:
     """加载指定日期的市场扫描 JSON"""
@@ -255,7 +444,7 @@ def _load_scan_json(date: str | None = None) -> dict | None:
 
 
 def _find_breakout_in_scan(scan_data: dict, symbol: str) -> tuple[dict | None, str | None]:
-    """在扫描 JSON 中查找股票突破数据，返回 (数据, 入场系统)"""
+    """在扫描 JSON 中查找股票突破数据，返回 (数据, 入场系统)；热点池突破候选系统为 HOT-S"""
     symbol = symbol.zfill(6)[-6:]
     for item in scan_data.get("breakout_s1a", []):
         if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
@@ -263,12 +452,18 @@ def _find_breakout_in_scan(scan_data: dict, symbol: str) -> tuple[dict | None, s
     for item in scan_data.get("breakout_s2a", []):
         if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
             return item, "S2-A"
+    for item in (scan_data.get("hot_pool") or {}).get("hot_breakout", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            return item, "HOT-S"
     return None, None
 
 
 def _default_account_for_system(entry_system: str) -> str:
-    """入场系统 → 默认账户类型（config.SYSTEM_DEFAULT_ACCOUNT：S1→产业、S2→核心）"""
+    """入场系统 → 默认账户类型（config.SYSTEM_DEFAULT_ACCOUNT：S1→产业、S2→核心；HOT-S→事件）"""
     s = (entry_system or "").upper()
+    # HOT-S 映射「事件」（config 未含该键，超短热点账户依投资体系 V5.0 在 cli 本地特判）
+    if "HOT" in s:
+        return "事件"
     for key, account in SYSTEM_DEFAULT_ACCOUNT.items():
         if key in s:
             return account
@@ -278,22 +473,25 @@ def _default_account_for_system(entry_system: str) -> str:
 def _execute_from_scan(args, scan_data: dict, symbol: str):
     """from-scan --execute：扫描信号 → 仓位计算 → 合规闸门 → 落库 → 买入卡"""
     symbol = symbol.zfill(6)[-6:]
-    item_s1 = item_s2 = None
+    item_s1 = item_s2 = item_hot = None
     for item in scan_data.get("breakout_s1a", []):
         if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
             item_s1 = item
     for item in scan_data.get("breakout_s2a", []):
         if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
             item_s2 = item
+    for item in (scan_data.get("hot_pool") or {}).get("hot_breakout", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            item_hot = item
 
-    if not item_s1 and not item_s2:
+    if not item_s1 and not item_s2 and not item_hot:
         print(f"[ERROR] {symbol} 不在今日突破候选列表中")
         return
 
-    # 入场系统：--system 指定优先；同时出现 S1/S2 信号时默认 S2（慢速，更稳）
+    # 入场系统：--system 指定优先；同时出现 S1/S2 信号时默认 S2（慢速，更稳）；仅热点信号时按 HOT-S
     if args.system:
         entry_system = args.system
-        item = item_s1 if entry_system == "S1-A" else item_s2
+        item = {"S1-A": item_s1, "S2-A": item_s2, "HOT-S": item_hot}.get(entry_system)
         if not item:
             print(f"[ERROR] {symbol} 不在 {entry_system} 候选列表中")
             return
@@ -302,8 +500,12 @@ def _execute_from_scan(args, scan_data: dict, symbol: str):
         print("[说明] 该股同时出现 S1-A/S2-A 信号，默认按 S2-A（慢速，更稳）建仓，可用 --system S1-A 覆盖")
     elif item_s2:
         entry_system, item = "S2-A", item_s2
-    else:
+    elif item_s1:
         entry_system, item = "S1-A", item_s1
+    else:
+        entry_system, item = "HOT-S", item_hot
+    if item_hot and entry_system != "HOT-S":
+        print("[说明] 该股另有热点池突破信号（HOT-S 超短），可用 --system HOT-S 选择")
 
     close = item["close"]
     atr = item.get("atr_20", 0) or 0
@@ -333,6 +535,8 @@ def _execute_from_scan(args, scan_data: dict, symbol: str):
         f"{entry_system} 突破：收盘 {close:.2f} 突破 {item.get('period', '?')} 日通道高点 "
         f"{item.get('channel_high', 0):.2f}（+{item.get('breakout_pct', 0):.2f}%）"
     )
+    if entry_system == "HOT-S" and item.get("source"):
+        logic += f"；热点来源 {item['source']} {item.get('sector', '')}".rstrip()
     trade = Trade(
         股票代码=symbol,
         股票名称=args.name or "",
@@ -379,10 +583,13 @@ def cmd_from_scan(args):
         print(f"       市场状态: {scan_data.get('market_state')}")
         s1 = [x["symbol"] for x in scan_data.get("breakout_s1a", [])]
         s2 = [x["symbol"] for x in scan_data.get("breakout_s2a", [])]
+        hot = [x["symbol"] for x in (scan_data.get("hot_pool") or {}).get("hot_breakout", [])]
         if s1:
             print(f"       S1-A 候选: {', '.join(s1)}")
         if s2:
             print(f"       S2-A 候选: {', '.join(s2)}")
+        if hot:
+            print(f"       HOT-S 候选: {', '.join(hot)}")
         return
 
     close = breakout["close"]
@@ -403,7 +610,7 @@ def cmd_from_scan(args):
     print("添加交易示例:")
     print(
         f"  python review/cli.py add {symbol} "
-        f"--account 产业 --system {entry_system} "
+        f"--account {_default_account_for_system(entry_system)} --system {entry_system} "
         f"--entry {close} --stop {suggested_stop} "
         f"--risk 0.5 --shares 100"
     )
@@ -431,6 +638,7 @@ def main():
     p_add.add_argument("symbol", help="股票代码")
     p_add.add_argument("--name", default="", help="股票名称")
     p_add.add_argument("--date", default=None, help="入场日期 YYYY-MM-DD")
+    p_add.add_argument("--time", default="", help="入场时间 HH:MM:SS（可选，纪律审计用）")
     p_add.add_argument("--account", required=True, help="账户类型: 核心/产业/事件/实验")
     p_add.add_argument("--cluster", default="", help="风险簇: 创新药/AI算力/半导体等（默认查 config.INDUSTRY_MAP）")
     p_add.add_argument("--system", required=True, choices=STRATEGY_CODES,
@@ -450,6 +658,7 @@ def main():
     p_upd.add_argument("id", help="交易编号")
     p_upd.add_argument("--exit-price", type=float, default=None, help="退出价")
     p_upd.add_argument("--exit-date", default=None, help="退出日期")
+    p_upd.add_argument("--exit-time", default=None, help="退出时间 HH:MM:SS（可选，纪律审计用）")
     p_upd.add_argument("--exit-reason", default=None, help="退出原因")
     p_upd.add_argument("--shares", type=int, default=None, help="更新股数")
     p_upd.add_argument("--stop", type=float, default=None, help="更新止损价")
@@ -488,17 +697,31 @@ def main():
     p_check.add_argument("--equity", type=float, default=None, help="账户权益")
     p_check.set_defaults(func=cmd_check)
 
+    p_import = sub.add_parser("import", help="券商成交导入（Markdown 表 / CSV → FIFO 配对落库，不过入场闸门）")
+    p_import.add_argument("--file", required=True, help="成交明细文件路径（.md/.csv）")
+    p_import.add_argument("--year", type=int, default=datetime.now().year, help="日期补全年份（默认当前年）")
+    p_import.add_argument("--symbol-map", default="", dest="symbol_map",
+                          help="名称=代码 手动映射，逗号分隔（如 通源石油=300164,壹连科技=301631）")
+    p_import.add_argument("--account", default="事件", help="账户类型（默认 事件）")
+    p_import.add_argument("--system", default="", help="入场系统（默认空，导入历史多为非系统交易）")
+    p_import.add_argument("--dry-run", action="store_true", help="只打印配对结果，不落库")
+    p_import.set_defaults(func=cmd_import)
+
     p_pos = sub.add_parser("positions", help="持仓摘要（未实现盈亏/风险敞口/回撤状态）")
     p_pos.add_argument("--equity", type=float, default=None, help="账户权益")
     p_pos.set_defaults(func=cmd_positions)
+
+    p_sell = sub.add_parser("sell-check", help="卖点检查单（止损/退出通道/持有天数/热点池/建议挂单价）")
+    p_sell.add_argument("symbol", help="股票代码")
+    p_sell.set_defaults(func=cmd_sell_check)
 
     p_scan = sub.add_parser("from-scan", help="从扫描 JSON 读取突破数据（--execute 一键建仓落库）")
     p_scan.add_argument("symbol", help="股票代码")
     p_scan.add_argument("--date", default=None, help="扫描日期 YYYY-MM-DD（默认今天）")
     p_scan.add_argument("--execute", action="store_true", help="按信号建仓落库（含合规闸门与买入卡）")
-    p_scan.add_argument("--system", choices=["S1-A", "S2-A"], default=None,
-                        help="入场系统（默认：仅单一信号用该信号；同股双信号按 S2-A）")
-    p_scan.add_argument("--account", default=None, help="账户类型（默认按系统映射：S1→产业、S2→核心）")
+    p_scan.add_argument("--system", choices=["S1-A", "S2-A", "HOT-S"], default=None,
+                        help="入场系统（默认：仅单一信号用该信号；同股双信号按 S2-A；仅热点信号按 HOT-S）")
+    p_scan.add_argument("--account", default=None, help="账户类型（默认按系统映射：S1→产业、S2→核心、HOT-S→事件）")
     p_scan.add_argument("--cluster", default="", help="风险簇（默认查 config.INDUSTRY_MAP）")
     p_scan.add_argument("--name", default="", help="股票名称（买入卡用）")
     p_scan.add_argument("--equity", type=float, default=None, help="账户权益（默认 config.ACCOUNT_EQUITY）")

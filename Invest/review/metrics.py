@@ -87,6 +87,7 @@ class TradeStats:
     总盈利R: float = 0.0
     总亏损R: float = 0.0
     净R: float = 0.0
+    总盈亏金额: float = 0.0  # 已平仓盈亏合计（元），不依赖止损价，券商导入的无止损历史交易也可用
 
 
 def compute_stats(trades: list[Trade], fetch_prices: bool = False) -> TradeStats:
@@ -104,6 +105,17 @@ def compute_stats(trades: list[Trade], fetch_prices: bool = False) -> TradeStats
     if not closed:
         return stats
 
+    # 金额口径：胜率与总盈亏按实际盈亏符号统计（R 符号与盈亏符号一致），
+    # 无止损价的历史导入交易也能得出胜率；R 系指标仍仅统计有止损的交易
+    pnl_values = [
+        (t.实际退出价 - t.入场价) * (t.股数 or 0)
+        for t in closed
+        if t.实际退出价 is not None and t.入场价 > 0
+    ]
+    if pnl_values:
+        stats.总盈亏金额 = round(sum(pnl_values), 2)
+        stats.胜率 = round(sum(1 for p in pnl_values if p > 0) / len(pnl_values) * 100, 1)
+
     r_values = []
     for t in closed:
         if fetch_prices:
@@ -120,7 +132,6 @@ def compute_stats(trades: list[Trade], fetch_prices: bool = False) -> TradeStats
     wins = [r for _, r in r_values if r > 0]
     losses = [r for _, r in r_values if r <= 0]
 
-    stats.胜率 = round(len(wins) / len(r_values) * 100, 1)
     stats.平均盈利R = round(sum(wins) / len(wins), 2) if wins else 0.0
     stats.平均亏损R = round(sum(losses) / len(losses), 2) if losses else 0.0
     stats.期望值 = round(
@@ -208,6 +219,7 @@ def stats_to_markdown(stats: TradeStats) -> str:
         "| --- | ---: |",
         f"| 总交易笔数 | {stats.总交易笔数} |",
         f"| 已平仓笔数 | {stats.已平仓笔数} |",
+        f"| 总盈亏金额 | {stats.总盈亏金额} 元 |",
         f"| 系统内占比 | {stats.系统内占比}% |",
         f"| 胜率 | {stats.胜率}% |",
         f"| 平均盈利 R | {stats.平均盈利R} |",

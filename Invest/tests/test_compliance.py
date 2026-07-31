@@ -50,12 +50,14 @@ class TestSingleTradeCompliance:
         assert any(v.违规类型 == "单笔风险超限" and v.严重程度 == "高" for v in violations)
 
     def test_risk_exceeds_drawdown_limit(self):
-        trade = _make_trade(账户类型="核心", 风险率=0.4)
+        # 核心 Caution 上限 0.5%（config.RISK_LIMITS_DRAWDOWN），0.8% 超限但未达绝对上限 1.0% → 中级
+        trade = _make_trade(账户类型="核心", 风险率=0.8)
         violations = check_single_trade(trade, drawdown_state="Caution")
         assert any("Caution" in v.描述 for v in violations)
 
     def test_position_limit_exceeded(self):
-        trade = _make_trade(账户类型="核心", 仓位金额=200000.0)
+        # 核心单票上限 30%（config.POSITION_LIMITS），40 万 / 100 万 = 40% 超限
+        trade = _make_trade(账户类型="核心", 仓位金额=400000.0)
         violations = check_single_trade(trade, account_equity=1_000_000)
         assert any(v.违规类型 == "仓位超限" for v in violations)
 
@@ -77,9 +79,10 @@ class TestSingleTradeCompliance:
 
 class TestRiskClusterCompliance:
     def test_cluster_exposure_exceeded(self):
+        # 创新药簇暴露上限 60%（config.RISK_CLUSTER_LIMITS），70 万 / 100 万 = 70% 超限
         trades = [
-            _make_trade(交易编号="T1", 风险簇="创新药", 仓位金额=300000, 风险率=0.5),
-            _make_trade(交易编号="T2", 风险簇="创新药", 仓位金额=200000, 风险率=0.5),
+            _make_trade(交易编号="T1", 风险簇="创新药", 仓位金额=400000, 风险率=0.5),
+            _make_trade(交易编号="T2", 风险簇="创新药", 仓位金额=300000, 风险率=0.5),
         ]
         violations = check_risk_cluster(trades, account_equity=1_000_000)
         assert any(v.违规类型 == "风险簇暴露超限" for v in violations)

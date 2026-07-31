@@ -95,6 +95,17 @@ def signal_verification_section(days: int = 90) -> str:
         return f"_信号统计不可用（已降级，详见日志）: {e}_"
 
 
+def discipline_audit_section(trades: list[Trade]) -> str:
+    """纪律审计节内容（周报/月报共用，审计范围为该周期 trades）；审计失败时降级标注"""
+    try:
+        from review.discipline_audit import audit_discipline, audit_to_markdown
+
+        return audit_to_markdown(audit_discipline(trades))
+    except Exception as e:
+        logger.warning("纪律审计不可用（已降级）: %s", e)
+        return f"_纪律审计不可用: {e}_"
+
+
 def generate_weekly_report(
     trades: list[Trade] | None = None,
     ref_date: datetime | None = None,
@@ -145,11 +156,15 @@ def generate_weekly_report(
         "",
         report_to_markdown(compliance),
         "",
-        "## 五、信号验证（近 90 天）",
+        "## 五、纪律审计",
+        "",
+        discipline_audit_section(trades),
+        "",
+        "## 六、信号验证（近 90 天）",
         "",
         signal_verification_section(),
         "",
-        "## 六、本周反思",
+        "## 七、本周反思",
         "",
         "### 最大错误",
         "> （待填写）",
@@ -251,11 +266,15 @@ def generate_monthly_report(
         "",
         report_to_markdown(compliance),
         "",
-        "## 七、信号验证（近 90 天）",
+        "## 七、纪律审计",
+        "",
+        discipline_audit_section(trades),
+        "",
+        "## 八、信号验证（近 90 天）",
         "",
         signal_verification_section(),
         "",
-        "## 八、改进方向",
+        "## 九、改进方向",
         "",
         "### 本月亮点",
         "> （待填写）",

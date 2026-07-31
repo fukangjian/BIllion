@@ -19,6 +19,7 @@ class Trade:
     """单笔交易记录"""
     交易编号: str = ""
     日期: str = ""
+    入场时间: str = ""  # 入场时间 HH:MM:SS（可选，券商导入/手工补录；纪律审计用）
     股票代码: str = ""
     股票名称: str = ""
     账户类型: str = ""
@@ -32,6 +33,7 @@ class Trade:
     仓位金额: float = 0.0
     实际退出价: Optional[float] = None
     退出日期: Optional[str] = None
+    退出时间: str = ""  # 退出时间 HH:MM:SS（可选，券商导入/手工补录；纪律审计用）
     退出原因: str = ""
     是否系统内交易: bool = True
     MFE: Optional[float] = None
