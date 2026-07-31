@@ -1,6 +1,6 @@
 {
   "date": "2026-07-31",
-  "market_state": "D",
+  "market_state": "C",
   "breakout_s1a": [
     {
       "symbol": "300760",
@@ -185,6 +185,187 @@
       "period_return": -0.0775
     }
   ],
+  "hot_pool": {
+    "available": true,
+    "limit_up_count": 86,
+    "lianban_count": 10,
+    "broken_count": 88,
+    "lianban": [
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "603221",
+        "name": "爱丽家居",
+        "pool_type": "up",
+        "change_pct": 10.00487995147705,
+        "amount": 258174873.0,
+        "lbc": 9,
+        "sector": "家居用品"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "003032",
+        "name": "传智教育",
+        "pool_type": "up",
+        "change_pct": 9.987516403198242,
+        "amount": 350847888.0,
+        "lbc": 5,
+        "sector": "教育"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "605179",
+        "name": "一鸣食品",
+        "pool_type": "up",
+        "change_pct": 9.9943208694458,
+        "amount": 376529808.0,
+        "lbc": 4,
+        "sector": "饮料乳品"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "002827",
+        "name": "高争民爆",
+        "pool_type": "up",
+        "change_pct": 10.015897750854492,
+        "amount": 728670368.0,
+        "lbc": 3,
+        "sector": "化学制品"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "000820",
+        "name": "神雾节能",
+        "pool_type": "up",
+        "change_pct": 10.0,
+        "amount": 26910323.0,
+        "lbc": 2,
+        "sector": "环保设备"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "000009",
+        "name": "中国宝安",
+        "pool_type": "up",
+        "change_pct": 10.069930076599121,
+        "amount": 971150176.0,
+        "lbc": 2,
+        "sector": "综合Ⅱ"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "300996",
+        "name": "普联软件",
+        "pool_type": "up",
+        "change_pct": 19.974227905273438,
+        "amount": 1169310944.0,
+        "lbc": 2,
+        "sector": "软件开发"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "002585",
+        "name": "双星新材",
+        "pool_type": "up",
+        "change_pct": 10.046189308166504,
+        "amount": 791751872.0,
+        "lbc": 2,
+        "sector": "塑料"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "603171",
+        "name": "税友股份",
+        "pool_type": "up",
+        "change_pct": 10.007233619689941,
+        "amount": 922867152.0,
+        "lbc": 2,
+        "sector": "IT服务Ⅱ"
+      },
+      {
+        "trade_date": "2026-07-31",
+        "symbol": "603039",
+        "name": "泛微网络",
+        "pool_type": "up",
+        "change_pct": 9.994120597839355,
+        "amount": 826523776.0,
+        "lbc": 2,
+        "sector": "软件开发"
+      }
+    ],
+    "hot_breakout": [
+      {
+        "symbol": "300996",
+        "close": 15.52,
+        "channel_high": 13.07,
+        "breakout_pct": 18.75,
+        "atr_20": 0.79,
+        "period": 20,
+        "source": "连板",
+        "sector": "软件开发"
+      },
+      {
+        "symbol": "003032",
+        "close": 8.01,
+        "channel_high": 7.28,
+        "breakout_pct": 10.03,
+        "atr_20": 0.35,
+        "period": 20,
+        "source": "连板",
+        "sector": "教育"
+      },
+      {
+        "symbol": "002827",
+        "close": 31.45,
+        "channel_high": 28.59,
+        "breakout_pct": 10.0,
+        "atr_20": 1.32,
+        "period": 20,
+        "source": "连板",
+        "sector": "化学制品"
+      },
+      {
+        "symbol": "605179",
+        "close": 17.61,
+        "channel_high": 16.01,
+        "breakout_pct": 9.99,
+        "atr_20": 0.8,
+        "period": 20,
+        "source": "连板",
+        "sector": "饮料乳品"
+      },
+      {
+        "symbol": "603221",
+        "close": 20.49,
+        "channel_high": 18.63,
+        "breakout_pct": 9.98,
+        "atr_20": 0.92,
+        "period": 20,
+        "source": "连板",
+        "sector": "家居用品"
+      },
+      {
+        "symbol": "000009",
+        "close": 7.15,
+        "channel_high": 6.59,
+        "breakout_pct": 8.5,
+        "atr_20": 0.23,
+        "period": 20,
+        "source": "连板",
+        "sector": "综合Ⅱ"
+      },
+      {
+        "symbol": "920130",
+        "close": 20.42,
+        "channel_high": 18.88,
+        "breakout_pct": 8.16,
+        "atr_20": 1.45,
+        "period": 20,
+        "source": "涨停",
+        "sector": "IT服务Ⅱ"
+      }
+    ],
+    "note": ""
+  },
   "position_monitor": {
     "date": "2026-07-31",
     "data_date": null,

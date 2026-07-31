@@ -34,10 +34,11 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── llm_client.py       # 多 LLM 路由（Kimi→DeepSeek→Custom）+ 24h 缓存
     │   └── prompts.py          # 提示词模板（纯字符串常量）
     ├── pipeline/               # 数据管道
-    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert，含 signals 表）
+    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert，含 signals/limit_pool/hot_pool 表）
     │   ├── indicators.py       # Donchian 通道、ATR、市场状态 A/B/C/D
-    │   ├── market_scanner.py   # 市场扫描 + 持仓监控区块，同写 MD + JSON
-    │   ├── signal_tracker.py   # 信号追踪：突破信号入库、每日结算、胜率/平均R 统计
+    │   ├── market_scanner.py   # 市场扫描 + 持仓监控区块 + 超短热点区块，同写 MD + JSON
+    │   ├── hot_pool.py         # 超短热点池：涨停/连板/炸板+强板块领涨股，构建与日线补抓
+    │   ├── signal_tracker.py   # 信号追踪：突破信号入库、每日结算（按系统分持有天数）、胜率/平均R 统计
     │   └── run_daily.py        # CLI 入口
     ├── research/               # AI 研究助手
     │   ├── daily_report.py         # 每日研究日报
@@ -141,7 +142,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **142 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 41 + 信号追踪 14 + 策略参数 19 + 回测 12），已验证全部通过（`142 passed`）。
+- 框架：pytest，目录 `Invest/tests/`，共 **151 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 41 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9），已验证全部通过（`151 passed`）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。

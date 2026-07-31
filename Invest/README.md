@@ -8,12 +8,12 @@
 
 | 模块 | 目录 | 功能 | 入口 |
 |------|------|------|------|
-| 数据管道 | `pipeline/` | 行情并行获取、市场扫描、突破候选、信号追踪 | `python pipeline/run_daily.py` |
+| 数据管道 | `pipeline/` | 行情并行获取、市场扫描、突破候选、信号追踪、超短热点池 | `python pipeline/run_daily.py` |
 | 研究助手 | `research/` | 公告全文分析、财报对比、产业链、每日日报 | `python research/run_daily_report.py` |
 | 交易复盘 | `review/` | 交易日志、合规闸门、持仓监控、周/月报 | `python review/cli.py` |
 | 回测 | `backtest/` | S1-A / S2-A 策略验证（与实盘同口径参数） | `python backtest/run_backtest.py` |
 | 仓位计算 | `position_calculator.py` | 风险预算法 + 已有持仓簇风险检查 | `python position_calculator.py` |
-| 统一入口 | `run_all.py` | 盘前一键：取数→扫描→持仓监控→信号结算→日报 | `python run_all.py` |
+| 统一入口 | `run_all.py` | 盘前一键：取数→热点池构建→扫描→持仓监控→信号结算→日报 | `python run_all.py` |
 | API 服务 | `server.py` | FastAPI 服务 + 定时调度 | `python server.py` |
 | 测试 | `tests/` | 指标、合规、监控、信号、回测单元测试 | `python -m pytest tests/` |
 
@@ -48,21 +48,23 @@ $env:CUSTOM_LLM_MODEL = "your-model"
 ```powershell
 cd "e:\Billion\Invest"
 
-# 一键运行（取数 → 市场扫描 → 持仓监控 → 信号结算 → 研究日报）
+# 一键运行（取数 → 热点池构建 → 市场扫描 → 持仓监控 → 信号结算 → 研究日报）
 python run_all.py
 
 # 分步运行
 python pipeline/run_daily.py          # 获取数据 + 市场扫描（含持仓监控与信号入库）
+python pipeline/hot_pool.py           # 手动构建超短热点池（run_all 已自动执行）
 python research/run_daily_report.py   # 生成研究日报
 ```
 
 盘前流程自动完成：
 
 1. 并行抓取行情（股票池 = `WATCHLIST` ∪ 当前持仓股）
-2. 市场扫描：突破候选 + 市场状态 A/B/C/D + 板块强度
-3. **持仓监控**：逐持仓检查止损价与退出通道（S1-A=10 日低点 / S2-A=20 日低点），触发即警报；自动推导回撤状态
-4. **信号结算**：历史扫描信号逐根回放结算（止损/通道退出/到期），当日新信号自动入库
-5. 研究日报：公告（含防编造护栏）、宏观、板块、候选汇总
+2. **超短热点池构建**：涨停/连板/炸板名单入 `limit_pool` 表 + 强板块领涨股，合并写 `hot_pool` 表并补抓池内日线（`--skip-fetch` 时跳过，失败降级不阻塞）
+3. 市场扫描：突破候选 + 市场状态 A/B/C/D + 板块强度 + 超短热点池区块
+4. **持仓监控**：逐持仓检查止损价与退出通道（S1-A=10 日低点 / S2-A=20 日低点），触发即警报；自动推导回撤状态
+5. **信号结算**：历史扫描信号逐根回放结算（止损/通道退出/到期），当日新信号自动入库
+6. 研究日报：公告（含防编造护栏）、宏观、板块、候选汇总
 
 ### 方式二：FastAPI 服务
 
@@ -106,7 +108,7 @@ Invest/output/
 
 ```
 Invest/data/
-├── market.db           # SQLite 行情数据库（含 signals 信号表）
+├── market.db           # SQLite 行情数据库（含 signals/limit_pool/hot_pool 表）
 ├── trades.json         # 交易日志
 ├── announcements/      # 公告全文缓存
 └── llm_cache/          # LLM 响应缓存（24h TTL）
@@ -158,6 +160,9 @@ python pipeline/run_daily.py
 # 仅扫描（已有数据库）
 python pipeline/run_daily.py --skip-fetch
 
+# 手动构建超短热点池（run_all 盘前流程已自动执行）
+python pipeline/hot_pool.py
+
 # 初始化数据库
 python pipeline/database.py
 ```
@@ -166,7 +171,9 @@ python pipeline/database.py
 
 扫描报告输出 Markdown + JSON 两种格式：
 - `output/market_scans/market_scan_YYYY-MM-DD.md`（顶部含持仓监控区块）
-- `output/market_scans/market_scan_YYYY-MM-DD.json`（含 `position_monitor` 字段）
+- `output/market_scans/market_scan_YYYY-MM-DD.json`（含 `position_monitor` 与 `hot_pool` 字段）
+
+扫描报告新增「五、超短热点池（1-5 天，HOT-S）」节：涨停/连板/炸板名单统计 + 热点池突破候选（与主扫描同通道参数）。热点池突破信号以系统 `HOT-S` 写入 signals 表、5 个交易日强制结算，分组胜率见 `python pipeline/signal_tracker.py stats`。
 
 ### 信号追踪（可验证性）
 
@@ -174,7 +181,9 @@ python pipeline/database.py
 
 - 触发止损 → 按止损价关闭，记 −1R
 - 跌破退出通道（S1=10 日 / S2=20 日低点）→ 按收盘价关闭
-- 满 20 个交易日 → 按收盘价到期关闭
+- 满 20 个交易日 → 按收盘价到期关闭（HOT-S 超短信号按 `SIGNAL_MAX_HOLDING_BY_SYSTEM` 覆盖为 5 日）
+
+HOT-S 信号不匹配任何退出通道，只有「止损」与「到期（5 日）」两种退出；统计按系统分组，HOT-S 自动独立成组。
 
 ```powershell
 python pipeline/signal_tracker.py stats --days 90   # 各系统胜率/平均R/PF
@@ -261,7 +270,7 @@ python -m pytest tests/test_monitor.py -v
 python -m pytest tests/test_signal_tracker.py -v
 ```
 
-共 142 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 41、信号追踪 14、策略参数 19、回测 12。全部离线运行，不依赖 API Key 或网络。
+共 151 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 41、信号追踪 14、策略参数 19、回测 12、热点池 9。全部离线运行，不依赖 API Key 或网络。
 
 ## 目录结构
 
@@ -286,10 +295,11 @@ Invest/
 │   ├── financial_comparison.py
 │   └── industry_mapper.py
 ├── pipeline/              # 数据管道
-│   ├── database.py        # 含 signals 信号表
+│   ├── database.py        # 含 signals/limit_pool/hot_pool 表
 │   ├── indicators.py
-│   ├── market_scanner.py  # 扫描 + 持仓监控区块，输出 MD + JSON
-│   ├── signal_tracker.py  # 信号入库/结算/统计
+│   ├── market_scanner.py  # 扫描 + 持仓监控区块 + 超短热点区块，输出 MD + JSON
+│   ├── hot_pool.py        # 超短热点池构建（涨停/连板/炸板 + 强板块领涨股）与日线补抓
+│   ├── signal_tracker.py  # 信号入库/结算/统计（持有天数按系统分，HOT-S=5）
 │   └── run_daily.py
 ├── backtest/              # 回测（与实盘共用 config 策略参数）
 │   ├── strategies.py
@@ -304,7 +314,7 @@ Invest/
 │   ├── metrics.py
 │   ├── compliance_check.py
 │   └── report_generator.py
-├── tests/                 # 单元测试（142 用例）
+├── tests/                 # 单元测试（151 用例）
 ├── data/                  # 数据存储
 │   ├── market.db
 │   ├── trades.json

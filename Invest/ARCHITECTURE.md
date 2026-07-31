@@ -1,6 +1,6 @@
 # Invest 项目架构与设计文档
 
-> 版本：基于 2026-07-30 代码库（实战化改造后：持仓监控闭环、入场合规闸门、信号验证、回测同口径）  
+> 版本：基于 2026-07-31 代码库（实战化改造后：持仓监控闭环、入场合规闸门、信号验证、回测同口径、超短热点池 HOT-S）  
 > 受众：后续迭代开发者  
 > 项目路径：`e:\Billion\Invest`
 
@@ -34,13 +34,14 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 
 | 模块 | 路径 | 职责 |
 |------|------|------|
-| 统一入口 | `run_all.py` | 盘前 pipeline + research 编排（取数→扫描→持仓监控→信号结算→日报） |
+| 统一入口 | `run_all.py` | 盘前 pipeline + research 编排（取数→热点池构建→扫描→持仓监控→信号结算→日报） |
 | **FastAPI 服务** | `server.py` | HTTP 触发盘前流程、状态查询、定时调度 |
 | 配置 | `config.py` | 路径、API、股票池、合规规则、策略参数（`STRATEGY_PARAMS` 单一来源） |
 | 仓位计算 | `position_calculator.py` | `calc_position` 风险预算股数（口径同 config.RISK_LIMITS） |
 | 共享层 | `shared/` | 数据抓取、LLM 路由、工具函数 |
-| 数据管道 | `pipeline/` | SQLite 缓存、指标、市场扫描（MD + JSON） |
-| **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库、逐根回放结算、胜率/平均R 统计 |
+| 数据管道 | `pipeline/` | SQLite 缓存、指标、市场扫描（MD + JSON）、超短热点池 |
+| **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
+| **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库、逐根回放结算、胜率/平均R 统计（持有天数按系统分：HOT-S=5） |
 | 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链 |
 | 交易复盘 | `review/` | 交易日志、合规、周报月报 |
 | **持仓监控** | `review/monitor.py` | 止损/退出通道警报、回撤状态自动推导 |
@@ -48,7 +49,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **买入卡** | `review/buy_card.py` | 建仓后自动生成买入卡（写 vault 交易日志/） |
 | 持仓视图 | `review/positions.py` | 开放持仓、风险敞口、未实现盈亏（market.db 收盘价） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测（142 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池（151 用例） |
 
 ---
 
@@ -85,6 +86,7 @@ flowchart TB
         EG[review/entry_gate]
         BC[review/buy_card]
         ST[signal_tracker]
+        HP[hot_pool]
     end
 
     subgraph Shared["共享服务层"]
@@ -112,6 +114,7 @@ flowchart TB
     end
 
     RA --> MS & DR
+    RA --> HP
     SV --> RA
     PR --> MS
     RR --> DR
@@ -122,6 +125,7 @@ flowchart TB
     MS --> IND & DB & MON & ST
     MON --> IND & DB & TJ
     ST --> DB
+    HP --> IND & DF & DB
     EG --> CC & BC
     BC --> VAULT
     DR --> AA & MS & LLM & POS
@@ -167,10 +171,12 @@ flowchart LR
         database
         indicators[indicators.py]
         market_scanner[market_scanner.py]
+        hot_pool[hot_pool.py]
         run_daily[run_daily.py]
     end
 
     market_scanner --> database & indicators
+    hot_pool --> database & indicators & data_fetcher
     run_daily --> data_fetcher & market_scanner
 
     subgraph research
@@ -209,6 +215,7 @@ flowchart LR
     run_backtest --> strategies & database
 
     server[server.py] --> run_all
+    run_all --> hot_pool
 ```
 
 ### 2.3 盘前数据流
@@ -218,6 +225,7 @@ sequenceDiagram
     participant User
     participant Entry as run_all / server.py
     participant Fetch as data_fetcher
+    participant HP as hot_pool
     participant DB as market.db
     participant Scan as market_scanner
     participant Mon as review/monitor
@@ -230,6 +238,8 @@ sequenceDiagram
     Entry->>DB: init_database()
     Entry->>Fetch: fetch_and_save_all_parallel(WATCHLIST ∪ 持仓股)
     Fetch->>DB: save_daily/sector/limit/etf/lhb
+    Entry->>HP: build_hot_pool + sync_hot_pool_daily（--skip-fetch 跳过，失败降级）
+    HP->>DB: save_limit_pool / save_hot_pool + 补抓池内个股日线
     Entry->>Scan: run_scan(symbols)
     Scan->>DB: load_daily_quotes / load_sector_quotes
     Scan->>Mon: check_positions（失败降级，不阻塞）
@@ -301,16 +311,16 @@ sequenceDiagram
 
 #### `run_all.py` — 统一入口
 
-**职责**：盘前一键编排 pipeline + research（取数→扫描→持仓监控→信号结算→日报）。
+**职责**：盘前一键编排 pipeline + research（取数→热点池构建→扫描→持仓监控→信号结算→日报）。
 
 | 函数 | 签名 | 返回值 | 职责 |
 |------|------|--------|------|
 | `watchlist_with_positions` | `() -> list[str]` | 股票池 | `WATCHLIST` ∪ trades.json 未平仓代码（TradeLog 失败降级为 WATCHLIST） |
-| `run_pipeline` | `(skip_fetch: bool = False, symbols: list[str] \| None = None) -> Path` | 扫描报告路径 | 初始化 DB → 可选并行 fetch（默认 `watchlist_with_positions()`）→ run_scan（含持仓监控、信号入库）→ settle_signals |
+| `run_pipeline` | `(skip_fetch: bool = False, symbols: list[str] \| None = None) -> Path` | 扫描报告路径 | 初始化 DB → 可选并行 fetch（默认 `watchlist_with_positions()`）→ 热点池构建+日线补抓（`--skip-fetch` 跳过，失败降级不阻塞）→ run_scan（含持仓监控、信号入库）→ settle_signals |
 | `run_research` | `(watchlist: list[str] \| None = None, sectors: list[str] \| None = None) -> Path` | 日报路径 | 调用 generate_report |
 | `main` | `() -> None` | — | argparse CLI |
 
-**依赖**：`config`, `pipeline.database`, `pipeline.market_scanner`, `pipeline.signal_tracker`, `research.daily_report`, `review.positions`, `shared.data_fetcher.fetch_and_save_all_parallel`
+**依赖**：`config`, `pipeline.database`, `pipeline.market_scanner`, `pipeline.hot_pool`, `pipeline.signal_tracker`, `research.daily_report`, `review.positions`, `shared.data_fetcher.fetch_and_save_all_parallel`
 
 #### `server.py` — FastAPI 服务
 
@@ -399,6 +409,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `write_markdown` | `(content: str, output_path: Path) -> Path` | 写入路径 | 创建目录并写文件 |
 | `obsidian_frontmatter` | `(tags: list[str], **extra) -> str` | YAML 块 | frontmatter 生成 |
 | `get_stock_name` | `(symbol: str) -> str` | 股票名称 | 缓存 `stock_info_a_code_name` |
+| `get_symbol_by_name` | `(name: str) -> str` | 6 位代码 | 按名称反查（与 `get_stock_name` 共用缓存；未命中返回空串） |
 
 #### `data_fetcher.py`
 
@@ -409,6 +420,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `fetch_sector_list` | `() -> pd.DataFrame` | 行业板块列表 |
 | `fetch_sector_daily` | `(sector_name, start_date, end_date) -> pd.DataFrame` | 板块指数日线 |
 | `fetch_limit_stats` | `(trade_date=None) -> pd.DataFrame` | 涨跌停/市场宽度 |
+| `fetch_limit_pools` | `(trade_date=None) -> pd.DataFrame` | 涨停池+炸板池个股名单（东财 push2ex），列 symbol/name/pool_type(up/broken)/change_pct/amount/lbc(连板数)/sector；单池失败降级跳过 |
 | `fetch_etf_flow` | `(trade_date=None) -> pd.DataFrame` | ETF 资金流 |
 | `fetch_dragon_tiger` | `(start_date=None, end_date=None) -> pd.DataFrame` | 龙虎榜 |
 | `fetch_and_save_all` | `(symbols, start_date="20230101", sector_limit=SECTOR_FETCH_LIMIT) -> dict` | 串行批量抓取（保留兼容） |
@@ -454,6 +466,8 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 （同前版本：SQLite CRUD，`REPLACE INTO` upsert 模式。）
 
+新增 `limit_pool` / `hot_pool` 两表（schema 见 5.1）与对应读写函数：`save_limit_pool` / `save_hot_pool` / `load_limit_pool` / `load_hot_pool`。
+
 #### `indicators.py`
 
 （同前版本：Donchian 通道、ATR、市场状态 A/B/C/D 判断等。）
@@ -465,12 +479,13 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `run_scan` | `(symbols: list[str] \| None = None, output_dir: Path \| None = None) -> Path` | Markdown 报告路径（同时写 JSON） |
 | `_load_limit_stats_from_db` | `(db_path=None) -> pd.DataFrame` | 最近 5 日 limit_stats |
 | `_run_position_monitor` | `() -> Optional[dict]` | 持仓监控（调 `review.monitor`，失败降级返回 None，不阻塞扫描） |
-| `_record_breakout_signals` | `(scan_data: dict) -> None` | 突破候选写入 signals 表（调 `signal_tracker.record_signals`） |
+| `_build_hot_section` | `(today: str) -> dict` | 超短热点区块：从 DB 读 limit_pool/hot_pool，池内个股跑 `scan_breakout_candidates(CHANNEL_SHORT)`（与主扫描同函数同参数），标注 source/sector；热点池未构建时降级标注，不拖垮报告 |
+| `_record_breakout_signals` | `(scan_data: dict) -> None` | 突破候选写入 signals 表（S1-A/S2-A + 热点池 hot_breakout 以 system=HOT-S，调 `signal_tracker.record_signals`） |
 | `_df_to_breakout_list` | `(df: pd.DataFrame) -> list[dict]` | 突破候选 JSON 结构 |
 | `_df_to_sector_list` | `(df: pd.DataFrame) -> list[dict]` | 板块排名 JSON 结构 |
-| `_build_scan_json` | `(date, state_info, breakout_20, breakout_55, sector_rank) -> dict` | 完整扫描 JSON |
+| `_build_scan_json` | `(date, state_info, breakout_20, breakout_55, sector_rank, hot_section=None) -> dict` | 完整扫描 JSON |
 | `_build_sector_ranking` | `(benchmark_df) -> pd.DataFrame` | Top 板块排名 |
-| `_format_report` | `(date, state_info, breakout_20, breakout_55, sector_rank, symbols) -> str` | Markdown 正文（顶部含「持仓监控」区块） |
+| `_format_report` | `(date, state_info, breakout_20, breakout_55, sector_rank, symbols) -> str` | Markdown 正文（顶部含「持仓监控」区块，含「五、超短热点池」节） |
 
 **JSON 输出结构**（`market_scan_{date}.json`）：
 
@@ -481,11 +496,12 @@ uvicorn server:app --host 127.0.0.1 --port 8900
   "breakout_s1a": [{"symbol", "close", "channel_high", "breakout_pct", "atr_20", "period"}],
   "breakout_s2a": [...],
   "sector_ranking": [{"rank", "sector_name", "relative_strength", "period_return"}],
-  "position_monitor": {"date", "data_date", "open_count", "alerts", "positions_ok", "drawdown_state"}
+  "position_monitor": {"date", "data_date", "open_count", "alerts", "positions_ok", "drawdown_state"},
+  "hot_pool": {"available", "limit_up_count", "lianban_count", "broken_count", "lianban", "hot_breakout", "note"}
 }
 ```
 
-持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。
+持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。热点池区块嵌入扫描 JSON：`lianban` 为连板股表（报告取 Top10），`hot_breakout` 为热点池突破候选（入库 signals 表 system=HOT-S），热点池未构建时 `available=false` 并在 `note` 标注。
 
 #### `signal_tracker.py` — 信号追踪（可验证性）
 
@@ -494,12 +510,32 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
 | `record_signals` | `(scan_data: dict, db_path=None) -> int` | 候选入库；同 (symbol, system) 有 open 信号则跳过（防连续突破日重复） |
-| `settle_signals` | `(db_path=None, settle_date=None) -> dict` | 结算 `signal_date < settle_date` 的 open 信号：逐根回放日线，先判止损（R=−1）再判退出通道，满 `SIGNAL_MAX_HOLDING_DAYS`(20) 个交易日到期关闭 |
+| `settle_signals` | `(db_path=None, settle_date=None) -> dict` | 结算 `signal_date < settle_date` 的 open 信号：逐根回放日线，先判止损（R=−1）再判退出通道，满持有天数到期关闭（默认 `SIGNAL_MAX_HOLDING_DAYS`=20，`SIGNAL_MAX_HOLDING_BY_SYSTEM` 按系统覆盖，HOT-S=5） |
+| `_max_holding_days` | `(system: str) -> int` | 按系统查 `SIGNAL_MAX_HOLDING_BY_SYSTEM`，未列出系统沿用 `SIGNAL_MAX_HOLDING_DAYS` |
 | `signal_stats` | `(db_path=None, days=90, as_of=None) -> dict` | 近 N 天已关闭信号按系统分组：样本数/胜率/平均R/期望值/PF；<`SIGNAL_STATS_MIN_SAMPLE`(5) 标注「样本不足」 |
 | `signal_stats_to_markdown` | `(stats: dict) -> str` | 表格 + 自动解读（周报/月报/CLI 共用） |
 | `main` | `() -> None` | CLI：`settle [--date]` / `stats [--days 90]` |
 
-**结算口径**：入场价=信号日收盘价，止损=入场价−`ATR_STOP_MULT`×ATR(20)，退出通道 S1=10 日/S2=20 日低点（shift(1) 无未来函数，与 monitor、回测同口径）。
+**结算口径**：入场价=信号日收盘价，止损=入场价−`ATR_STOP_MULT`×ATR(20)，退出通道 S1=10 日/S2=20 日低点（shift(1) 无未来函数，与 monitor、回测同口径）。HOT-S 超短信号不匹配任何退出通道（`_exit_channel_period` 返回 None），只有「止损」与「到期（5 日）」两种退出；`signal_stats` 按 system 分组，HOT-S 自动独立成组。
+
+#### `hot_pool.py` — 超短热点池（HOT-S，1-5 天）
+
+**职责**：每日盘前构建超短热点池：涨停/连板/炸板名单入 `limit_pool` 表，强板块领涨股合并去重写 `hot_pool` 表，并并行补抓池内个股日线。全部源失败产空池告警，不阻塞主流程。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `build_hot_pool` | `(trade_date=None, db_path=None) -> pd.DataFrame` | 抓涨停/炸板名单（存 limit_pool 表）→ 强板块领涨股 → 合并写 hot_pool 表（全失败返回空 DataFrame） |
+| `sync_hot_pool_daily` | `(pool, db_path=None, max_workers=FETCH_MAX_WORKERS) -> int` | ThreadPoolExecutor 并行补抓池内个股近 `HOT_HISTORY_DAYS` 个交易日的日线（复用 `fetch_stock_daily` + `save_daily_quotes`，单只失败不阻塞） |
+| `_strong_sectors` | `(db_path=None) -> list[str]` | 板块相对强度 Top `HOT_SECTOR_TOP_N`（复用 `indicators.rank_sectors_by_strength`，数据全部来自本地 DB，离线可用） |
+| `_fetch_sector_leaders` | `(sectors: list[str]) -> pd.DataFrame` | 同花顺行业一览 `stock_board_industry_summary_ths` 取领涨股（名称→代码用 `get_symbol_by_name`，查不到丢弃；失败降级空表） |
+| `_merge_pool` | `(limit_df, leaders) -> pd.DataFrame` | 合并去重：来源优先级 连板>涨停>炸板>领涨（source 可组合如「连板+领涨」），截断 `HOT_POOL_MAX` |
+| `_fetch_and_save_hot_stock` | `(sym, start_date, db_path) -> tuple` | 并行 worker：补抓单只热点股日线并入库 |
+| `main` | `() -> None` | CLI：`python pipeline/hot_pool.py` |
+
+**设计要点**：
+- 连板判定直接用东财涨停池自带「连板数」（lbc≥2），不做跨日交集——盘前运行时东财返回上一交易日池子，跨日交集会把整池误判为连板
+- 强板块成分股接口不可用（akshare 1.16.95 无同花顺成分接口 `stock_board_industry_cons_ths`，东财 `stock_board_industry_cons_em` 走 push2 被风控），强板块个股来源降级为「领涨股」（每板块 1 只）
+- `hot_pool.source` 取值：连板/涨停/炸板/领涨（可组合）
 
 #### `run_daily.py`
 
@@ -673,6 +709,33 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 ```
 
+**新增 `limit_pool` / `hot_pool` 表**（超短热点池，同 `init_database()` 幂等建表，均附 `trade_date` 索引）：
+
+```sql
+CREATE TABLE IF NOT EXISTS limit_pool (
+    trade_date  TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    name        TEXT,
+    pool_type   TEXT NOT NULL,      -- up=涨停 / broken=炸板
+    change_pct  REAL,
+    amount      REAL,
+    lbc         INTEGER,            -- 连板数（东财涨停池自带）
+    sector      TEXT,
+    PRIMARY KEY (trade_date, symbol, pool_type)
+);
+
+CREATE TABLE IF NOT EXISTS hot_pool (
+    trade_date  TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    name        TEXT,
+    source      TEXT,               -- 连板/涨停/炸板/领涨（可组合，如「连板+领涨」）
+    sector      TEXT,
+    change_pct  REAL,
+    lbc         INTEGER,
+    PRIMARY KEY (trade_date, symbol)
+);
+```
+
 ### 5.2 JSON 结构（`data/trades.json`）
 
 （同前版本。）
@@ -787,10 +850,11 @@ flowchart TD
 | 重试 | `LLM_MAX_RETRIES`, `FETCH_RETRY`, `FETCH_MAX_WORKERS` | 代码默认 |
 | 研究 | `RESEARCH_WATCHLIST`, `DEFAULT_SECTORS`, `ANNOUNCEMENT_*` | 代码默认 |
 | 管道 | `WATCHLIST`, `CHANNEL_*`, `MARKET_STATE` | 代码默认 |
+| 超短热点池 | `HOT_SECTOR_TOP_N`, `HOT_POOL_MAX`, `HOT_HISTORY_DAYS`, `HOT_SIGNAL_SYSTEM` | 代码默认 |
 | 策略参数 | `STRATEGY_PARAMS`, `ATR_PERIOD`, `ATR_STOP_MULT`, `ADD_SPACING_MIN/MAX`, `MAX_UNITS`, `LOT_SIZE`, `BACKTEST_RISK_PCT` | 投资体系 V5.0（单一来源，扫描/监控/信号/回测/仓位共用） |
 | 策略枚举 | `STRATEGY_CODES`, `STRATEGY_INFO`, `ACCOUNT_TYPES`, `SYSTEM_DEFAULT_ACCOUNT` | 投资体系 V5.0 |
 | 监控/回撤 | `DRAWDOWN_THRESHOLDS`, `MONTHLY_DRAWDOWN_LIMITS`, `EXIT_CHANNEL_PERIODS` | 投资体系 V5.0 §6 |
-| 信号追踪 | `SIGNAL_MAX_HOLDING_DAYS`, `SIGNAL_STATS_MIN_SAMPLE` | 代码默认 |
+| 信号追踪 | `SIGNAL_MAX_HOLDING_DAYS`, `SIGNAL_MAX_HOLDING_BY_SYSTEM`, `SIGNAL_STATS_MIN_SAMPLE` | 代码默认 |
 | 服务/调度 | `SERVER_HOST`, `SERVER_PORT`, `SCHEDULER_*` | 环境变量 |
 | 复盘 | `ACCOUNT_EQUITY`, `DRAWDOWN_STATE`, `TRADE_LOG_OUTPUT_DIR` | 环境变量/代码推导 |
 | 合规 | `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `INDUSTRY_MAP` | 投资体系 V5.0 |
@@ -873,11 +937,12 @@ python run_all.py
 
 1. `init_database()`
 2. `fetch_and_save_all_parallel(watchlist_with_positions())` — 股票池 = WATCHLIST ∪ 未平仓持仓股
-3. `run_scan()` → 突破候选 + 市场状态 + `check_positions()` 持仓监控 → `market_scan_{date}.md` + `.json` + `position_monitor_{date}.json`；候选写入 signals 表
-4. `settle_signals()` — 逐根回放结算历史信号（当日新信号不结算）
-5. `generate_report()` → `{date}_每日研究日报.md`（watchlist = 持仓 + RESEARCH_WATCHLIST）
+3. `build_hot_pool()` + `sync_hot_pool_daily()` — 超短热点池构建 + 池内日线补抓（`--skip-fetch` 时跳过；失败降级不阻塞）
+4. `run_scan()` → 突破候选 + 市场状态 + `check_positions()` 持仓监控 + 超短热点池区块 → `market_scan_{date}.md` + `.json` + `position_monitor_{date}.json`；候选写入 signals 表（含 HOT-S）
+5. `settle_signals()` — 逐根回放结算历史信号（当日新信号不结算）
+6. `generate_report()` → `{date}_每日研究日报.md`（watchlist = 持仓 + RESEARCH_WATCHLIST）
 
-**加速**：`python run_all.py --skip-fetch`
+**加速**：`python run_all.py --skip-fetch`（热点池构建一并跳过）
 
 ### 10.2 盘前流程（FastAPI 服务）
 
@@ -907,13 +972,14 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 合规审计 | `review/cli.py check` | 终端报告 |
 | 持仓摘要 | `review/cli.py positions` | 未实现盈亏/敞口/回撤状态 |
 | 持仓监控 | `review/monitor.py`（盘前流程已自动执行） | 止损/退出警报 JSON |
-| 信号统计 | `pipeline/signal_tracker.py stats --days 90` | 各系统胜率/平均R/PF |
+| 热点池构建 | `pipeline/hot_pool.py`（盘前流程已自动执行） | limit_pool/hot_pool 表 + 池内日线补抓 |
+| 信号统计 | `pipeline/signal_tracker.py stats --days 90` | 各系统胜率/平均R/PF（HOT-S 独立成组） |
 | 仓位计算 | `position_calculator.py -t 核心 --check-existing ...` | 含 trades.json 簇检查 |
 | 周末 | `review/cli.py weekly` | vault 周报（含信号验证节） |
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证节） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 142 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 151 passed |
 
 ### 10.4 模块联动点
 
@@ -924,6 +990,8 @@ flowchart LR
     A -->|候选| ST[signal_tracker 入库/结算]
     A -->|持仓监控区块| MON[review/monitor]
     D[data_fetcher parallel] --> E[database]
+    D --> HP[hot_pool 热点池构建]
+    HP -->|limit_pool/hot_pool 表 + 日线补抓| E
     E --> A
     E --> F[backtest]
     E --> MON
@@ -1062,6 +1130,18 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 
 本已双源、无需改动：`fetch_stock_daily` / `fetch_index_daily` / `fetch_sector_list` / `fetch_sector_daily` / `fetch_limit_stats`（涨跌停池走 `push2ex`，未受影响）。
 
+### 13.6 超短热点池（2026-07-31 ✅）
+
+**背景**：支持 1-5 天超短交易（HOT-S），候选来源为涨停/连板/炸板名单 + 强板块领涨股。两个设计决定：① 连板判定直接用东财涨停池自带「连板数」（lbc≥2），不做跨日交集——盘前运行时东财返回上一交易日池子，跨日交集会把整池误判为连板；② 强板块成分股接口不可用（akshare 1.16.95 无同花顺成分接口 `stock_board_industry_cons_ths`，东财 `stock_board_industry_cons_em` 走 push2 被风控），强板块个股来源降级为同花顺行业一览「领涨股」（每板块 1 只）。
+
+| # | 方向 | 实现方式 |
+|---|------|----------|
+| 1 | 涨停/炸板名单入库 | `data_fetcher.fetch_limit_pools`（东财 push2ex，单池失败降级跳过）+ `limit_pool` 表 |
+| 2 | 热点池构建模块 | `pipeline/hot_pool.py`：`build_hot_pool`（强板块 Top `HOT_SECTOR_TOP_N` 领涨股 + `_merge_pool` 合并去重，优先级 连板>涨停>炸板>领涨，上限 `HOT_POOL_MAX`）+ `sync_hot_pool_daily`（并行补抓近 `HOT_HISTORY_DAYS` 个交易日日线） |
+| 3 | 扫描第五节 + JSON + 信号入库 | 报告「五、超短热点池（1-5 天，HOT-S）」（涨停/连板/炸板统计、连板股表 Top10、热点池突破候选，原「五、使用说明」改为六）；JSON `hot_pool` 键；突破候选以 system=HOT-S 入 signals 表 |
+| 4 | 按系统分持有天数 | `SIGNAL_MAX_HOLDING_BY_SYSTEM`（HOT-S=5 个交易日强制结算；未列出系统沿用 `SIGNAL_MAX_HOLDING_DAYS`=20）；HOT-S 无退出通道，仅止损/到期 |
+| 5 | 测试 | `tests/test_hot_pool.py` 9 用例（字段映射/单池降级/合并优先级/上限截断/表读写幂等/HOT-S 到期/按系统分组），全量 151 passed |
+
 ---
 
 ## 14. 附录
@@ -1141,10 +1221,32 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
+<summary>pipeline/database.py</summary>
+
+- `save_limit_pool(df, db_path) -> int` / `load_limit_pool(trade_date, pool_type, db_path) -> pd.DataFrame`
+- `save_hot_pool(df, db_path) -> int` / `load_hot_pool(trade_date, db_path) -> pd.DataFrame`
+- （daily_quotes/sector_quotes/signals 等 CRUD 同前版本，见源码）
+
+</details>
+
+<details>
+<summary>pipeline/hot_pool.py</summary>
+
+- `build_hot_pool(trade_date, db_path) -> pd.DataFrame`
+- `sync_hot_pool_daily(pool, db_path, max_workers) -> int`
+- `_strong_sectors(db_path) -> list[str]`, `_fetch_sector_leaders(sectors) -> pd.DataFrame`
+- `_merge_pool(limit_df, leaders) -> pd.DataFrame`（优先级 连板>涨停>炸板>领涨，截断 HOT_POOL_MAX）
+- `_fetch_and_save_hot_stock(sym, start_date, db_path) -> tuple`
+- `main()`
+
+</details>
+
+<details>
 <summary>pipeline/signal_tracker.py</summary>
 
 - `record_signals(scan_data, db_path) -> int`
 - `settle_signals(db_path, settle_date) -> dict`
+- `_max_holding_days(system) -> int` — 按系统覆盖（`SIGNAL_MAX_HOLDING_BY_SYSTEM`，HOT-S=5）
 - `signal_stats(db_path, days, as_of) -> dict`
 - `signal_stats_to_markdown(stats) -> str`
 - `main()` — `settle` / `stats [--days 90]`
@@ -1155,7 +1257,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 <summary>shared/data_fetcher.py</summary>
 
 - `fetch_stock_daily`, `fetch_index_daily`, `fetch_sector_list`, `fetch_sector_daily`
-- `fetch_limit_stats`, `fetch_etf_flow`, `fetch_dragon_tiger`
+- `fetch_limit_stats`, `fetch_limit_pools(trade_date)`（涨停/炸板池个股名单）, `fetch_etf_flow`, `fetch_dragon_tiger`
 - `fetch_and_save_all(...) -> dict`
 - `fetch_and_save_all_parallel(...) -> dict`
 - `_fetch_and_save_single_stock(sym, start_date) -> tuple`
@@ -1169,6 +1271,17 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `call_llm(prompt, ..., provider, use_cache, task_type) -> Optional[str]`
 - `_resolve_provider`, `_model_for_task`, `_load_cache`, `_save_cache`, `_call_provider`
 - `_call_kimi(...)` — 兼容
+
+</details>
+
+<details>
+<summary>shared/utils.py</summary>
+
+- `patch_bypass_proxy()`, `bypass_proxy`（上下文管理器）, `retry_fetch`, `safe_fetch`
+- `normalize_symbol(symbol) -> str`
+- `df_to_markdown_table(df, float_fmt)`, `write_markdown(content, output_path)`, `obsidian_frontmatter(tags, **extra)`
+- `get_stock_name(symbol) -> str`
+- `get_symbol_by_name(name) -> str` — 名称反查 6 位代码（与 get_stock_name 共用缓存）
 
 </details>
 
@@ -1214,11 +1327,12 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `_build_scan_json(...) -> dict`
 - `_df_to_breakout_list`, `_df_to_sector_list`
 - `_load_limit_stats_from_db`, `_build_sector_ranking`, `_format_report`
+- `_build_hot_section(today) -> dict` — 超短热点区块（limit_pool/hot_pool + 热点池突破候选）
 
 </details>
 
 <details>
-<summary>tests/（142 用例，全部离线）</summary>
+<summary>tests/（151 用例，全部离线）</summary>
 
 - `test_indicators.py` — 13 用例（含市场宽度取最新日回归）
 - `test_compliance.py` — 12 用例
@@ -1228,6 +1342,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_signal_tracker.py` — 14 用例（入库去重/回放结算/统计）
 - `test_strategy_params.py` — 19 用例（config 单一来源/枚举/簇映射）
 - `test_backtest.py` — 12 用例（加仓间距/单位 R/合成行情全流程）
+- `test_hot_pool.py` — 9 用例（fetch_limit_pools 字段映射与单池降级/_merge_pool 合并优先级与上限/两表读写幂等/HOT-S 五日到期/按系统分组）
 
 </details>
 
@@ -1277,6 +1392,10 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `ANNOUNCEMENT_MAX_CHARS` | 3000 |
 | `CHANNEL_SHORT/LONG` | 20 / 55（`STRATEGY_PARAMS` 派生别名） |
 | `SECTOR_FETCH_LIMIT` | 30 |
+| `HOT_SECTOR_TOP_N` | 3（板块相对强度前 N 取领涨股） |
+| `HOT_POOL_MAX` | 120（热点池总量上限） |
+| `HOT_HISTORY_DAYS` | 90（热点池日线补抓交易日目标，×1.7 折算自然日 ≈150 天） |
+| `HOT_SIGNAL_SYSTEM` | `"HOT-S"`（超短信号系统标识） |
 
 #### 服务 / 调度
 
@@ -1310,6 +1429,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `DRAWDOWN_THRESHOLDS` | Caution 6% / Defensive 8% / Review 12% | 峰值回撤状态机（V5.0 §6） |
 | `MONTHLY_DRAWDOWN_LIMITS` | −4% 停事件 / −6% 停开仓 | 月度轨道 |
 | `SIGNAL_MAX_HOLDING_DAYS` | 20 | 信号到期强制结算（交易日） |
+| `SIGNAL_MAX_HOLDING_BY_SYSTEM` | `{"HOT-S": 5}` | 按系统覆盖持有天数；未列出系统沿用 20 日 |
 | `SIGNAL_STATS_MIN_SAMPLE` | 5 | 统计最小样本量 |
 
 ---
