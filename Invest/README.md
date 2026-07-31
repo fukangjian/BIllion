@@ -10,7 +10,7 @@
 |------|------|------|------|
 | 数据管道 | `pipeline/` | 行情并行获取、市场扫描、突破候选、信号追踪、超短热点池 | `python pipeline/run_daily.py` |
 | 研究助手 | `research/` | 公告全文分析、财报对比、产业链、每日日报 | `python research/run_daily_report.py` |
-| 交易复盘 | `review/` | 交易日志、合规闸门、持仓监控、周/月报 | `python review/cli.py` |
+| 交易复盘 | `review/` | 交易日志、合规闸门、持仓监控、券商导入、纪律审计、周/月报 | `python review/cli.py` |
 | 回测 | `backtest/` | S1-A / S2-A 策略验证（与实盘同口径参数） | `python backtest/run_backtest.py` |
 | 仓位计算 | `position_calculator.py` | 风险预算法 + 已有持仓簇风险检查 | `python position_calculator.py` |
 | 统一入口 | `run_all.py` | 盘前一键：取数→热点池构建→扫描→持仓监控→信号结算→日报 | `python run_all.py` |
@@ -75,7 +75,7 @@ python server.py
 # 触发盘前流程
 curl -X POST http://127.0.0.1:8900/pre-market
 
-# 启用定时调度（每天 08:30 自动运行）
+# 启用定时调度（每天 08:30 自动盘前；每周五 15:45 自动周报、每月最后一天 16:00 自动月报）
 $env:ENABLE_SCHEDULER = "true"
 $env:SCHEDULER_TIME = "08:30"
 python server.py
@@ -226,24 +226,32 @@ python backtest/run_backtest.py --strategy S2-A --symbol 000858 --start 2018-01-
 
 ```powershell
 # 添加交易（写入前自动过合规闸门；高级违规拒绝，--force 强制并留痕）
-python review/cli.py add 600519 --account 核心 --system S1-A \
+python review/cli.py add 600519 --account 核心 --system S1-A `
     --entry 1800 --stop 1700 --risk 0.5 --shares 100
+# 可选：--time 14:20:34 记录入场时间（纪律审计用）；平仓用 update --exit-price ... --exit-time
 
-# 从扫描结果查看建议参数（只打印，不落库）
+# 从扫描结果查看建议参数（只打印，不落库；热点池突破候选系统为 HOT-S，默认账户 事件）
 python review/cli.py from-scan 600519
 
-# 从扫描一键建仓：仓位计算 → 合规闸门 → 写库 → 生成买入卡
+# 从扫描一键建仓：仓位计算 → 合规闸门 → 写库 → 生成买入卡（--system 支持 S1-A/S2-A/HOT-S）
 python review/cli.py from-scan 600519 --execute
+
+# 券商成交导入（Markdown 表/CSV → FIFO 配对落库；历史事实不过入场闸门，导入后自动合规汇总）
+python review/cli.py import --file 成交.md --year 2026 --dry-run   # 先演练
+python review/cli.py import --file 成交.csv --symbol-map 通源石油=300164,壹连科技=301631
+
+# 卖点检查单（卖出前：止损/退出通道警报 + 持有天数 + 热点池 + 建议挂单价=收盘×0.99）
+python review/cli.py sell-check 600519
 
 # 持仓摘要（未实现盈亏/风险敞口/回撤状态）
 python review/cli.py positions
 
-# 列出 / 统计 / 合规检查
+# 列出 / 统计 / 合规检查（check 末尾附纪律审计摘要）
 python review/cli.py list
 python review/cli.py stats --by-strategy   # 同时写【10】实盘记录/统计/
 python review/cli.py check
 
-# 生成周报 / 月报（写入 【10】实盘记录/，含「信号验证」节）
+# 生成周报 / 月报（写入 【10】实盘记录/，含「信号验证」「纪律审计」节）
 python review/cli.py weekly
 python review/cli.py monthly
 ```
@@ -270,7 +278,7 @@ python -m pytest tests/test_monitor.py -v
 python -m pytest tests/test_signal_tracker.py -v
 ```
 
-共 151 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 41、信号追踪 14、策略参数 19、回测 12、热点池 9。全部离线运行，不依赖 API Key 或网络。
+共 196 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 46（含 from-scan HOT-S 与禁买板块）、信号追踪 14、策略参数 19、回测 12、热点池 9、券商导入 14、纪律审计 14、卖点检查 9、统计口径 3。全部离线运行，不依赖 API Key 或网络。
 
 ## 目录结构
 
@@ -305,16 +313,18 @@ Invest/
 │   ├── strategies.py
 │   └── run_backtest.py    # 资金曲线 + 回撤图
 ├── review/                # 交易复盘
-│   ├── cli.py             # 含 from-scan/positions 子命令，建仓过合规闸门
+│   ├── cli.py             # 含 from-scan/positions/import/sell-check 子命令，建仓过合规闸门
 │   ├── trade_log.py
 │   ├── monitor.py         # 持仓监控 + 回撤状态推导
 │   ├── entry_gate.py      # 入场合规闸门
 │   ├── buy_card.py        # 买入卡生成（写 vault）
 │   ├── positions.py       # 持仓视图与风险敞口（含未实现盈亏）
+│   ├── import_broker.py   # 券商成交导入（MD 表/CSV → FIFO 配对落库）
+│   ├── discipline_audit.py # 纪律自动审计（5 条行为规则，周报/月报/check 共用）
 │   ├── metrics.py
 │   ├── compliance_check.py
 │   └── report_generator.py
-├── tests/                 # 单元测试（151 用例）
+├── tests/                 # 单元测试（196 用例）
 ├── data/                  # 数据存储
 │   ├── market.db
 │   ├── trades.json
@@ -340,10 +350,12 @@ Invest/
 | `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 空 |
 | `CUSTOM_LLM_API_KEY` | 自定义 LLM 密钥 | 空 |
 | `CUSTOM_LLM_BASE_URL` | 自定义 LLM 端点 | 空 |
-| `ACCOUNT_EQUITY` | 账户权益（元） | 1000000 |
+| `ACCOUNT_EQUITY` | 账户权益（元） | 32500 |
 | `DRAWDOWN_STATE` | 回撤状态（未设置时自动推导，冲突以推导值为准） | Normal |
 | `ENABLE_SCHEDULER` | 启用定时调度 | false |
-| `SCHEDULER_TIME` | 定时运行时间 | 08:30 |
+| `SCHEDULER_TIME` | 定时盘前时间 | 08:30 |
+| `WEEKLY_REVIEW_TIME` | 定时周报时间（每周五） | 15:45 |
+| `MONTHLY_REVIEW_TIME` | 定时月报时间（每月最后一天） | 16:00 |
 | `SERVER_PORT` | API 服务端口 | 8900 |
 
 ## 关联文档

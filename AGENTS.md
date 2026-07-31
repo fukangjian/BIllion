@@ -10,7 +10,7 @@
 
 - **信息整理**：A 股行情抓取（AkShare）、公告/财报/产业链研究（LLM）、每日研究日报
 - **计算执行**：技术指标、市场扫描（突破候选）、仓位计算、策略回测
-- **纪律审计**：持仓监控（止损/退出警报）、交易日志、入场合规闸门、周/月复盘报告、信号验证
+- **纪律审计**：持仓监控（止损/退出警报）、交易日志、入场合规闸门、行为纪律自动审计（5 条规则）、周/月复盘报告、信号验证
 
 仓库其余目录（`【1】宏观经济` … `【11】统一体系`）均为 Markdown 笔记，无代码。其中 `【10】实盘记录/` 是 Invest 复盘模块的输出目标（买入卡/周报/月报/统计直接写入 vault），`【11】统一体系/投资体系_V5.0.md` 是合规规则与策略命名的业务依据。
 
@@ -47,12 +47,14 @@ E:/Billion/                     # Obsidian vault 根
     │   └── industry_mapper.py      # 产业链映射
     ├── backtest/               # Backtrader 回测（S1-A / S2-A 策略，与实盘共用 config 策略参数）
     ├── review/                 # 交易复盘
-    │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/from-scan
+    │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/import/sell-check/from-scan
     │   ├── trade_log.py        # Trade dataclass + trades.json 存储
     │   ├── monitor.py          # 持仓监控：止损/退出通道警报、回撤状态自动推导
     │   ├── entry_gate.py       # 入场合规闸门（高级违规拒绝，--force 留痕）
     │   ├── buy_card.py         # 建仓后自动生成买入卡（写入 vault 交易日志/）
     │   ├── positions.py        # 持仓视图、风险敞口、未实现盈亏（market.db 收盘价）
+    │   ├── import_broker.py    # 券商成交导入（MD 表/CSV → FIFO 配对落库，不过入场闸门）
+    │   ├── discipline_audit.py # 纪律自动审计（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
     │   ├── metrics.py / compliance_check.py / report_generator.py
     ├── tests/                  # pytest 单元测试（142 用例）
     ├── data/                   # 数据存储（market.db、trades.json、公告与 LLM 缓存）
@@ -97,7 +99,9 @@ python review/cli.py from-scan 600519             # 只打印突破参数与建�
 python review/cli.py from-scan 600519 --execute   # 一键建仓：仓位计算→合规闸门→写库→生成买入卡
 python review/cli.py add 600519 --account 核心 --system S1-A --entry 1800 --stop 1700 --risk 0.5 --shares 100
 python review/cli.py positions                    # 持仓摘要（未实现盈亏/风险敞口/回撤状态）
-python review/cli.py check                        # 手动合规检查
+python review/cli.py check                        # 手动合规检查（末尾附纪律审计摘要）
+python review/cli.py import --file 成交.md --year 2026 --dry-run   # 券商成交导入（先演练，--symbol-map 补名称映射）
+python review/cli.py sell-check 600519            # 卖点检查单（卖出前：止损/通道/持有天数/建议挂单价）
 python position_calculator.py -s 600519 -e 1800 --stop 1700 -t 核心 --equity 1000000
 
 # —— 信号验证与复盘 ——
@@ -121,13 +125,13 @@ $env:DEEPSEEK_API_KEY="sk-..."    # 备选
 $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端点
 ```
 
-其他环境变量：`ACCOUNT_EQUITY`（默认 1000000）、`DRAWDOWN_STATE`（Normal/Caution/Defensive/Review；未显式设置时由 `review/monitor.py` 按权益曲线自动推导，冲突时以推导值为准）、`SERVER_PORT`（8900）等，完整列表见 `Invest/README.md` 与 `Invest/ARCHITECTURE.md` 第 7 章。
+其他环境变量：`ACCOUNT_EQUITY`（默认 32500，3.25 万实盘）、`DRAWDOWN_STATE`（Normal/Caution/Defensive/Review；未显式设置时由 `review/monitor.py` 按权益曲线自动推导，冲突时以推导值为准）、`WEEKLY_REVIEW_TIME`（15:45，周五自动周报）、`MONTHLY_REVIEW_TIME`（16:00，月末自动月报）、`SERVER_PORT`（8900）等，完整列表见 `Invest/README.md` 与 `Invest/ARCHITECTURE.md` 第 7 章。
 
 ## 5. 开发约定
 
 改动代码时请遵守以下既有约定（源自 `ARCHITECTURE.md` 与代码实践）：
 
-- **配置集中化**：所有路径、API、规则参数统一放 `config.py`，**禁止在业务代码中硬编码** vault 路径、密钥或规则数值。合规规则（风险上限、仓位上限、簇限制）映射「投资体系 V5.0」，改动需与该体系对齐。**策略参数单一来源**：通道周期、ATR、止损倍数、加仓间距等全部在 `STRATEGY_PARAMS` / `ATR_*` / `ADD_SPACING_*`，扫描、监控、信号追踪、回测、仓位计算共同引用，不得另起字面量。
+- **配置集中化**：所有路径、API、规则参数统一放 `config.py`，**禁止在业务代码中硬编码** vault 路径、密钥或规则数值。合规规则（风险上限、仓位上限、簇限制）映射「投资体系 V5.0」，限额已按 3.25 万小资金校准（2026-07），改动需与该体系对齐；`BANNED_BOARD_PREFIXES=("300","301")` 禁买创业板为建仓闸门高级违规。**策略参数单一来源**：通道周期、ATR、止损倍数、加仓间距等全部在 `STRATEGY_PARAMS` / `ATR_*` / `ADD_SPACING_*`，扫描、监控、信号追踪、回测、仓位计算共同引用，不得另起字面量。
 - **注释与文档使用中文**。部分业务数据结构直接使用中文键名/字段名（如 `review/trade_log.py` 的 `Trade` dataclass 字段为中文），保持一致，不要擅自英文化。
 - **模块独立可运行**：每个脚本都有 `if __name__ == "__main__"` CLI 入口，可单独调试；脚本/测试文件顶部用 `sys.path.insert(0, str(ROOT))` 定位项目根后再 `from config import ...`。
 - **优雅降级**：无 LLM Key、网络失败、数据源不可用时必须仍能输出原始数据或 fallback 模板，并在报告中标注；单只股票抓取失败不阻塞其他标的；持仓监控/信号追踪失败不得拖垮扫描与日报主流程。
@@ -142,7 +146,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **151 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 41 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9），已验证全部通过（`151 passed`）。
+- 框架：pytest，目录 `Invest/tests/`，共 **196 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3），已验证全部通过（`196 passed`）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。
@@ -162,7 +166,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 1. **CLI**：各模块脚本直接运行（日常主力）。
 2. **FastAPI 服务**：`python server.py`，供 Obsidian/Webhook/脚本 HTTP 触发。
-3. **定时调度**：服务内设 `ENABLE_SCHEDULER=true` + `SCHEDULER_TIME=08:30`，APScheduler 每日自动盘前（取数→扫描→持仓监控→信号结算→日报）。
+3. **定时调度**：服务内设 `ENABLE_SCHEDULER=true` + `SCHEDULER_TIME=08:30`，APScheduler 每日自动盘前（取数→扫描→持仓监控→信号结算→日报）；另有两个 cron job——每周五 `WEEKLY_REVIEW_TIME`（15:45）自动生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）自动生成月报。
 
 ## 9. 已知限制（摘自 ARCHITECTURE.md 第 13 章）
 

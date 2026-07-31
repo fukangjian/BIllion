@@ -1,6 +1,6 @@
 # Invest 项目架构与设计文档
 
-> 版本：基于 2026-07-31 代码库（实战化改造后：持仓监控闭环、入场合规闸门、信号验证、回测同口径、超短热点池 HOT-S）  
+> 版本：基于 2026-07-31 代码库（实战化改造后：持仓监控闭环、入场合规闸门、信号验证、回测同口径、超短热点池 HOT-S、券商成交导入与纪律审计）  
 > 受众：后续迭代开发者  
 > 项目路径：`e:\Billion\Invest`
 
@@ -43,13 +43,15 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
 | **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库、逐根回放结算、胜率/平均R 统计（持有天数按系统分：HOT-S=5） |
 | 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链 |
-| 交易复盘 | `review/` | 交易日志、合规、周报月报 |
+| 交易复盘 | `review/` | 交易日志、合规、周报月报（含纪律审计节） |
 | **持仓监控** | `review/monitor.py` | 止损/退出通道警报、回撤状态自动推导 |
 | **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查，高级违规拒绝，`--force` 留痕 |
 | **买入卡** | `review/buy_card.py` | 建仓后自动生成买入卡（写 vault 交易日志/） |
 | 持仓视图 | `review/positions.py` | 开放持仓、风险敞口、未实现盈亏（market.db 收盘价） |
+| **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
+| **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池（151 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、导入、纪律、卖点检查、统计口径（196 用例） |
 
 ---
 
@@ -198,14 +200,18 @@ flowchart LR
         metrics[metrics.py]
         compliance[compliance_check.py]
         report_gen[report_generator.py]
+        import_broker[import_broker.py]
+        discipline[discipline_audit.py]
         cli[cli.py]
     end
 
     positions --> trade_log
-    cli --> trade_log & metrics & compliance & report_gen
+    cli --> trade_log & metrics & compliance & report_gen & import_broker & discipline
     metrics --> trade_log & utils
     compliance --> trade_log & config
-    report_gen --> trade_log & metrics & compliance
+    report_gen --> trade_log & metrics & compliance & discipline
+    import_broker --> trade_log & utils
+    discipline --> trade_log & config
 
     subgraph backtest
         strategies[strategies.py]
@@ -347,8 +353,10 @@ sequenceDiagram
 | `_do_pre_market` | `(skip_fetch: bool = False, symbols: list[str] \| None = None) -> dict` | pipeline + research |
 | `_execute_task` | `(task_name: str, func, state_key: str) -> dict` | 串行任务执行与状态更新 |
 | `_parse_schedule_time` | `(time_str: str) -> tuple[int, int]` | 解析 HH:MM |
-| `_scheduled_pre_market` | `() -> None` | 定时任务回调 |
-| `_start_scheduler` | `() -> None` | 启动 BackgroundScheduler |
+| `_scheduled_pre_market` | `() -> None` | 定时盘前回调 |
+| `_do_weekly_review` / `_do_monthly_review` | `() -> dict` | 调用 generate_weekly/monthly_report（写 vault 每周/每月复盘目录） |
+| `_scheduled_weekly_review` / `_scheduled_monthly_review` | `() -> None` | 定时周/月报回调（已有任务运行则跳过，失败仅记日志） |
+| `_start_scheduler` | `() -> None` | 启动 BackgroundScheduler（盘前 + 周报 + 月报三个 cron job） |
 | `on_startup` | `() -> None` | 服务启动钩子 |
 | `on_shutdown` | `() -> None` | 关闭调度器与线程池 |
 | `main` | `() -> None` | uvicorn 启动 |
@@ -368,7 +376,10 @@ sequenceDiagram
 **调度配置**（见 `config.py`）：
 - `SCHEDULER_ENABLED`：环境变量 `ENABLE_SCHEDULER=true` 时启用
 - `SCHEDULER_TIME`：默认 `08:30`，CronTrigger 每日触发 `_scheduled_pre_market`
-- 任务串行：已有任务运行时返回 HTTP 409
+- `WEEKLY_REVIEW_TIME`：默认 `15:45`，CronTrigger 每周五触发 `_scheduled_weekly_review`（生成周报，写 vault 每周复盘/）
+- `MONTHLY_REVIEW_TIME`：默认 `16:00`，CronTrigger 每月最后一天触发 `_scheduled_monthly_review`（生成月报，写 vault 每月复盘/）
+- 三个定时 job 均经 `_execute_task` 串行执行；任务串行：已有任务运行时 HTTP 触发返回 409，定时 job 则跳过本次
+- `/status` 的 `scheduler` 字段展示三个调度时间，`last_weekly_review` / `last_monthly_review` 记录最近运行
 
 **启动方式**：
 
@@ -667,20 +678,51 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 | `_calc_unrealized_pnl` | `(trade: Trade) -> Optional[dict]` | 未实现盈亏/浮动 R（market.db 最新收盘价为市价源，非盘中实时） |
 | `print_portfolio_summary` | `(trade_log=None, account_equity=ACCOUNT_EQUITY) -> None` | 终端持仓摘要（含市价数据日期、回撤状态） |
 
+#### `import_broker.py` — 券商成交导入
+
+**职责**：解析券商成交明细（Markdown 表 / CSV），名称→代码解析后按代码 FIFO 配对买卖，生成已平仓/持仓 Trade 落库。导入的是历史事实，**不过入场合规闸门**；导入后由 cli 自动打印合规汇总（如实报告「缺少止损」等历史问题）。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `parse_broker_markdown` | `(text: str, year: int) -> list[dict]` | MD 成交表 → 记录列表（日期无年份用 year 补齐，金额支持千分位逗号；其他表格自动跳过） |
+| `parse_broker_csv` | `(path, year: int) -> list[dict]` | 券商 CSV → 记录列表（表头别名归一，`_CSV_HEADER_ALIASES`） |
+| `resolve_symbols` | `(records, symbol_map=None) -> list[str]` | 名称→代码原地写回（symbol_map 手动映射优先，其次 `get_symbol_by_name`）；返回未解析名称 |
+| `pair_trades` | `(records) -> (closed, open_positions, unpaired_sells)` | 按代码 FIFO 配对（支持部分成交拆分）；窗口前建仓导致的未配对卖出只报告不落库 |
+| `build_trades` | `(closed, open_positions, account_type="事件", entry_system="", cluster="") -> list[Trade]` | 配对结果 → Trade（是否系统内交易=False、止损价=0.0、备注="券商导入"，含入场/退出时间） |
+| `import_records` | `(records, trade_log, symbol_map=None, account_type="事件", entry_system="", dry_run=False) -> dict` | 幂等落库（键：日期+股票代码+入场价+股数）；dry_run 只统计；返回 新增/跳过/未配对卖出/未解析名称/trades |
+| `parse_symbol_map` | `(text: str) -> dict` | `'通源石油=300164,...'` → 映射 dict |
+| `load_records_from_file` / `print_import_summary` | — | 按扩展名选 MD/CSV 解析 / 打印导入汇总（模块 `__main__` 与 cli `import` 子命令共用） |
+
+#### `discipline_audit.py` — 纪律自动审计
+
+**职责**：对交易列表跑 5 条行为纪律规则（阈值取自 config），输出汇总+明细 Markdown；周报/月报「纪律审计」节与 `cli check` 末尾摘要共用。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `audit_discipline` | `(trades: list[Trade]) -> list[Finding]` | 5 条规则扫描（按固定规则顺序分组） |
+| `audit_to_markdown` | `(findings: list[Finding]) -> str` | 汇总表（各规则命中数）+ 明细表；空则 `[PASS]` |
+| `Finding` | dataclass | 规则/严重程度/交易编号/股票代码/描述/建议 |
+
+**规则清单**（严重程度）：追高接回（高，同代码当日先卖后买且买价 > 卖价；两笔都有时间字段时要求买在卖后，缺时间按日期+价格降级判定并注明）、闪电换仓（中，买入与当日他股卖出间隔 < `DISCIPLINE_SWITCH_MINUTES`=30 分钟，缺时间跳过）、禁买板块（高，代码前缀命中 `BANNED_BOARD_PREFIXES`）、无止损（中，止损价 ≤ 0）、非系统交易（低，是否系统内交易=False）。
+
 #### `trade_log.py` / `metrics.py` / `compliance_check.py` / `report_generator.py`
 
-（同前版本。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`。`report_generator` 新增 `signal_verification_section(days=90)`，周报/月报含「信号验证」节。）
+（同前版本。增量：`Trade` 新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""，向后兼容，券商导入与纪律审计用）。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`；`check_single_trade` 新增「禁买板块」高级违规（代码 zfill 后前缀命中 `BANNED_BOARD_PREFIXES`，建仓闸门默认拒绝）。`metrics.TradeStats` 新增 `总盈亏金额`（已平仓盈亏合计，元）；胜率改为金额符号口径（无止损的历史导入交易也可统计），R 系指标仍仅统计有止损交易；`stats_to_markdown` 增加「总盈亏金额」行。`report_generator` 新增 `signal_verification_section(days=90)` 与 `discipline_audit_section(trades)`：周报含「五、纪律审计」节（原五/六顺延为六/七），月报含「七、纪律审计」节（原七/八顺延为八/九），审计异常降级 `_纪律审计不可用_`。）
 
 #### `cli.py`
 
-子命令：`add`, `update`, `list`, `show`, `stats`, `weekly`, `monthly`, `check`, `positions`, **`from-scan`**
+子命令：`add`, `update`, `list`, `show`, `stats`, `weekly`, `monthly`, `check`, `positions`, `import`, `sell-check`, **`from-scan`**
 
-- **`add`**：写入前自动过入场合规闸门（`entry_gate`）；`--system` 校验 `STRATEGY_CODES`；`--equity`/`--force`；成功后自动生成买入卡
+- **`add`**：写入前自动过入场合规闸门（`entry_gate`）；`--system` 校验 `STRATEGY_CODES`；`--equity`/`--force`；`--time` 记录入场时间（HH:MM:SS，纪律审计用）；成功后自动生成买入卡
+- **`update`**：`--exit-time` 记录退出时间（HH:MM:SS）
 - **`positions`**：调 `print_portfolio_summary`（未实现盈亏/风险敞口/回撤状态）
 - **`stats`**：终端输出同时写 `STATS_OUTPUT_DIR/{date}_交易统计.md`
-- **`from-scan`**：默认只打印建议（收盘价/ATR 止损/示例命令）；`--execute` 一键建仓：信号→止损=close−2×ATR→`calc_position`→合规闸门→写 Trade→买入卡；同股双信号默认 S2-A（`--system` 覆盖），`--account/--equity/--force` 可调
+- **`check`**：合规检查末尾追加纪律审计摘要（`discipline_audit`，审计失败仅警告）
+- **`import`**：券商成交导入（`--file` .md/.csv、`--year` 补全年份、`--symbol-map 名称=代码,...`、`--account`、`--dry-run`），解析 → FIFO 配对 → 落库（历史事实，不过入场闸门）→ 自动打印合规汇总
+- **`sell-check <代码>`**：卖点检查单（全程离线，异常降级不崩）：止损/退出通道警报（复用 `monitor._check_single_position`）、持有天数与 HOT-S 强制离场倒计时（`SIGNAL_MAX_HOLDING_BY_SYSTEM` 交易日口径，自然日近似）、是否在最新一期热点池、建议挂单价 = 最新收盘 × 0.99（日志教训：挂低 1% 防挂高未成交）；该代码无持仓时列出当前持仓
+- **`from-scan`**：默认只打印建议（收盘价/ATR 止损/示例命令）；`--execute` 一键建仓：信号→止损=close−2×ATR→`calc_position`→合规闸门→写 Trade→买入卡；支持热点池突破候选（scan JSON `hot_pool.hot_breakout`，系统 HOT-S，默认账户 事件——cli 本地特判，`SYSTEM_DEFAULT_ACCOUNT` 未含该键）；同股双信号默认 S2-A（`--system S1-A/S2-A/HOT-S` 覆盖），`--account/--equity/--force` 可调
 
-内部辅助：`_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`, `_resolve_cluster`, `_apply_entry_gate`, `_execute_from_scan`
+内部辅助：`_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`（返回数据与系统 S1-A/S2-A/HOT-S）, `_default_account_for_system`, `_resolve_cluster`, `_apply_entry_gate`, `_execute_from_scan`, `build_sell_check_lines`（纯函数，可测）, `_symbol_in_hot_pool`（池空/读取失败返回 None 降级）
 
 ---
 
@@ -738,7 +780,7 @@ CREATE TABLE IF NOT EXISTS hot_pool (
 
 ### 5.2 JSON 结构（`data/trades.json`）
 
-（同前版本。）
+（同前版本。新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""），历史记录无该字段向后兼容，券商导入与 `add --time` / `update --exit-time` 写入。）
 
 ### 5.3 文件存储布局
 
@@ -855,9 +897,10 @@ flowchart TD
 | 策略枚举 | `STRATEGY_CODES`, `STRATEGY_INFO`, `ACCOUNT_TYPES`, `SYSTEM_DEFAULT_ACCOUNT` | 投资体系 V5.0 |
 | 监控/回撤 | `DRAWDOWN_THRESHOLDS`, `MONTHLY_DRAWDOWN_LIMITS`, `EXIT_CHANNEL_PERIODS` | 投资体系 V5.0 §6 |
 | 信号追踪 | `SIGNAL_MAX_HOLDING_DAYS`, `SIGNAL_MAX_HOLDING_BY_SYSTEM`, `SIGNAL_STATS_MIN_SAMPLE` | 代码默认 |
-| 服务/调度 | `SERVER_HOST`, `SERVER_PORT`, `SCHEDULER_*` | 环境变量 |
+| 服务/调度 | `SERVER_HOST`, `SERVER_PORT`, `SCHEDULER_*`, `WEEKLY_REVIEW_TIME`, `MONTHLY_REVIEW_TIME` | 环境变量 |
 | 复盘 | `ACCOUNT_EQUITY`, `DRAWDOWN_STATE`, `TRADE_LOG_OUTPUT_DIR` | 环境变量/代码推导 |
-| 合规 | `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `INDUSTRY_MAP` | 投资体系 V5.0 |
+| 合规 | `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `INDUSTRY_MAP`, `BANNED_BOARD_PREFIXES` | 投资体系 V5.0（限额已按 3.25 万小资金校准，2026-07） |
+| 纪律审计 | `DISCIPLINE_SWITCH_MINUTES`, `BANNED_BOARD_PREFIXES` | 自有纪律（代码默认） |
 
 ### 7.2 环境变量
 
@@ -873,10 +916,12 @@ flowchart TD
 | `CUSTOM_LLM_API_KEY` | `""` | 自定义 OpenAI 兼容密钥 |
 | `CUSTOM_LLM_BASE_URL` | `""` | 自定义 base_url |
 | `CUSTOM_LLM_MODEL` | `""` | 自定义模型名 |
-| `ACCOUNT_EQUITY` | `1000000` | 合规检查基准权益 |
+| `ACCOUNT_EQUITY` | `32500` | 合规检查基准权益（3.25 万实盘） |
 | `DRAWDOWN_STATE` | `Normal` | Normal/Caution/Defensive/Review |
 | `ENABLE_SCHEDULER` | `""` | 设为 `true` 启用定时盘前 |
 | `SCHEDULER_TIME` | `08:30` | 定时触发时间 HH:MM |
+| `WEEKLY_REVIEW_TIME` | `15:45` | 定时周报时间 HH:MM（每周五） |
+| `MONTHLY_REVIEW_TIME` | `16:00` | 定时月报时间 HH:MM（每月最后一天） |
 | `SERVER_HOST` | `127.0.0.1` | FastAPI 绑定地址 |
 | `SERVER_PORT` | `8900` | FastAPI 端口 |
 
@@ -959,7 +1004,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/status"
 Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 ```
 
-**定时调度**：`ENABLE_SCHEDULER=true` 时，服务启动后 BackgroundScheduler 每日 `SCHEDULER_TIME` 自动执行盘前流程；若已有任务运行则跳过。
+**定时调度**：`ENABLE_SCHEDULER=true` 时，服务启动后 BackgroundScheduler 每日 `SCHEDULER_TIME` 自动执行盘前流程，每周五 `WEEKLY_REVIEW_TIME`（15:45）自动生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）自动生成月报；若已有任务运行则跳过。
 
 ### 10.3 盘后/周期性流程
 
@@ -968,18 +1013,20 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 交易录入 | `review/cli.py add ...` | trades.json + 买入卡（先过合规闸门） |
 | 从扫描查看 | `review/cli.py from-scan 600519` | 终端建议参数（不落库） |
 | 从扫描建仓 | `review/cli.py from-scan 600519 --execute` | 仓位计算→闸门→trades.json + 买入卡 |
-| 平仓更新 | `review/cli.py update ... --exit-price` | 自动算 R |
+| 平仓更新 | `review/cli.py update ... --exit-price` | 自动算 R（`--exit-time` 记退出时间） |
+| 券商导入 | `review/cli.py import --file 成交.md --year 2026 [--dry-run]` | FIFO 配对落库 + 导入后合规汇总 |
+| 卖点检查 | `review/cli.py sell-check 600519` | 止损/通道警报 + 持有天数 + 热点池 + 建议挂单价（收盘×0.99） |
 | 合规审计 | `review/cli.py check` | 终端报告 |
 | 持仓摘要 | `review/cli.py positions` | 未实现盈亏/敞口/回撤状态 |
 | 持仓监控 | `review/monitor.py`（盘前流程已自动执行） | 止损/退出警报 JSON |
 | 热点池构建 | `pipeline/hot_pool.py`（盘前流程已自动执行） | limit_pool/hot_pool 表 + 池内日线补抓 |
 | 信号统计 | `pipeline/signal_tracker.py stats --days 90` | 各系统胜率/平均R/PF（HOT-S 独立成组） |
 | 仓位计算 | `position_calculator.py -t 核心 --check-existing ...` | 含 trades.json 簇检查 |
-| 周末 | `review/cli.py weekly` | vault 周报（含信号验证节） |
-| 月末 | `review/cli.py monthly` | vault 月报（含信号验证节） |
+| 周末 | `review/cli.py weekly` | vault 周报（含信号验证、纪律审计节；调度器每周五 15:45 自动生成） |
+| 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 151 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 196 passed |
 
 ### 10.4 模块联动点
 
@@ -1142,6 +1189,23 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 4 | 按系统分持有天数 | `SIGNAL_MAX_HOLDING_BY_SYSTEM`（HOT-S=5 个交易日强制结算；未列出系统沿用 `SIGNAL_MAX_HOLDING_DAYS`=20）；HOT-S 无退出通道，仅止损/到期 |
 | 5 | 测试 | `tests/test_hot_pool.py` 9 用例（字段映射/单池降级/合并优先级/上限截断/表读写幂等/HOT-S 到期/按系统分组），全量 151 passed |
 
+### 13.7 券商导入与纪律审计（2026-07-31 ✅）
+
+**背景**：3.25 万小资金实盘起步，历史券商成交需落库复盘；7 月交易日志暴露追高接回、闪电换仓、创业板破例（壹连科技/通源石油两次违规实亏）等行为问题——需系统级自动审计，不能靠自觉。
+
+| # | 方向 | 实现方式 |
+|---|------|----------|
+| 1 | 权益与限额按 3.25 万校准 | `ACCOUNT_EQUITY` 默认 32500（env 可覆盖）；`RISK_LIMITS_NORMAL` 核心/产业/创新药/事件 1.0、实验 0.5、预埋 0.15，`RISK_LIMITS_DRAWDOWN` 减半（预埋 0）；`POSITION_LIMITS` 核心 30/产业 20/创新药 20/事件 60/实验 15；`RISK_CLUSTER_LIMITS` 全部 exposure 60、stop_risk 1.0（小资金集中轮动，簇限与单票上限对齐） |
+| 2 | 禁买创业板 | `BANNED_BOARD_PREFIXES=("300","301")`；`check_single_trade` 新增「禁买板块」高级违规，建仓闸门默认拒绝；置空元组即关闭 |
+| 3 | 券商成交导入 | `review/import_broker.py` + `cli import`（--file/--year/--symbol-map/--account/--dry-run）：MD 表/CSV → 名称解析 → FIFO 配对 → 幂等落库（键：日期+代码+入场价+股数）；历史事实不过入场闸门，导入后自动打印合规汇总；窗口前建仓的未配对卖出只报告 |
+| 4 | 纪律自动审计 | `review/discipline_audit.py`：`audit_discipline` 5 条规则（追高接回 高/闪电换仓 中/禁买板块 高/无止损 中/非系统交易 低）；周报「五、纪律审计」、月报「七、纪律审计」、`cli check` 末尾摘要三处接入，异常降级 `_纪律审计不可用_` |
+| 5 | 交易时间戳 | `Trade` 新增可选字段 `入场时间`/`退出时间`（HH:MM:SS，默认 ""）；`add --time` / `update --exit-time`；追高接回与闪电换仓的时间判定依赖 |
+| 6 | 卖点检查单 | `cli sell-check <代码>`：止损/退出通道警报（复用 `monitor._check_single_position`）+ 持有天数 + HOT-S 5 日倒计时 + 是否在热点池 + 建议挂单价=收盘×0.99（日志教训：挂低 1% 防挂高未成交），全程离线降级 |
+| 7 | from-scan 支持 HOT-S | 热点池突破候选（scan JSON `hot_pool.hot_breakout`）可直接 `--execute` 建仓（系统 HOT-S，默认账户 事件）；`STRATEGY_CODES` 增为 6 个，`STRATEGY_INFO` 补 HOT-S |
+| 8 | 周/月报自动调度 | server.py 新增两个 cron job：每周五 `WEEKLY_REVIEW_TIME`（15:45）生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）生成月报，均经 `_execute_task` 串行，`/status` 展示 |
+| 9 | 统计口径 | `TradeStats.总盈亏金额`（已平仓盈亏合计，元）；胜率改金额符号口径（无止损历史交易也可统计）；R 系指标仍仅统计有止损交易 |
+| 10 | 测试 | 新增 `test_import_broker.py`（14）/`test_discipline_audit.py`（14）/`test_sell_check.py`（9）/`test_metrics.py`（3），`test_compliance_gate.py` 增加 TestFromScanHot（41→46），全量 196 passed |
+
 ---
 
 ## 14. 附录
@@ -1166,6 +1230,8 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `_execute_task(task_name, func, state_key) -> dict`
 - `_parse_schedule_time(time_str) -> tuple[int, int]`
 - `_scheduled_pre_market()`, `_start_scheduler()`
+- `_do_weekly_review()`, `_do_monthly_review()` — 生成周/月报（写 vault）
+- `_scheduled_weekly_review()`, `_scheduled_monthly_review()` — 定时回调（cron：每周五 / 每月最后一天）
 - `on_startup()`, `on_shutdown()`, `main()`
 - 端点: `GET /`, `POST /pre-market`, `POST /pipeline`, `POST /research`, `GET /status`, `GET /latest-scan`, `GET /latest-report`
 
@@ -1217,6 +1283,29 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `calc_dict_from_trade(trade, equity) -> dict`
 - `build_buy_card_content(trade, calc, scan_info) -> str`
 - `generate_buy_card(trade, calc, scan_info, output_dir) -> Path | None`
+
+</details>
+
+<details>
+<summary>review/import_broker.py</summary>
+
+- `parse_broker_markdown(text, year) -> list[dict]`, `parse_broker_csv(path, year) -> list[dict]`
+- `resolve_symbols(records, symbol_map) -> list[str]`（返回未解析名称）
+- `pair_trades(records) -> (closed, open_positions, unpaired_sells)`（FIFO，支持部分成交拆分）
+- `build_trades(closed, open_positions, account_type, entry_system, cluster) -> list[Trade]`
+- `import_records(records, trade_log, symbol_map, account_type, entry_system, dry_run) -> dict`（幂等落库）
+- `parse_symbol_map(text)`, `load_records_from_file(path, year)`, `print_import_summary(result, dry_run)`
+- `main()`
+
+</details>
+
+<details>
+<summary>review/discipline_audit.py</summary>
+
+- `audit_discipline(trades) -> list[Finding]` — 5 条规则（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
+- `audit_to_markdown(findings) -> str` — 汇总表 + 明细表
+- `Finding` dataclass；规则常量 `RULE_*` / `RULE_ORDER` / `RULE_SEVERITY`
+- `main()`
 
 </details>
 
@@ -1311,11 +1400,13 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 <details>
 <summary>review/cli.py</summary>
 
-- `cmd_add`（合规闸门 + 买入卡）, `cmd_update`, `cmd_list`, `cmd_stats`（写 vault 统计）, `cmd_weekly`, `cmd_monthly`, `cmd_check`, `cmd_show`
+- `cmd_add`（合规闸门 + 买入卡，`--time` 入场时间）, `cmd_update`（`--exit-time` 退出时间）, `cmd_list`, `cmd_stats`（写 vault 统计）, `cmd_weekly`, `cmd_monthly`, `cmd_check`（末尾附纪律审计摘要）, `cmd_show`
 - `cmd_positions` — 持仓摘要（未实现盈亏/敞口/回撤状态）
-- `cmd_from_scan(args)` — 默认只打印；`--execute` 一键建仓（仓位→闸门→写库→买入卡）
-- `_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`
-- `_resolve_cluster`, `_apply_entry_gate`, `_execute_from_scan`
+- `cmd_import` — 券商成交导入（--file/--year/--symbol-map/--account/--dry-run，导入后自动合规汇总）
+- `cmd_sell_check` — 卖点检查单；`build_sell_check_lines`（纯函数）, `_symbol_in_hot_pool`
+- `cmd_from_scan(args)` — 默认只打印；`--execute` 一键建仓（仓位→闸门→写库→买入卡）；支持热点池候选（HOT-S，默认账户 事件）
+- `_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`（含 hot_pool.hot_breakout → HOT-S）
+- `_resolve_cluster`, `_apply_entry_gate`, `_execute_from_scan`, `_default_account_for_system`
 - `main()`
 
 </details>
@@ -1332,17 +1423,21 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（151 用例，全部离线）</summary>
+<summary>tests/（196 用例，全部离线）</summary>
 
 - `test_indicators.py` — 13 用例（含市场宽度取最新日回归）
 - `test_compliance.py` — 12 用例
 - `test_positions.py` — 8 用例
 - `test_monitor.py` — 23 用例（止损/退出通道/回撤推导）
-- `test_compliance_gate.py` — 41 用例（口径统一/闸门/force 留痕/from-scan --execute/买入卡）
+- `test_compliance_gate.py` — 46 用例（口径统一/闸门/force 留痕/from-scan --execute 含 HOT-S/买入卡/禁买板块）
 - `test_signal_tracker.py` — 14 用例（入库去重/回放结算/统计）
 - `test_strategy_params.py` — 19 用例（config 单一来源/枚举/簇映射）
 - `test_backtest.py` — 12 用例（加仓间距/单位 R/合成行情全流程）
 - `test_hot_pool.py` — 9 用例（fetch_limit_pools 字段映射与单池降级/_merge_pool 合并优先级与上限/两表读写幂等/HOT-S 五日到期/按系统分组）
+- `test_import_broker.py` — 14 用例（MD/CSV 解析/名称映射/FIFO 配对/未配对卖出/幂等/dry-run）
+- `test_discipline_audit.py` — 14 用例（5 条规则/时间缺失降级/Markdown 输出）
+- `test_sell_check.py` — 9 用例（警报复用/持有天数/HOT-S 倒计时/热点池降级/建议挂单价）
+- `test_metrics.py` — 3 用例（总盈亏金额/胜率金额口径/无止损交易）
 
 </details>
 
@@ -1405,10 +1500,23 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `SERVER_PORT` | 8900 |
 | `SCHEDULER_ENABLED` | `ENABLE_SCHEDULER=true` |
 | `SCHEDULER_TIME` | `08:30` |
+| `WEEKLY_REVIEW_TIME` | `15:45`（每周五生成周报） |
+| `MONTHLY_REVIEW_TIME` | `16:00`（每月最后一天生成月报） |
 
 #### 复盘 / 合规
 
-（同前版本：`ACCOUNT_EQUITY`, `DRAWDOWN_STATE`, `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `FORBIDDEN_IN_DRAWDOWN`。`VALID_ENTRY_SYSTEMS` 已删除，策略枚举统一为 `STRATEGY_CODES` + `STRATEGY_INFO`（5 策略）；新增 `ACCOUNT_TYPES`, `SYSTEM_DEFAULT_ACCOUNT`, `INDUSTRY_MAP`（值对齐簇键）, `TRADE_LOG_OUTPUT_DIR`。）
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `ACCOUNT_EQUITY` | 32500（env 可覆盖） | 默认本金 3.25 万（2026-07 实盘） |
+| `RISK_LIMITS_NORMAL` | 核心/产业/创新药/事件 1.0、实验 0.5、预埋 0.15（%） | 按 3.25 万小资金校准 |
+| `RISK_LIMITS_DRAWDOWN` | 核心/产业/创新药/事件 0.5、实验 0.25、预埋 0（%） | 回撤升档减半 |
+| `POSITION_LIMITS` | 核心 30 / 产业 20 / 创新药 20 / 事件 60 / 实验 15（%） | 单票仓位上限 |
+| `RISK_CLUSTER_LIMITS` | 全部 exposure 60 / stop_risk 1.0（%） | 小资金集中轮动（一次一只），簇限与单票上限对齐 |
+| `BANNED_BOARD_PREFIXES` | `("300", "301")` | 禁买创业板：建仓闸门高级违规默认拒绝；置空元组即关闭 |
+| `DISCIPLINE_SWITCH_MINUTES` | 30 | 闪电换仓判定阈值（分钟） |
+| `STRATEGY_CODES` | S1-A/S2-A/STR-A/STR-B/STR-C/HOT-S（6 个） | `STRATEGY_INFO` 含 HOT-S（超短热点池/事件/1-5天） |
+
+（其余同前版本：`DRAWDOWN_STATE`, `FORBIDDEN_IN_DRAWDOWN`, `ACCOUNT_TYPES`, `SYSTEM_DEFAULT_ACCOUNT`（S1→产业、S2→核心；HOT-S→事件为 cli 本地特判）, `INDUSTRY_MAP`（值对齐簇键）, `TRADE_LOG_OUTPUT_DIR`。）
 
 #### 策略参数（单一来源）
 
