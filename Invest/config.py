@@ -131,6 +131,15 @@ EXIT_CHANNEL_PERIODS = {
 SIGNAL_MAX_HOLDING_DAYS = 20  # 信号最大持有交易日数，到期按收盘价强制结算
 SIGNAL_STATS_MIN_SAMPLE = 5   # 统计最小样本量，低于此值标注「样本不足」
 
+# 信号最大持有交易日数（按系统覆盖；未列出的系统沿用 SIGNAL_MAX_HOLDING_DAYS）
+SIGNAL_MAX_HOLDING_BY_SYSTEM = {"HOT-S": 5}  # 超短热点信号 5 个交易日强制结算
+
+# --- 超短热点池（pipeline/hot_pool.py，1-5 天超短候选来源） ---
+HOT_SECTOR_TOP_N = 3        # 板块相对强度前 N 的板块：取领涨股入池 + 报告主线摘要
+HOT_POOL_MAX = 120          # 热点池总量上限（控制日线补抓量）
+HOT_HISTORY_DAYS = 90       # 热点池日线补抓长度（交易日目标，超短不需要长历史）
+HOT_SIGNAL_SYSTEM = "HOT-S"  # 超短热点信号系统标识（signals 表 system 列）
+
 # --- 合规规则（投资体系 V5.0） ---
 MAX_SINGLE_RISK_PCT = 1.0
 

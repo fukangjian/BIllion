@@ -26,7 +26,13 @@ from typing import Optional
 
 import pandas as pd
 
-from config import ATR_STOP_MULT, EXIT_CHANNEL_PERIODS, SIGNAL_MAX_HOLDING_DAYS, SIGNAL_STATS_MIN_SAMPLE
+from config import (
+    ATR_STOP_MULT,
+    EXIT_CHANNEL_PERIODS,
+    SIGNAL_MAX_HOLDING_BY_SYSTEM,
+    SIGNAL_MAX_HOLDING_DAYS,
+    SIGNAL_STATS_MIN_SAMPLE,
+)
 from pipeline.database import get_connection, init_database, load_daily_quotes
 from pipeline.indicators import calc_donchian_channel
 from review.metrics import calc_r_multiple
@@ -42,6 +48,11 @@ def _exit_channel_period(entry_system: str) -> Optional[int]:
         if key in s:
             return period
     return None
+
+
+def _max_holding_days(system: str) -> int:
+    """信号最大持有交易日数（按系统覆盖，默认全局值；HOT-S=5 对应超短强制离场）"""
+    return SIGNAL_MAX_HOLDING_BY_SYSTEM.get(system, SIGNAL_MAX_HOLDING_DAYS)
 
 
 def record_signals(
@@ -159,8 +170,8 @@ def _settle_one_signal(signal: dict, db_path: Optional[Path]) -> Optional[dict]:
                 # b) 通道退出：按当日收盘价结算
                 exit_price, exit_reason = close, "通道退出"
                 r_multiple = calc_r_multiple(entry, close, stop) if stop else None
-            elif count >= SIGNAL_MAX_HOLDING_DAYS:
-                # c) 到期：信号满 N 个交易日仍未触发退出，按收盘价结算
+            elif count >= _max_holding_days(signal["system"]):
+                # c) 到期：信号满持有上限（按系统覆盖，HOT-S=5）仍未触发退出，按收盘价结算
                 exit_price, exit_reason = close, "到期"
                 r_multiple = calc_r_multiple(entry, close, stop) if stop else None
 

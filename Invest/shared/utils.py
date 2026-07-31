@@ -154,3 +154,26 @@ def get_stock_name(symbol: str) -> str:
         pass
 
     return symbol
+
+
+def get_symbol_by_name(name: str) -> str:
+    """按名称反查 6 位代码（与 get_stock_name 共用 stock_info_a_code_name 缓存）；未命中返回空串"""
+    name = str(name).strip()
+    if not name:
+        return ""
+
+    try:
+        import akshare as ak
+
+        if not _NAME_CACHE:
+            df = safe_fetch(ak.stock_info_a_code_name, default=pd.DataFrame())
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    _NAME_CACHE[str(row["code"])] = str(row["name"])
+    except Exception:
+        pass
+
+    for code, n in _NAME_CACHE.items():
+        if n == name:
+            return code
+    return ""

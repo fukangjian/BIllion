@@ -1,5 +1,5 @@
 """
-统一入口 — 盘前一键运行：数据管道 + 市场扫描（含持仓监控）+ 研究日报
+统一入口 — 盘前一键运行：数据管道 + 热点池构建 + 市场扫描（含持仓监控）+ 研究日报
 
 用法:
     python run_all.py                    # 完整流程
@@ -64,6 +64,21 @@ def run_pipeline(skip_fetch: bool = False, symbols: list[str] | None = None) -> 
         except Exception as e:
             logger.error("数据获取失败: %s", e)
             logger.warning("将尝试使用已有数据进行扫描...")
+
+    # 热点池构建 + 日线补抓（超短候选来源；失败降级，不阻塞扫描与日报）
+    if not skip_fetch:
+        try:
+            from pipeline.hot_pool import build_hot_pool, sync_hot_pool_daily
+
+            pool = build_hot_pool()
+            if pool.empty:
+                logger.warning("热点池为空（数据源降级），扫描报告超短区块将标注")
+            else:
+                logger.info("热点池构建完成: %d 只", len(pool))
+                rows = sync_hot_pool_daily(pool)
+                logger.info("热点池日线补抓完成: %d 行", rows)
+        except Exception as e:
+            logger.warning("热点池构建失败（已降级，不影响扫描与日报）: %s", e)
 
     logger.info("开始市场扫描（含持仓监控）...")
     report_path = None

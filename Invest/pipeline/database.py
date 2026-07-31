@@ -108,11 +108,36 @@ CREATE TABLE IF NOT EXISTS signals (
     PRIMARY KEY (signal_date, symbol, system)
 );
 
+CREATE TABLE IF NOT EXISTS limit_pool (
+    trade_date  TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    name        TEXT,
+    pool_type   TEXT NOT NULL,
+    change_pct  REAL,
+    amount      REAL,
+    lbc         INTEGER,
+    sector      TEXT,
+    PRIMARY KEY (trade_date, symbol, pool_type)
+);
+
+CREATE TABLE IF NOT EXISTS hot_pool (
+    trade_date  TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    name        TEXT,
+    source      TEXT,
+    sector      TEXT,
+    change_pct  REAL,
+    lbc         INTEGER,
+    PRIMARY KEY (trade_date, symbol)
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily_quotes(symbol);
 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_quotes(trade_date);
 CREATE INDEX IF NOT EXISTS idx_sector_date ON sector_quotes(trade_date);
 CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_limit_pool_date ON limit_pool(trade_date);
+CREATE INDEX IF NOT EXISTS idx_hot_pool_date ON hot_pool(trade_date);
 """
 
 
@@ -205,6 +230,20 @@ def save_limit_stats(df: pd.DataFrame, db_path: Optional[Path] = None) -> int:
         return _replace_rows(conn, "limit_stats", df)
 
 
+def save_limit_pool(df: pd.DataFrame, db_path: Optional[Path] = None) -> int:
+    if df.empty:
+        return 0
+    with get_connection(db_path) as conn:
+        return _replace_rows(conn, "limit_pool", df)
+
+
+def save_hot_pool(df: pd.DataFrame, db_path: Optional[Path] = None) -> int:
+    if df.empty:
+        return 0
+    with get_connection(db_path) as conn:
+        return _replace_rows(conn, "hot_pool", df)
+
+
 def save_dragon_tiger(df: pd.DataFrame, db_path: Optional[Path] = None) -> int:
     if df.empty:
         return 0
@@ -268,6 +307,40 @@ def load_sector_quotes(
         sql += " AND trade_date <= ?"
         params.append(end_date)
     sql += " ORDER BY sector_name, trade_date"
+
+    with get_connection(db_path) as conn:
+        return pd.read_sql_query(sql, conn, params=params)
+
+
+def load_limit_pool(
+    trade_date: Optional[str] = None,
+    pool_type: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    sql = "SELECT * FROM limit_pool WHERE 1=1"
+    params: list = []
+    if trade_date:
+        sql += " AND trade_date = ?"
+        params.append(trade_date)
+    if pool_type:
+        sql += " AND pool_type = ?"
+        params.append(pool_type)
+    sql += " ORDER BY trade_date DESC, symbol"
+
+    with get_connection(db_path) as conn:
+        return pd.read_sql_query(sql, conn, params=params)
+
+
+def load_hot_pool(
+    trade_date: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    sql = "SELECT * FROM hot_pool WHERE 1=1"
+    params: list = []
+    if trade_date:
+        sql += " AND trade_date = ?"
+        params.append(trade_date)
+    sql += " ORDER BY trade_date DESC, lbc DESC, change_pct DESC"
 
     with get_connection(db_path) as conn:
         return pd.read_sql_query(sql, conn, params=params)

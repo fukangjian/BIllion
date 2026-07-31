@@ -18,6 +18,7 @@ from config import (
     CHANNEL_LONG,
     CHANNEL_SHORT,
     DEFAULT_INDEX_SYMBOL,
+    HOT_SIGNAL_SYSTEM,
     MARKET_STATE,
     MARKET_SCAN_OUTPUT_DIR,
     WATCHLIST,
@@ -27,6 +28,8 @@ from pipeline.database import (
     get_connection,
     init_database,
     load_daily_quotes,
+    load_hot_pool,
+    load_limit_pool,
     load_sector_quotes,
     save_market_state,
 )
@@ -112,12 +115,13 @@ def run_scan(
         })
 
     monitor_result = _run_position_monitor(output_dir)
+    hot_section = _build_hot_section(today)
 
-    md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols, monitor_result)
+    md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols, monitor_result, hot_section)
     report_path.write_text(md, encoding="utf-8")
 
     json_path = output_dir / f"market_scan_{today}.json"
-    scan_json = _build_scan_json(today, state_info, breakout_20, breakout_55, sector_rank)
+    scan_json = _build_scan_json(today, state_info, breakout_20, breakout_55, sector_rank, hot_section)
     scan_json["position_monitor"] = monitor_result  # None 表示监控已降级
     json_path.write_text(json.dumps(scan_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -134,8 +138,13 @@ def _record_breakout_signals(scan_json: dict, signal_date: str) -> None:
 
         n1 = record_signals(scan_json.get("breakout_s1a", []), system="S1-A", signal_date=signal_date)
         n2 = record_signals(scan_json.get("breakout_s2a", []), system="S2-A", signal_date=signal_date)
-        if n1 or n2:
-            logger.info("信号入库: S1-A +%d, S2-A +%d", n1, n2)
+        n3 = record_signals(
+            scan_json.get("hot_pool", {}).get("hot_breakout", []),
+            system=HOT_SIGNAL_SYSTEM,
+            signal_date=signal_date,
+        )
+        if n1 or n2 or n3:
+            logger.info("信号入库: S1-A +%d, S2-A +%d, %s +%d", n1, n2, HOT_SIGNAL_SYSTEM, n3)
     except Exception as e:
         logger.warning("信号入库失败（已降级，不影响扫描结果）: %s", e)
 
@@ -180,14 +189,25 @@ def _build_scan_json(
     breakout_20: pd.DataFrame,
     breakout_55: pd.DataFrame,
     sector_rank: pd.DataFrame,
+    hot_section: dict | None = None,
 ) -> dict:
     """构建市场扫描结构化 JSON"""
+    hot = hot_section or {}
     return {
         "date": date,
         "market_state": state_info.get("state", "C"),
         "breakout_s1a": _df_to_breakout_list(breakout_20),
         "breakout_s2a": _df_to_breakout_list(breakout_55),
         "sector_ranking": _df_to_sector_list(sector_rank),
+        "hot_pool": {
+            "available": bool(hot.get("available", False)),
+            "limit_up_count": len(hot.get("limit_up", [])),
+            "lianban_count": len(hot.get("lianban", [])),
+            "broken_count": len(hot.get("broken", [])),
+            "lianban": hot.get("lianban", []),
+            "hot_breakout": hot.get("hot_breakout", []),
+            "note": hot.get("note", ""),
+        },
     }
 
 
@@ -213,6 +233,68 @@ def _build_sector_ranking(benchmark_df: pd.DataFrame) -> pd.DataFrame:
     return rank_sectors_by_strength(sector_data, benchmark_df)
 
 
+def _build_hot_section(today: str) -> dict:
+    """
+    超短热点区块：涨停/连板/炸板名单 + 热点池突破候选（HOT-S）。
+    数据全部来自本地 DB（limit_pool / hot_pool / daily_quotes，由 run_all 取数阶段写入），
+    热点池未构建或构建失败时降级为标注，不拖垮扫描报告。
+    """
+    result = {
+        "available": False,
+        "limit_up": [],
+        "lianban": [],
+        "broken": [],
+        "hot_breakout": [],
+        "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
+    }
+    try:
+        limit_today = load_limit_pool(trade_date=today)
+        pool = load_hot_pool(trade_date=today)
+        if limit_today.empty and pool.empty:
+            return result
+
+        up = limit_today[limit_today["pool_type"] == "up"] if not limit_today.empty else pd.DataFrame()
+        broken = limit_today[limit_today["pool_type"] == "broken"] if not limit_today.empty else pd.DataFrame()
+        result["limit_up"] = up.to_dict("records") if not up.empty else []
+        result["lianban"] = (
+            up[up["lbc"] >= 2].sort_values("lbc", ascending=False).to_dict("records")
+            if not up.empty else []
+        )
+        result["broken"] = broken.to_dict("records") if not broken.empty else []
+
+        # 热点池突破扫描（S1-A 20 日通道，与主扫描同函数同参数）
+        if not pool.empty:
+            symbols_data = {}
+            for sym in pool["symbol"]:
+                df = load_daily_quotes(symbol=sym)
+                if not df.empty:
+                    symbols_data[sym] = df
+            breakout = scan_breakout_candidates(symbols_data, CHANNEL_SHORT)
+            if not breakout.empty:
+                info = pool.set_index("symbol")
+                records = []
+                for _, r in breakout.iterrows():
+                    prow = info.loc[r["symbol"]] if r["symbol"] in info.index else {}
+                    records.append({
+                        "symbol": r["symbol"],
+                        "close": round(float(r["close"]), 2),
+                        "channel_high": round(float(r["channel_high"]), 2),
+                        "breakout_pct": round(float(r["breakout_pct"]), 2),
+                        "atr_20": round(float(r.get("atr_20", 0) or 0), 2),
+                        "period": int(r.get("period", 0)),
+                        "source": str(prow.get("source", "")) if len(prow) else "",
+                        "sector": str(prow.get("sector", "")) if len(prow) else "",
+                    })
+                result["hot_breakout"] = records
+
+        result["available"] = True
+        result["note"] = ""
+    except Exception as e:
+        logger.warning("超短热点区块构建失败（已降级）: %s", e)
+        result["note"] = f"超短热点区块构建失败（已降级）: {e}"
+    return result
+
+
 def _format_report(
     date: str,
     state_info: dict,
@@ -221,6 +303,7 @@ def _format_report(
     sector_rank: pd.DataFrame,
     symbols: list[str],
     monitor_result: dict | None = None,
+    hot_section: dict | None = None,
 ) -> str:
     lines = [
         "# 每日市场扫描报告",
@@ -310,16 +393,63 @@ def _format_report(
             ret_str = f"{ret*100:.1f}%" if pd.notna(ret) else "N/A"
             lines.append(f"| {r['rank']} | {r['sector_name']} | {rs_str} | {ret_str} |")
 
+    lines.extend(["", "---", "", "## 五、超短热点池（1-5 天，HOT-S）", ""])
+
+    hot = hot_section or {}
+    if not hot.get("available"):
+        note = hot.get("note") or "热点池未构建（需先运行 run_all 取数流程构建热点池）"
+        lines.append(f"_{note}_")
+    else:
+        up_count = len(hot.get("limit_up", []))
+        lb = hot.get("lianban", [])
+        bk_count = len(hot.get("broken", []))
+        lines.extend([
+            f"涨停 {up_count} 只（连板 {len(lb)} 只）· 炸板 {bk_count} 只（完整名单见 limit_pool 表 / JSON）",
+            "",
+        ])
+        if lb:
+            lines.extend([
+                "### 连板股（情绪龙头）",
+                "",
+                "| 代码 | 名称 | 连板数 | 涨跌幅% | 所属行业 |",
+                "|------|------|--------|---------|----------|",
+            ])
+            for r in lb[:10]:
+                lines.append(
+                    f"| {r['symbol']} | {r['name']} | {r.get('lbc', 0)} "
+                    f"| {r.get('change_pct', 0):.1f} | {r.get('sector', '')} |"
+                )
+            lines.append("")
+
+        hb = hot.get("hot_breakout", [])
+        if not hb:
+            lines.append("_热点池暂无 20 日通道突破候选_")
+        else:
+            lines.extend([
+                "### 热点池突破候选（S1-A 通道；HOT-S 信号跟踪，5 日强制结算）",
+                "",
+                "| 代码 | 来源 | 板块 | 收盘价 | 通道高点 | 突破幅度% | ATR(20) |",
+                "|------|------|------|--------|----------|-----------|---------|",
+            ])
+            for r in hb:
+                lines.append(
+                    f"| {r['symbol']} | {r.get('source', '')} | {r.get('sector', '')} "
+                    f"| {r['close']:.2f} | {r['channel_high']:.2f} "
+                    f"| {r['breakout_pct']:.2f} | {r.get('atr_20', 0):.2f} |"
+                )
+        lines.append("")
+
     lines.extend([
         "",
         "---",
         "",
-        "## 五、使用说明",
+        "## 六、使用说明",
         "",
         "1. 20日突破对应 **S1-A 快速系统**，10日通道退出",
         "2. 55日突破对应 **S2-A 慢速系统**，20日通道退出",
         "3. 入场前请结合板块强度和市场状态调整仓位",
         "4. 使用 `position_calculator.py` 计算具体股数",
+        "5. 超短热点池为 1-5 天交易候选来源（详见 vault《超短操作手册》），非买入指令",
         "",
         "---",
         "_本报告由量化系统自动生成，仅供参考，不构成投资建议_",

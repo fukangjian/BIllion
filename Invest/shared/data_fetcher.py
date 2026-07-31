@@ -325,6 +325,49 @@ def fetch_limit_stats(trade_date: Optional[str] = None) -> pd.DataFrame:
     }])
 
 
+def fetch_limit_pools(trade_date: Optional[str] = None) -> pd.DataFrame:
+    """
+    获取涨停/炸板个股名单（超短热点原料；东财 push2ex 主机，与行情 push2 不同，风控互不影响）。
+
+    返回列: symbol / name / pool_type(up=涨停, broken=炸板) / change_pct / amount / lbc(连板数) / sector。
+    单个池失败降级跳过，不阻塞另一个池；全失败返回空 DataFrame。
+    """
+    if trade_date is None:
+        trade_date = datetime.now().strftime("%Y%m%d")
+    date_str = trade_date.replace("-", "")
+
+    records = []
+
+    def _append(df: pd.DataFrame, pool_type: str) -> None:
+        for _, row in df.iterrows():
+            lbc_val = row.get("连板数", 1)
+            records.append({
+                "symbol": str(row.get("代码", "")).zfill(6)[-6:],
+                "name": str(row.get("名称", "")),
+                "pool_type": pool_type,
+                "change_pct": float(pd.to_numeric(row.get("涨跌幅", 0), errors="coerce") or 0),
+                "amount": float(pd.to_numeric(row.get("成交额", 0), errors="coerce") or 0),
+                "lbc": int(lbc_val) if pool_type == "up" and pd.notna(lbc_val) else 0,
+                "sector": str(row.get("所属行业", "")),
+            })
+
+    try:
+        zt = retry_fetch(ak.stock_zt_pool_em, date=date_str)
+        if zt is not None and not zt.empty:
+            _append(zt, "up")
+    except Exception as e:
+        logger.warning("涨停池名单获取失败: %s", e)
+
+    try:
+        zb = retry_fetch(ak.stock_zt_pool_zbgc_em, date=date_str)
+        if zb is not None and not zb.empty:
+            _append(zb, "broken")
+    except Exception as e:
+        logger.warning("炸板池名单获取失败: %s", e)
+
+    return pd.DataFrame(records)
+
+
 def fetch_etf_flow(trade_date: Optional[str] = None) -> pd.DataFrame:
     """获取 ETF 资金流向"""
     records = []
