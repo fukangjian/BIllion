@@ -3,53 +3,93 @@
   "market_state": "D",
   "breakout_s1a": [
     {
-      "symbol": "000333",
-      "close": 87.01,
-      "channel_high": 85.92,
-      "breakout_pct": 1.27,
-      "atr_20": 1.96,
+      "symbol": "300760",
+      "close": 161.62,
+      "channel_high": 156.0,
+      "breakout_pct": 3.6,
+      "atr_20": 5.09,
+      "period": 20
+    },
+    {
+      "symbol": "000858",
+      "close": 78.56,
+      "channel_high": 76.76,
+      "breakout_pct": 2.34,
+      "atr_20": 2.1,
       "period": 20
     },
     {
       "symbol": "000001",
-      "close": 11.28,
-      "channel_high": 11.21,
-      "breakout_pct": 0.62,
-      "atr_20": 0.2,
+      "close": 11.61,
+      "channel_high": 11.36,
+      "breakout_pct": 2.2,
+      "atr_20": 0.21,
+      "period": 20
+    },
+    {
+      "symbol": "601318",
+      "close": 55.8,
+      "channel_high": 54.7,
+      "breakout_pct": 2.01,
+      "atr_20": 1.45,
+      "period": 20
+    },
+    {
+      "symbol": "000333",
+      "close": 88.95,
+      "channel_high": 87.5,
+      "breakout_pct": 1.66,
+      "atr_20": 2.01,
+      "period": 20
+    },
+    {
+      "symbol": "600519",
+      "close": 1361.76,
+      "channel_high": 1344.7,
+      "breakout_pct": 1.27,
+      "atr_20": 30.94,
       "period": 20
     },
     {
       "symbol": "600036",
-      "close": 39.66,
-      "channel_high": 39.59,
-      "breakout_pct": 0.18,
-      "atr_20": 0.71,
+      "close": 40.55,
+      "channel_high": 40.07,
+      "breakout_pct": 1.2,
+      "atr_20": 0.72,
       "period": 20
     }
   ],
   "breakout_s2a": [
     {
-      "symbol": "000333",
-      "close": 87.01,
-      "channel_high": 85.92,
-      "breakout_pct": 1.27,
-      "atr_20": 1.96,
+      "symbol": "000001",
+      "close": 11.61,
+      "channel_high": 11.36,
+      "breakout_pct": 2.2,
+      "atr_20": 0.21,
       "period": 55
     },
     {
-      "symbol": "000001",
-      "close": 11.28,
-      "channel_high": 11.25,
-      "breakout_pct": 0.27,
-      "atr_20": 0.2,
+      "symbol": "000333",
+      "close": 88.95,
+      "channel_high": 87.5,
+      "breakout_pct": 1.66,
+      "atr_20": 2.01,
+      "period": 55
+    },
+    {
+      "symbol": "600519",
+      "close": 1361.76,
+      "channel_high": 1344.7,
+      "breakout_pct": 1.27,
+      "atr_20": 30.94,
       "period": 55
     },
     {
       "symbol": "600036",
-      "close": 39.66,
-      "channel_high": 39.59,
-      "breakout_pct": 0.18,
-      "atr_20": 0.71,
+      "close": 40.55,
+      "channel_high": 40.07,
+      "breakout_pct": 1.2,
+      "atr_20": 0.72,
       "period": 55
     }
   ],
@@ -57,92 +97,92 @@
     {
       "rank": 1,
       "sector_name": "电子化学品",
-      "relative_strength": 5.626,
-      "period_return": -0.407
+      "relative_strength": 7.8435,
+      "period_return": -0.428
     },
     {
       "rank": 2,
       "sector_name": "半导体",
-      "relative_strength": 4.7031,
-      "period_return": -0.3402
+      "relative_strength": 6.4361,
+      "period_return": -0.3512
     },
     {
       "rank": 3,
       "sector_name": "非金属材料",
-      "relative_strength": 3.8921,
-      "period_return": -0.2815
+      "relative_strength": 5.5659,
+      "period_return": -0.3037
     },
     {
       "rank": 4,
       "sector_name": "光学光电子",
-      "relative_strength": 3.7036,
-      "period_return": -0.2679
+      "relative_strength": 5.1055,
+      "period_return": -0.2786
     },
     {
       "rank": 5,
       "sector_name": "电池",
-      "relative_strength": 2.6526,
-      "period_return": -0.1919
+      "relative_strength": 3.663,
+      "period_return": -0.1999
     },
     {
       "rank": 6,
-      "sector_name": "光伏设备",
-      "relative_strength": 2.5939,
-      "period_return": -0.1876
+      "sector_name": "环保设备",
+      "relative_strength": 3.1878,
+      "period_return": -0.1739
     },
     {
       "rank": 7,
-      "sector_name": "环保设备",
-      "relative_strength": 2.1702,
-      "period_return": -0.157
+      "sector_name": "光伏设备",
+      "relative_strength": 3.1587,
+      "period_return": -0.1724
     },
     {
       "rank": 8,
       "sector_name": "电机",
-      "relative_strength": 1.767,
-      "period_return": -0.1278
+      "relative_strength": 2.817,
+      "period_return": -0.1537
     },
     {
       "rank": 9,
-      "sector_name": "包装印刷",
-      "relative_strength": 1.468,
-      "period_return": -0.1062
+      "sector_name": "黑色家电",
+      "relative_strength": 2.0034,
+      "period_return": -0.1093
     },
     {
       "rank": 10,
-      "sector_name": "风电设备",
-      "relative_strength": 1.4585,
-      "period_return": -0.1055
+      "sector_name": "包装印刷",
+      "relative_strength": 1.9846,
+      "period_return": -0.1083
     },
     {
       "rank": 11,
-      "sector_name": "黑色家电",
-      "relative_strength": 1.3739,
-      "period_return": -0.0994
+      "sector_name": "风电设备",
+      "relative_strength": 1.9295,
+      "period_return": -0.1053
     },
     {
       "rank": 12,
       "sector_name": "白色家电",
-      "relative_strength": 1.2394,
-      "period_return": -0.0897
+      "relative_strength": 1.9244,
+      "period_return": -0.105
     },
     {
       "rank": 13,
       "sector_name": "轨交设备",
-      "relative_strength": 1.0702,
-      "period_return": -0.0774
+      "relative_strength": 1.4576,
+      "period_return": -0.0795
     },
     {
       "rank": 14,
-      "sector_name": "环境治理",
-      "relative_strength": 0.8962,
-      "period_return": -0.0648
+      "sector_name": "电网设备",
+      "relative_strength": 1.4292,
+      "period_return": -0.078
     },
     {
       "rank": 15,
-      "sector_name": "电网设备",
-      "relative_strength": 0.8798,
-      "period_return": -0.0636
+      "sector_name": "环境治理",
+      "relative_strength": 1.4199,
+      "period_return": -0.0775
     }
   ],
   "position_monitor": {
