@@ -13,7 +13,6 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
 
-import akshare as ak
 import backtrader as bt
 import matplotlib
 matplotlib.use("Agg")
@@ -28,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backtest.strategies import STRATEGY_MAP
 from config import BACKTEST_OUTPUT_DIR
 from pipeline.database import load_daily_quotes
+from shared.data_fetcher import fetch_stock_daily
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("run_backtest")
@@ -73,27 +73,19 @@ class TradeMarkerAnalyzer(bt.Analyzer):
 
 
 def fetch_data(symbol: str, start: str, end: str) -> pd.DataFrame:
-    start_fmt = start.replace("-", "")
-    end_fmt = end.replace("-", "")
-
     logger.info("获取 %s 数据 %s ~ %s", symbol, start, end)
-    raw = ak.stock_zh_a_hist(
-        symbol=symbol,
-        period="daily",
-        start_date=start_fmt,
-        end_date=end_fmt,
-        adjust="qfq",
-    )
+    # 与数据管道共用双源获取（新浪优先，东方财富备用），避免单一数据源不可用
+    raw = fetch_stock_daily(symbol, start_date=start, end_date=end)
     if raw is None or raw.empty:
         raise ValueError(f"无法获取 {symbol} 的数据")
 
     df = pd.DataFrame({
-        "datetime": pd.to_datetime(raw["日期"]),
-        "open": raw["开盘"].astype(float),
-        "high": raw["最高"].astype(float),
-        "low": raw["最低"].astype(float),
-        "close": raw["收盘"].astype(float),
-        "volume": raw["成交量"].astype(float),
+        "datetime": pd.to_datetime(raw["trade_date"]),
+        "open": raw["open"].astype(float),
+        "high": raw["high"].astype(float),
+        "low": raw["low"].astype(float),
+        "close": raw["close"].astype(float),
+        "volume": raw["volume"].astype(float),
     })
     df.set_index("datetime", inplace=True)
     df.sort_index(inplace=True)

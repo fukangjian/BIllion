@@ -1048,6 +1048,20 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 10 | 回测与实盘两套参数 | `config.STRATEGY_PARAMS` 单一来源；加仓间距上限与按单位真实风险算 R |
 | 11 | 策略/簇命名不统一 | `STRATEGY_CODES` 5 策略枚举（删除 `VALID_ENTRY_SYSTEMS`）；`INDUSTRY_MAP` 对齐 `RISK_CLUSTER_LIMITS` 六簇键 |
 
+### 13.5 数据源韧性加固（2026-07-31 ✅）
+
+**背景**：2026-07-30 起，东财行情推送接口 `push2.eastmoney.com`（及 `push2his` 历史接口）对本机连接大规模重置（`RemoteDisconnected`：TCP/TLS 建立后零字节关闭，requests/urllib3/裸 socket/curl 均复现，换 UA 无效，其他站点正常）——属对端 WAF/IP 风控，可能自行恢复。`push2ex`（涨跌停池）、`datacenter-web`（龙虎榜/公告）、www/quote 主站及新浪/同花顺/腾讯行情均正常，故日线管道与涨跌停统计实际未受影响。
+
+| # | 受影响点（原仅东财单源） | 加固方式（首选东财，失败自动降级，恢复后自动回切） |
+|---|--------------------------|---------------------------------------------------|
+| 1 | 日报「市场宏观」指数行情 | 降级 `stock_zh_index_spot_sina`（新浪） |
+| 2 | 日报「关注板块表现」 | 降级 `stock_board_industry_summary_ths`（同花顺，成交额单位为亿元） |
+| 3 | `review/metrics.fetch_price_range`（MFE/MAE） | 改用 `fetch_stock_daily`（新浪优先、东财备用双源） |
+| 4 | `backtest/run_backtest.fetch_data` | 改用 `fetch_stock_daily`（同口径 qfq 日线） |
+| 5 | `industry_mapper.fetch_market_context` | 降级 `stock_board_industry_summary_ths` |
+
+本已双源、无需改动：`fetch_stock_daily` / `fetch_index_daily` / `fetch_sector_list` / `fetch_sector_daily` / `fetch_limit_stats`（涨跌停池走 `push2ex`，未受影响）。
+
 ---
 
 ## 14. 附录

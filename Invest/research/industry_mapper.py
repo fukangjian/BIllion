@@ -101,7 +101,24 @@ def fetch_market_context(keyword: str) -> str:
                     f"成交额: {row.get('成交额', 'N/A')}"
                 )
     except Exception as e:
-        logger.debug("获取板块背景失败: %s", e)
+        logger.debug("获取板块背景失败(东财): %s", e)
+
+    # 东财行情接口不可用时的降级源：同花顺行业一览
+    try:
+        import akshare as ak
+
+        df = safe_fetch(ak.stock_board_industry_summary_ths, default=None)
+        if df is not None and not df.empty:
+            matched = df[df["板块"].str.contains(keyword[:2], na=False)]
+            if not matched.empty:
+                row = matched.iloc[0]
+                return (
+                    f"板块: {row.get('板块', '')}, "
+                    f"涨跌幅: {row.get('涨跌幅', 'N/A')}%, "
+                    f"成交额: {row.get('总成交额', 'N/A')}亿元"
+                )
+    except Exception as e:
+        logger.debug("获取板块背景失败(同花顺): %s", e)
     return "（暂无实时板块数据）"
 
 

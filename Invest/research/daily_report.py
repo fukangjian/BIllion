@@ -70,6 +70,27 @@ def fetch_market_overview() -> dict:
     except Exception as e:
         logger.warning("获取指数数据失败: %s", e)
 
+    if not result["indices"]:
+        # 东财行情接口不可用时的降级源：新浪指数行情
+        try:
+            spot = safe_fetch(ak.stock_zh_index_spot_sina, default=pd.DataFrame())
+            if spot is not None and not spot.empty:
+                for code, name in index_map.items():
+                    prefix = "sh" if code.startswith("0") else "sz"
+                    row = spot[spot["代码"] == f"{prefix}{code}"]
+                    if not row.empty:
+                        r = row.iloc[0]
+                        result["indices"].append({
+                            "名称": name,
+                            "最新价": r.get("最新价", "-"),
+                            "涨跌幅": f"{r.get('涨跌幅', '-')}%",
+                            "成交额": r.get("成交额", "-"),
+                        })
+            if result["indices"]:
+                logger.info("指数行情已降级为新浪源")
+        except Exception as e:
+            logger.warning("获取指数数据失败(新浪): %s", e)
+
     try:
         activity = ak.stock_market_activity_legu()
         if activity is not None and not activity.empty:
@@ -95,24 +116,45 @@ def fetch_sector_performance(sectors: list[str]) -> pd.DataFrame:
 
     try:
         df = safe_fetch(ak.stock_board_industry_name_em, default=pd.DataFrame())
-        if df is None or df.empty:
-            return pd.DataFrame()
-
-        rows = []
-        for sector in sectors:
-            matched = df[df["板块名称"].str.contains(sector[:2], na=False)]
-            if not matched.empty:
-                for _, r in matched.head(2).iterrows():
-                    rows.append({
-                        "板块": r.get("板块名称", sector),
-                        "涨跌幅(%)": r.get("涨跌幅", "-"),
-                        "成交额": r.get("成交额", "-"),
-                        "领涨股": r.get("领涨股票", "-"),
-                    })
-        return pd.DataFrame(rows)
+        if df is not None and not df.empty:
+            rows = []
+            for sector in sectors:
+                matched = df[df["板块名称"].str.contains(sector[:2], na=False)]
+                if not matched.empty:
+                    for _, r in matched.head(2).iterrows():
+                        rows.append({
+                            "板块": r.get("板块名称", sector),
+                            "涨跌幅(%)": r.get("涨跌幅", "-"),
+                            "成交额": r.get("成交额", "-"),
+                            "领涨股": r.get("领涨股票", "-"),
+                        })
+            if rows:
+                return pd.DataFrame(rows)
     except Exception as e:
-        logger.warning("获取板块数据失败: %s", e)
-        return pd.DataFrame()
+        logger.warning("获取板块数据失败(东财): %s", e)
+
+    # 东财行情接口不可用时的降级源：同花顺行业一览
+    try:
+        df = safe_fetch(ak.stock_board_industry_summary_ths, default=pd.DataFrame())
+        if df is not None and not df.empty:
+            rows = []
+            for sector in sectors:
+                matched = df[df["板块"].str.contains(sector[:2], na=False)]
+                if not matched.empty:
+                    for _, r in matched.head(2).iterrows():
+                        rows.append({
+                            "板块": r.get("板块", sector),
+                            "涨跌幅(%)": r.get("涨跌幅", "-"),
+                            "成交额(亿元)": r.get("总成交额", "-"),
+                            "领涨股": r.get("领涨股", "-"),
+                        })
+            if rows:
+                logger.info("板块行情已降级为同花顺源")
+            return pd.DataFrame(rows)
+    except Exception as e:
+        logger.warning("获取板块数据失败(同花顺): %s", e)
+
+    return pd.DataFrame()
 
 
 def fetch_announcement_summary(symbol: str) -> str:

@@ -7,9 +7,7 @@ from typing import Optional
 
 import pandas as pd
 
-from config import FETCH_RETRY, FETCH_RETRY_DELAY
 from review.trade_log import Trade
-from shared.utils import retry_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -40,25 +38,17 @@ def calc_mfe_mae_from_prices(
 
 
 def fetch_price_range(symbol: str, start_date: str, end_date: str) -> tuple[Optional[float], Optional[float]]:
-    import akshare as ak
+    from shared.data_fetcher import fetch_stock_daily
 
     symbol = symbol.zfill(6)[-6:]
-    start = start_date.replace("-", "")
-    end = end_date.replace("-", "")
 
     try:
-        df = retry_fetch(
-            ak.stock_zh_a_hist,
-            symbol=symbol,
-            period="daily",
-            start_date=start,
-            end_date=end,
-            adjust="qfq",
-        )
+        # 与数据管道共用双源获取（新浪优先，东方财富备用），避免单一数据源不可用
+        df = fetch_stock_daily(symbol, start_date=start_date, end_date=end_date)
         if df is None or df.empty:
             return None, None
-        high = float(df["最高"].max())
-        low = float(df["最低"].min())
+        high = float(df["high"].max())
+        low = float(df["low"].min())
         return high, low
     except Exception as e:
         logger.warning("获取 %s 价格区间失败: %s", symbol, e)

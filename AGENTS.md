@@ -137,6 +137,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 - **缓存 aside 模式**：公告全文（`data/announcements/`）与 LLM 响应（`data/llm_cache/`，sha256(prompt) 为键，24h TTL）均为本地 JSON 缓存。
 - **Windows 代理**：访问外部数据源前用 `shared/utils.py` 的 `patch_bypass_proxy` / `bypass_proxy` 绕过系统代理，否则东财等数据源会失败（历史教训，见 git log）。
 - 无 linter/formatter/type-checker 配置，代码风格以周边文件为准（类型标注 + docstring 普遍使用）。
+- **修改后主动提交 git**：每次代码/文档修改完成后，主动整理为语义清晰的分批 commit 并提交（用户约定，2026-07-31 起生效）；仅本地提交，推送远程需另行确认。
 
 ## 6. 测试
 
@@ -167,6 +168,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 - 未实现盈亏以 `data/market.db` 最新日线收盘价为市价源（非盘中实时），持仓监控同理——盘前使用足够，盘中需人工盯盘。
 - 巨潮 PDF 公告已支持 pypdf 正文提取（前 30 页）；向量检索、Web UI 为未来方向。
 - AkShare 依赖公开数据源接口，接口变动可能导致抓取失败——修改数据获取层后务必实际运行 `python run_all.py` 验证。
+- 东财行情推送接口（push2）可能对抓取 IP 风控重置（2026-07-30 起本机曾持续触发）；日报/复盘/回测/产业链已配置新浪/同花顺降级链，详见 `Invest/ARCHITECTURE.md` 13.5。
 
 ## 10. 参考文档
 
