@@ -42,7 +42,7 @@ def calc_atr(
 
 def calc_donchian_channel(
     df: pd.DataFrame,
-    period: int = 20,
+    period: int = CHANNEL_SHORT,
     high_col: str = "high",
     low_col: str = "low",
 ) -> pd.DataFrame:
@@ -126,6 +126,9 @@ def calc_market_breadth(limit_stats: pd.DataFrame) -> dict:
     if limit_stats.empty:
         return {"breadth_ratio": 1.0, "limit_up_ratio": 0.0, "up_count": 0, "down_count": 0}
 
+    # 调用方返回的行序不固定（如 SQL DESC），统一按日期排序后取最新一天
+    if "trade_date" in limit_stats.columns:
+        limit_stats = limit_stats.sort_values("trade_date")
     row = limit_stats.iloc[-1]
     up = max(int(row.get("up_count", 0)), 1)
     down = max(int(row.get("down_count", 0)), 1)

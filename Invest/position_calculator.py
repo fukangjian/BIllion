@@ -1,40 +1,41 @@
 """
 仓位计算器 — 风险预算法 + 风险簇检查 + 跳空折扣
 
+风险率 / 单票仓位上限 / 风险簇上限统一读取 config（投资体系 V5.0 口径），
+账户类型使用中文枚举（核心/产业/事件/实验），与合规检查共用同一套限额函数。
+
 核心公式:
     风险预算R = 账户权益 × 风险比例
     每股风险 = (入场价 - 止损价) × 跳空折扣 + 跳空缓冲
     股数 = floor(R / 每股风险 / 100) × 100
 
 用法:
-    python position_calculator.py --symbol 600519 --entry 1800 --stop 1700 \\
-        --account-type core --account-state normal --equity 1000000
+    python position_calculator.py --symbol 600519 --entry 1800 --stop 1700 \
+        --account-type 核心 --drawdown-state Normal --equity 1000000
 """
 import argparse
 import json
 import math
+import sys
 import warnings
+from enum import Enum
+from pathlib import Path
 
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
-import sys
-from dataclasses import dataclass, field, asdict
-from enum import Enum
-from typing import Optional
 
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-class AccountType(str, Enum):
-    """账户类型"""
-    CORE = "core"           # 核心趋势
-    INDUSTRY = "industry"   # 产业趋势
-    EVENT = "event"         # 事件交易
-    SEED = "seed"           # 预埋验证
-
-
-class AccountState(str, Enum):
-    """账户状态"""
-    NORMAL = "normal"       # 正常
-    ALERT = "alert"         # 警戒（回撤期）
-    DEFENSE = "defense"     # 防御
+from config import (
+    ACCOUNT_EQUITY,
+    ACCOUNT_TYPES,
+    ADD_SPACING_MAX,
+    ADD_SPACING_MIN,
+    DRAWDOWN_STATE,
+    INDUSTRY_MAP,
+)
+from review.compliance_check import check_risk_cluster, get_position_limit, get_risk_limit
 
 
 class GapRisk(str, Enum):
@@ -45,30 +46,6 @@ class GapRisk(str, Enum):
     GEOPOLITICAL = "geopolitical"   # 极端地缘事件股
 
 
-# 风险率表 (百分比)
-RISK_RATES = {
-    AccountType.CORE: {
-        AccountState.NORMAL: (0.004, 0.006),    # 0.4%-0.6%
-        AccountState.ALERT: (0.002, 0.003),     # 0.2%-0.3%
-        AccountState.DEFENSE: (0.001, 0.002),
-    },
-    AccountType.INDUSTRY: {
-        AccountState.NORMAL: (0.003, 0.005),
-        AccountState.ALERT: (0.0015, 0.0025),
-        AccountState.DEFENSE: (0.001, 0.0015),
-    },
-    AccountType.EVENT: {
-        AccountState.NORMAL: (0.002, 0.0035),
-        AccountState.ALERT: (0.001, 0.0018),
-        AccountState.DEFENSE: (0.0005, 0.001),
-    },
-    AccountType.SEED: {
-        AccountState.NORMAL: (0.001, 0.0015),
-        AccountState.ALERT: (0.0, 0.0),         # 回撤期暂停
-        AccountState.DEFENSE: (0.0, 0.0),
-    },
-}
-
 # 跳空折扣
 GAP_DISCOUNT = {
     GapRisk.NONE: 1.0,
@@ -77,135 +54,79 @@ GAP_DISCOUNT = {
     GapRisk.GEOPOLITICAL: 0.6,
 }
 
-# 单票仓位上限 (占总权益比例)
-SINGLE_STOCK_LIMIT = {
-    AccountType.CORE: 0.10,
-    AccountType.INDUSTRY: 0.08,
-    AccountType.EVENT: 0.05,
-    AccountType.SEED: 0.03,
-}
-
-# 风险簇上限
-CLUSTER_LIMITS = {
-    "same_industry": 0.25,      # 同行业总仓位
-    "innovative_pharma": 0.25,  # 创新药总仓位
-    "total_heat": 0.03,         # 全部持仓同时止损的理论损失
-}
-
-# 行业映射（示例，可扩展）
-INDUSTRY_MAP = {
-    "600519": "消费",
-    "000858": "消费",
-    "300760": "医药",
-    "688235": "创新药",
-    "688331": "创新药",
-    "300750": "新能源",
-    "002594": "新能源",
-}
+DRAWDOWN_STATES = ["Normal", "Caution", "Defensive", "Review"]
 
 
-@dataclass
-class Position:
-    """持仓信息"""
-    symbol: str
-    shares: int
-    entry_price: float
-    stop_price: float
-    industry: str = ""
-    is_innovative_pharma: bool = False
+def lookup_cluster(symbol: str) -> str | None:
+    """股票代码 → 风险簇（config.INDUSTRY_MAP），查不到返回 None（建仓时提示人工指定）"""
+    return INDUSTRY_MAP.get(str(symbol).zfill(6)[-6:])
 
 
-@dataclass
-class PositionResult:
-    """仓位计算结果"""
-    symbol: str
-    entry_price: float
-    stop_price: float
-    shares: int
-    position_value: float
-    position_pct: float
-    risk_budget: float
-    risk_per_share: float
-    risk_rate_used: float
-    gap_discount: float
-    exceeds_single_limit: bool
-    single_limit_pct: float
-    cluster_warnings: list = field(default_factory=list)
-    heat_check_pass: bool = True
-    heat_loss_pct: float = 0.0
-    account_type: str = ""
-    account_state: str = ""
-    notes: list = field(default_factory=list)
-
-
-def get_risk_rate(
-    account_type: AccountType,
-    account_state: AccountState,
-    use_conservative: bool = True,
-) -> float:
-    """
-    获取风险比例
-    use_conservative: True 取区间下限，False 取中值
-    """
-    rates = RISK_RATES.get(account_type, {}).get(account_state, (0.002, 0.003))
-    if account_state in (AccountState.ALERT, AccountState.DEFENSE) or use_conservative:
-        return rates[0]
-    return (rates[0] + rates[1]) / 2
-
-
-def calc_shares(
+def calc_position(
     equity: float,
-    entry_price: float,
-    stop_price: float,
-    account_type: AccountType,
-    account_state: AccountState,
+    entry: float,
+    stop: float,
+    account_type: str,
+    drawdown_state: str,
     gap_risk: GapRisk = GapRisk.NONE,
     gap_buffer: float = 0.0,
-    use_conservative: bool = True,
-) -> PositionResult:
+    atr: float | None = None,
+) -> dict:
     """
-    计算建议股数
+    仓位计算纯函数（可 import），风险率与单票上限取 config 口径。
 
     参数:
         equity: 账户权益
-        entry_price: 入场价
-        stop_price: 止损价
-        account_type: 账户类型
-        account_state: 账户状态
+        entry: 入场价
+        stop: 止损价
+        account_type: 账户类型（核心/产业/事件/实验）
+        drawdown_state: 回撤状态（Normal/Caution/Defensive/Review）
         gap_risk: 跳空风险类型
         gap_buffer: 额外跳空缓冲（绝对价格）
-        use_conservative: 是否使用保守风险率
+        atr: ATR(20)，用于加仓价建议（加仓价 = 入场 + ADD_SPACING_MIN/ADD_SPACING_MAX × N）；
+             未提供时以每股风险为 N 估算
+
+    返回:
+        dict：账户类型/回撤状态/账户权益/入场价/止损价/风险率/风险预算/每股风险/
+              跳空折扣/股数/仓位金额/仓位比例/单票上限/是否超限/加仓价1/加仓价2/备注
     """
-    notes = []
-    risk_rate = get_risk_rate(account_type, account_state, use_conservative)
+    notes: list[str] = []
+    risk_rate = get_risk_limit(account_type, drawdown_state)
+    single_limit = get_position_limit(account_type)
+
+    base = {
+        "账户类型": account_type,
+        "回撤状态": drawdown_state,
+        "账户权益": equity,
+        "入场价": entry,
+        "止损价": stop,
+        "单票上限": single_limit,
+    }
 
     if risk_rate <= 0:
-        return PositionResult(
-            symbol="",
-            entry_price=entry_price,
-            stop_price=stop_price,
-            shares=0,
-            position_value=0,
-            position_pct=0,
-            risk_budget=0,
-            risk_per_share=0,
-            risk_rate_used=0,
-            gap_discount=0,
-            exceeds_single_limit=False,
-            single_limit_pct=SINGLE_STOCK_LIMIT.get(account_type, 0.1),
-            account_type=account_type.value,
-            account_state=account_state.value,
-            notes=["回撤期暂停交易（预埋账户）"],
-        )
+        return {
+            **base,
+            "风险率": 0.0,
+            "风险预算": 0.0,
+            "每股风险": 0.0,
+            "跳空折扣": 0.0,
+            "股数": 0,
+            "仓位金额": 0.0,
+            "仓位比例": 0.0,
+            "是否超限": False,
+            "加仓价1": None,
+            "加仓价2": None,
+            "备注": [f"{drawdown_state} 状态下 {account_type} 风险率上限为 0，暂停该类型交易"],
+        }
 
     gap_discount = GAP_DISCOUNT.get(gap_risk, 1.0)
-    risk_budget = equity * risk_rate
+    risk_budget = equity * risk_rate / 100
 
     # 每股风险
-    price_risk = max(entry_price - stop_price, 0)
+    price_risk = max(entry - stop, 0)
     if price_risk <= 0:
-        notes.append("警告: 止损价 >= 入场价，无法计算")
-        price_risk = entry_price * 0.02  # 默认 2% 止损距离
+        notes.append("警告: 止损价 >= 入场价，按默认 2% 止损距离估算")
+        price_risk = entry * 0.02
 
     risk_per_share = price_risk * gap_discount + gap_buffer
 
@@ -213,18 +134,17 @@ def calc_shares(
     raw_shares = risk_budget / risk_per_share if risk_per_share > 0 else 0
     shares = math.floor(raw_shares / 100) * 100
 
-    position_value = shares * entry_price
-    position_pct = position_value / equity if equity > 0 else 0
-    single_limit = SINGLE_STOCK_LIMIT.get(account_type, 0.10)
+    position_value = shares * entry
+    position_pct = position_value / equity * 100 if equity > 0 else 0
     exceeds = position_pct > single_limit
 
     if exceeds and shares > 0:
         # 按上限反算
-        max_value = equity * single_limit
-        shares = math.floor(max_value / entry_price / 100) * 100
-        position_value = shares * entry_price
-        position_pct = position_value / equity
-        notes.append(f"已按单票上限 {single_limit*100:.0f}% 缩减股数")
+        max_value = equity * single_limit / 100
+        shares = math.floor(max_value / entry / 100) * 100
+        position_value = shares * entry
+        position_pct = position_value / equity * 100 if equity > 0 else 0
+        notes.append(f"已按单票上限 {single_limit:.0f}% 缩减股数")
 
     if shares <= 0 and raw_shares > 0:
         notes.append(
@@ -234,123 +154,64 @@ def calc_shares(
     if gap_risk != GapRisk.NONE:
         notes.append(f"跳空折扣 {gap_discount} 已应用 ({gap_risk.value})")
 
-    return PositionResult(
-        symbol="",
-        entry_price=entry_price,
-        stop_price=stop_price,
-        shares=shares,
-        position_value=position_value,
-        position_pct=position_pct,
-        risk_budget=risk_budget,
-        risk_per_share=risk_per_share,
-        risk_rate_used=risk_rate,
-        gap_discount=gap_discount,
-        exceeds_single_limit=exceeds,
-        single_limit_pct=single_limit,
-        account_type=account_type.value,
-        account_state=account_state.value,
-        notes=notes,
-    )
+    # 加仓价建议：N 优先取 ATR，未提供时以每股风险估算
+    n = atr if atr and atr > 0 else risk_per_share
+    add1 = round(entry + ADD_SPACING_MIN * n, 2)
+    add2 = round(entry + ADD_SPACING_MAX * n, 2)
+
+    return {
+        **base,
+        "风险率": risk_rate,
+        "风险预算": risk_budget,
+        "每股风险": risk_per_share,
+        "跳空折扣": gap_discount,
+        "股数": shares,
+        "仓位金额": position_value,
+        "仓位比例": position_pct,
+        "是否超限": exceeds,
+        "加仓价1": add1,
+        "加仓价2": add2,
+        "备注": notes,
+    }
 
 
-def check_cluster_risk(
-    result: PositionResult,
-    existing_positions: list[Position],
-    new_symbol: str,
-    new_industry: str = "",
-    is_innovative_pharma: bool = False,
-    equity: float = 1_000_000,
-) -> PositionResult:
-    """
-    风险簇检查 — 同行业、创新药、账户热度
-    """
-    result.symbol = new_symbol
-    warnings = []
-
-    # 同行业检查
-    industry_exposure = result.position_value
-    for pos in existing_positions:
-        if pos.industry == new_industry and new_industry:
-            industry_exposure += pos.shares * pos.entry_price
-
-    if new_industry:
-        industry_pct = industry_exposure / equity
-        if industry_pct > CLUSTER_LIMITS["same_industry"]:
-            warnings.append(
-                f"同行业({new_industry})总仓位 {industry_pct*100:.1f}% "
-                f"超过上限 {CLUSTER_LIMITS['same_industry']*100:.0f}%"
-            )
-
-    # 创新药检查
-    if is_innovative_pharma:
-        pharma_exposure = result.position_value if is_innovative_pharma else 0
-        for pos in existing_positions:
-            if pos.is_innovative_pharma:
-                pharma_exposure += pos.shares * pos.entry_price
-        pharma_pct = pharma_exposure / equity
-        if pharma_pct > CLUSTER_LIMITS["innovative_pharma"]:
-            warnings.append(
-                f"创新药总仓位 {pharma_pct*100:.1f}% "
-                f"超过上限 {CLUSTER_LIMITS['innovative_pharma']*100:.0f}%"
-            )
-
-    # 账户热度检查 — 所有持仓同时触发止损的理论损失
-    total_heat_loss = result.shares * result.risk_per_share
-    for pos in existing_positions:
-        pos_risk = (pos.entry_price - pos.stop_price) * pos.shares
-        total_heat_loss += max(pos_risk, 0)
-
-    heat_pct = total_heat_loss / equity if equity > 0 else 0
-    heat_pass = heat_pct <= CLUSTER_LIMITS["total_heat"]
-
-    if not heat_pass:
-        warnings.append(
-            f"账户热度 {heat_pct*100:.2f}% 超过上限 {CLUSTER_LIMITS['total_heat']*100:.0f}%"
-        )
-
-    result.cluster_warnings = warnings
-    result.heat_check_pass = heat_pass
-    result.heat_loss_pct = heat_pct
-    return result
-
-
-def format_result(result: PositionResult) -> str:
-    """格式化输出结果"""
+def format_calc_text(calc: dict, symbol: str = "") -> str:
+    """格式化仓位计算结果（CLI 与 from-scan 打印共用）"""
     lines = [
         "=" * 50,
         "仓位计算结果",
         "=" * 50,
-        f"  股票代码:     {result.symbol}",
-        f"  账户类型:     {result.account_type}",
-        f"  账户状态:     {result.account_state}",
-        f"  入场价:       {result.entry_price:.2f}",
-        f"  止损价:       {result.stop_price:.2f}",
-        "-" * 50,
-        f"  风险比例:     {result.risk_rate_used*100:.2f}%",
-        f"  风险预算:     {result.risk_budget:,.0f} 元",
-        f"  每股风险:     {result.risk_per_share:.2f} 元",
-        f"  跳空折扣:     {result.gap_discount}",
-        "-" * 50,
-        f"  建议股数:     {result.shares}",
-        f"  仓位金额:     {result.position_value:,.0f} 元",
-        f"  仓位比例:     {result.position_pct*100:.2f}%",
-        f"  单票上限:     {result.single_limit_pct*100:.0f}%",
-        f"  超限:         {'是' if result.exceeds_single_limit else '否'}",
-        "-" * 50,
-        f"  账户热度:     {result.heat_loss_pct*100:.2f}% (上限 {CLUSTER_LIMITS['total_heat']*100:.0f}%)",
-        f"  热度检查:     {'通过' if result.heat_check_pass else '未通过'}",
     ]
+    if symbol:
+        lines.append(f"  股票代码:     {symbol}")
+    lines += [
+        f"  账户类型:     {calc['账户类型']}",
+        f"  回撤状态:     {calc['回撤状态']}",
+        f"  入场价:       {calc['入场价']:.2f}",
+        f"  止损价:       {calc['止损价']:.2f}",
+        "-" * 50,
+        f"  风险比例:     {calc['风险率']:.2f}%",
+        f"  风险预算:     {calc['风险预算']:,.0f} 元",
+        f"  每股风险:     {calc['每股风险']:.2f} 元",
+        f"  跳空折扣:     {calc['跳空折扣']}",
+        "-" * 50,
+        f"  建议股数:     {calc['股数']}",
+        f"  仓位金额:     {calc['仓位金额']:,.0f} 元",
+        f"  仓位比例:     {calc['仓位比例']:.2f}%",
+        f"  单票上限:     {calc['单票上限']:.0f}%",
+        f"  超限:         {'是（已缩减）' if calc['是否超限'] else '否'}",
+    ]
+    if calc.get("加仓价1") is not None:
+        lines += [
+            "-" * 50,
+            f"  加仓价 1:     {calc['加仓价1']:.2f}（首仓 + {ADD_SPACING_MIN:g}N）",
+            f"  加仓价 2:     {calc['加仓价2']:.2f}（首仓 + {ADD_SPACING_MAX:g}N）",
+        ]
 
-    if result.cluster_warnings:
-        lines.append("-" * 50)
-        lines.append("  风险簇警告:")
-        for w in result.cluster_warnings:
-            lines.append(f"    ⚠ {w}")
-
-    if result.notes:
+    if calc.get("备注"):
         lines.append("-" * 50)
         lines.append("  备注:")
-        for n in result.notes:
+        for n in calc["备注"]:
             lines.append(f"    · {n}")
 
     lines.append("=" * 50)
@@ -358,22 +219,22 @@ def format_result(result: PositionResult) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="仓位计算器 — 风险预算法")
+    parser = argparse.ArgumentParser(description="仓位计算器 — 风险预算法（config 口径）")
     parser.add_argument("--symbol", "-s", required=True, help="股票代码")
     parser.add_argument("--entry", "-e", type=float, required=True, help="入场价")
     parser.add_argument("--stop", type=float, required=True, help="止损价")
-    parser.add_argument("--equity", type=float, default=1_000_000, help="账户权益（默认100万）")
+    parser.add_argument("--equity", type=float, default=ACCOUNT_EQUITY, help="账户权益（默认 config.ACCOUNT_EQUITY）")
     parser.add_argument(
         "--account-type", "-t",
-        choices=[t.value for t in AccountType],
-        default="core",
-        help="账户类型: core/industry/event/seed",
+        choices=ACCOUNT_TYPES,
+        default="核心",
+        help="账户类型: 核心/产业/事件/实验",
     )
     parser.add_argument(
-        "--account-state",
-        choices=[s.value for s in AccountState],
-        default="normal",
-        help="账户状态: normal/alert/defense",
+        "--drawdown-state",
+        choices=DRAWDOWN_STATES,
+        default=DRAWDOWN_STATE,
+        help="回撤状态: Normal/Caution/Defensive/Review（默认 config.DRAWDOWN_STATE）",
     )
     parser.add_argument(
         "--gap-risk",
@@ -382,76 +243,67 @@ def main():
         help="跳空风险: none/announcement/clinical/geopolitical",
     )
     parser.add_argument("--gap-buffer", type=float, default=0.0, help="额外跳空缓冲（价格）")
-    parser.add_argument("--industry", default="", help="所属行业")
-    parser.add_argument("--innovative-pharma", action="store_true", help="是否创新药")
+    parser.add_argument("--atr", type=float, default=None, help="ATR(20)，用于加仓价建议（默认以每股风险为 N）")
+    parser.add_argument("--cluster", default="", help="风险簇（默认查 config.INDUSTRY_MAP）")
     parser.add_argument("--json", action="store_true", help="JSON 格式输出")
-    parser.add_argument(
-        "--positions-file",
-        type=str,
-        default="",
-        help="现有持仓 JSON 文件路径",
-    )
     parser.add_argument(
         "--check-existing",
         action="store_true",
-        help="自动从 trades.json 加载已有持仓进行簇风险检查",
+        help="从 trades.json 加载已有持仓，做组合级风险簇检查（复用 compliance_check）",
     )
     args = parser.parse_args()
 
-    account_type = AccountType(args.account_type)
-    account_state = AccountState(args.account_state)
-    gap_risk = GapRisk(args.gap_risk)
-    industry = args.industry or INDUSTRY_MAP.get(args.symbol, "")
-
-    result = calc_shares(
+    calc = calc_position(
         equity=args.equity,
-        entry_price=args.entry,
-        stop_price=args.stop,
-        account_type=account_type,
-        account_state=account_state,
-        gap_risk=gap_risk,
+        entry=args.entry,
+        stop=args.stop,
+        account_type=args.account_type,
+        drawdown_state=args.drawdown_state,
+        gap_risk=GapRisk(args.gap_risk),
         gap_buffer=args.gap_buffer,
+        atr=args.atr,
     )
 
-    # 加载现有持仓
-    existing = []
+    cluster_violations = []
+    cluster = args.cluster or lookup_cluster(args.symbol)
     if args.check_existing:
-        try:
-            from review.positions import export_open_positions
+        # 组合级风险簇检查：现有未平仓 + 本笔假设建仓，复用 compliance_check 逻辑
+        from review.trade_log import Trade, TradeLog
 
-            for p in export_open_positions():
-                existing.append(Position(
-                    symbol=p.get("股票代码", ""),
-                    shares=int(p.get("股数", 0)),
-                    entry_price=float(p.get("入场价", 0)),
-                    stop_price=float(p.get("止损价", 0)),
-                    industry=p.get("风险簇", ""),
-                    is_innovative_pharma=p.get("风险簇", "") == "创新药",
-                ))
-        except Exception as e:
-            print(f"警告: 无法从 trades.json 加载持仓: {e}", file=sys.stderr)
-    elif args.positions_file:
         try:
-            with open(args.positions_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for p in data:
-                    existing.append(Position(**p))
+            log = TradeLog()
+            hypothetical = Trade(
+                股票代码=args.symbol,
+                账户类型=args.account_type,
+                风险簇=cluster or "未指定",
+                入场系统="",
+                入场价=args.entry,
+                止损价=args.stop,
+                风险率=calc["风险率"],
+                股数=calc["股数"],
+                仓位金额=calc["仓位金额"],
+            )
+            cluster_violations = check_risk_cluster(
+                log.list_all(open_only=True) + [hypothetical],
+                account_equity=args.equity,
+            )
         except Exception as e:
-            print(f"警告: 无法加载持仓文件: {e}", file=sys.stderr)
-
-    result = check_cluster_risk(
-        result,
-        existing,
-        new_symbol=args.symbol,
-        new_industry=industry,
-        is_innovative_pharma=args.innovative_pharma,
-        equity=args.equity,
-    )
+            print(f"警告: 无法从 trades.json 加载持仓做簇风险检查: {e}", file=sys.stderr)
+    elif not cluster:
+        print(f"提示: {args.symbol} 不在 config.INDUSTRY_MAP 中，风险簇需人工指定（--cluster）", file=sys.stderr)
 
     if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        out = dict(calc)
+        out["股票代码"] = args.symbol
+        out["风险簇"] = cluster or "未指定"
+        out["簇风险违规"] = [v.描述 for v in cluster_violations]
+        print(json.dumps(out, ensure_ascii=False, indent=2))
     else:
-        print(format_result(result))
+        print(format_calc_text(calc, symbol=args.symbol))
+        if cluster_violations:
+            print("风险簇警告:")
+            for v in cluster_violations:
+                print(f"  ⚠ [{v.严重程度}] {v.描述} → {v.建议}")
 
 
 if __name__ == "__main__":

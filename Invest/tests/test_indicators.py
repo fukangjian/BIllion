@@ -112,3 +112,60 @@ class TestScanBreakoutCandidates:
         symbols_data = {"600519": df}
         result = scan_breakout_candidates(symbols_data, period=20)
         assert result.empty
+
+
+class TestCalcMarketBreadth:
+    """回归测试：calc_market_breadth 必须使用最新一天的宽度数据。
+
+    历史 bug：market_scanner 的 SQL 按 trade_date DESC 取 5 天（新→旧），
+    而 calc_market_breadth 取 iloc[-1]，实际用了 5 天中最旧的一天。
+    """
+
+    @staticmethod
+    def _make_limit_stats(order: str = "desc") -> pd.DataFrame:
+        """构造 5 天涨跌停统计，每天数值不同（最新一天 up_count=4000/down_count=500）"""
+        rows = [
+            {"trade_date": "2026-07-24", "up_count": 1000, "down_count": 3000,
+             "flat_count": 100, "limit_up_count": 10, "limit_down_count": 90,
+             "total_amount": 8e11},
+            {"trade_date": "2026-07-25", "up_count": 1500, "down_count": 2500,
+             "flat_count": 100, "limit_up_count": 20, "limit_down_count": 80,
+             "total_amount": 8.5e11},
+            {"trade_date": "2026-07-26", "up_count": 2000, "down_count": 2000,
+             "flat_count": 100, "limit_up_count": 30, "limit_down_count": 70,
+             "total_amount": 9e11},
+            {"trade_date": "2026-07-27", "up_count": 3000, "down_count": 1000,
+             "flat_count": 100, "limit_up_count": 40, "limit_down_count": 60,
+             "total_amount": 9.5e11},
+            {"trade_date": "2026-07-28", "up_count": 4000, "down_count": 500,
+             "flat_count": 100, "limit_up_count": 50, "limit_down_count": 5,
+             "total_amount": 1e12},
+        ]
+        if order == "desc":
+            rows = rows[::-1]  # 模拟 SQL ORDER BY trade_date DESC（新→旧）
+        return pd.DataFrame(rows)
+
+    def test_uses_latest_day_with_desc_input(self):
+        from pipeline.indicators import calc_market_breadth
+
+        df = self._make_limit_stats(order="desc")
+        result = calc_market_breadth(df)
+        assert result["up_count"] == 4000
+        assert result["down_count"] == 500
+        assert result["breadth_ratio"] == pytest.approx(8.0)
+        assert result["limit_up_ratio"] == pytest.approx(50 / 4600)
+
+    def test_uses_latest_day_with_asc_input(self):
+        from pipeline.indicators import calc_market_breadth
+
+        df = self._make_limit_stats(order="asc")
+        result = calc_market_breadth(df)
+        assert result["up_count"] == 4000
+        assert result["down_count"] == 500
+        assert result["breadth_ratio"] == pytest.approx(8.0)
+
+    def test_empty_input_returns_default(self):
+        from pipeline.indicators import calc_market_breadth
+
+        result = calc_market_breadth(pd.DataFrame())
+        assert result["breadth_ratio"] == 1.0

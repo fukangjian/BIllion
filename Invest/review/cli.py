@@ -14,24 +14,71 @@ warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported ve
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import ACCOUNT_EQUITY, DRAWDOWN_STATE, MARKET_SCAN_OUTPUT_DIR
+from config import (
+    ACCOUNT_EQUITY,
+    ATR_STOP_MULT,
+    DRAWDOWN_STATE,
+    MARKET_SCAN_OUTPUT_DIR,
+    STATS_OUTPUT_DIR,
+    STRATEGY_CODES,
+    SYSTEM_DEFAULT_ACCOUNT,
+)
+from position_calculator import calc_position, format_calc_text, lookup_cluster
+from review.buy_card import calc_dict_from_trade, generate_buy_card
 from review.compliance_check import run_compliance_check, report_to_markdown
+from review.entry_gate import check_entry, derive_state_safe, force_note, format_violations, split_by_severity
 from review.metrics import compute_stats, enrich_trade_metrics, group_by_account, group_by_strategy, stats_to_markdown
-from review.report_generator import generate_monthly_report, generate_weekly_report
+from review.report_generator import generate_monthly_report, generate_weekly_report, signal_verification_section
 from review.trade_log import Trade, TradeLog
+from shared.utils import df_to_markdown_table, obsidian_frontmatter, write_markdown
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 
+def _resolve_cluster(symbol: str, cluster_arg: str) -> str:
+    """风险簇归属：--cluster 优先，其次 config.INDUSTRY_MAP，查不到提示人工指定并记为「未指定」"""
+    cluster = cluster_arg or lookup_cluster(symbol)
+    if not cluster:
+        print(f"[提示] {symbol} 不在 config.INDUSTRY_MAP 中，风险簇记为「未指定」，建议用 --cluster 人工指定")
+        cluster = "未指定"
+    return cluster
+
+
+def _apply_entry_gate(trade: Trade, log: TradeLog, equity: float, force: bool,
+                      drawdown_state: str | None = None) -> bool:
+    """
+    入场合规闸门：打印中/低级警告（继续），高级违规拒绝写入（返回 False）；
+    --force 时强制放行并在备注留痕。返回是否允许写入。
+    """
+    violations, state = check_entry(trade, trade_log=log, account_equity=equity,
+                                    drawdown_state=drawdown_state)
+    print(f"[合规] 回撤状态: {state}，共 {len(violations)} 项违规")
+    high, others = split_by_severity(violations)
+    if others:
+        print(f"[警告] {len(others)} 项中/低级违规（继续建仓）:")
+        print(format_violations(others))
+    if not high:
+        return True
+    print(f"[违规] {len(high)} 项高级违规:")
+    print(format_violations(high))
+    if not force:
+        print("[拒绝] 存在高级违规，未写入 trades.json；确认风险后可加 --force 强制建仓")
+        return False
+    trade.备注 = (trade.备注 + " " if trade.备注 else "") + force_note(high)
+    print("[警告] --force 生效：强制写入，备注已留痕")
+    return True
+
+
 def cmd_add(args):
     log = TradeLog()
+    equity = args.equity or ACCOUNT_EQUITY
     trade = Trade(
         日期=args.date or datetime.now().strftime("%Y-%m-%d"),
         股票代码=args.symbol,
         股票名称=args.name or "",
         账户类型=args.account,
-        风险簇=args.cluster or "",
+        风险簇=_resolve_cluster(args.symbol, args.cluster),
         入场系统=args.system,
         核心逻辑=args.logic or "",
         入场价=args.entry,
@@ -41,9 +88,14 @@ def cmd_add(args):
         仓位金额=args.position or (args.entry * args.shares),
         是否系统内交易=not args.off_system,
     )
+    if not _apply_entry_gate(trade, log, equity, force=args.force):
+        return
     log.add(trade)
     print(f"[OK] 已添加交易: {trade.交易编号}")
     print(f"     {trade.股票代码} {trade.股票名称} @ {trade.入场价}")
+    card = generate_buy_card(trade, calc_dict_from_trade(trade, equity))
+    if card:
+        print(f"[OK] 买入卡: {card}")
 
 
 def cmd_update(args):
@@ -136,6 +188,32 @@ def cmd_stats(args):
         df = group_by_account(trades)
         print(df.to_string(index=False) if not df.empty else "无数据")
 
+    _write_stats_snapshot(stats, trades, args)
+
+
+def _write_stats_snapshot(stats, trades: list[Trade], args) -> None:
+    """统计快照写入 vault 统计目录（终端同款统计 + 信号验证统计）；写文件失败仅告警，不影响终端输出"""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        lines = [
+            obsidian_frontmatter(["统计", "交易复盘"], date=today),
+            f"# 交易统计 · {today}",
+            "",
+            "## 累计统计",
+            "",
+            stats_to_markdown(stats),
+        ]
+        if getattr(args, "by_strategy", False):
+            lines.extend(["", "## 按策略分组", "", df_to_markdown_table(group_by_strategy(trades))])
+        if getattr(args, "by_account", False):
+            lines.extend(["", "## 按账户分组", "", df_to_markdown_table(group_by_account(trades))])
+        lines.extend(["", "## 信号验证（近 90 天）", "", signal_verification_section(), ""])
+
+        path = write_markdown("\n".join(lines), STATS_OUTPUT_DIR / f"{today}_交易统计.md")
+        print(f"\n[OK] 统计快照已写入: {path}")
+    except Exception as e:
+        print(f"\n[警告] 统计快照写入失败（不影响终端输出）: {e}")
+
 
 def cmd_weekly(args):
     path = generate_weekly_report(fetch_prices=args.fetch_prices)
@@ -156,6 +234,14 @@ def cmd_check(args):
         account_equity=args.equity or ACCOUNT_EQUITY,
     )
     print(report_to_markdown(report))
+
+
+def cmd_positions(args):
+    """打印持仓摘要（未实现盈亏、总风险敞口、回撤状态）"""
+    from review.positions import print_portfolio_summary
+
+    log = TradeLog()
+    print_portfolio_summary(log, account_equity=args.equity or ACCOUNT_EQUITY)
 
 
 def _load_scan_json(date: str | None = None) -> dict | None:
@@ -180,8 +266,99 @@ def _find_breakout_in_scan(scan_data: dict, symbol: str) -> tuple[dict | None, s
     return None, None
 
 
+def _default_account_for_system(entry_system: str) -> str:
+    """入场系统 → 默认账户类型（config.SYSTEM_DEFAULT_ACCOUNT：S1→产业、S2→核心）"""
+    s = (entry_system or "").upper()
+    for key, account in SYSTEM_DEFAULT_ACCOUNT.items():
+        if key in s:
+            return account
+    return "产业"
+
+
+def _execute_from_scan(args, scan_data: dict, symbol: str):
+    """from-scan --execute：扫描信号 → 仓位计算 → 合规闸门 → 落库 → 买入卡"""
+    symbol = symbol.zfill(6)[-6:]
+    item_s1 = item_s2 = None
+    for item in scan_data.get("breakout_s1a", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            item_s1 = item
+    for item in scan_data.get("breakout_s2a", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            item_s2 = item
+
+    if not item_s1 and not item_s2:
+        print(f"[ERROR] {symbol} 不在今日突破候选列表中")
+        return
+
+    # 入场系统：--system 指定优先；同时出现 S1/S2 信号时默认 S2（慢速，更稳）
+    if args.system:
+        entry_system = args.system
+        item = item_s1 if entry_system == "S1-A" else item_s2
+        if not item:
+            print(f"[ERROR] {symbol} 不在 {entry_system} 候选列表中")
+            return
+    elif item_s1 and item_s2:
+        entry_system, item = "S2-A", item_s2
+        print("[说明] 该股同时出现 S1-A/S2-A 信号，默认按 S2-A（慢速，更稳）建仓，可用 --system S1-A 覆盖")
+    elif item_s2:
+        entry_system, item = "S2-A", item_s2
+    else:
+        entry_system, item = "S1-A", item_s1
+
+    close = item["close"]
+    atr = item.get("atr_20", 0) or 0
+    stop = round(close - atr * ATR_STOP_MULT, 2) if atr > 0 else round(close * 0.95, 2)
+    equity = args.equity or ACCOUNT_EQUITY
+    account = args.account or _default_account_for_system(entry_system)
+
+    print(f"[OK] 信号: {entry_system} | 收盘价 {close:.2f} | ATR(20) {atr:.2f} | 建议止损 {stop:.2f} | 账户 {account}")
+
+    log = TradeLog()
+    state = derive_state_safe(log)
+
+    calc = calc_position(
+        equity=equity,
+        entry=close,
+        stop=stop,
+        account_type=account,
+        drawdown_state=state,
+        atr=atr or None,
+    )
+    print(format_calc_text(calc, symbol=symbol))
+    if calc["股数"] <= 0:
+        print("[拒绝] 仓位计算结果为 0 股，未建仓")
+        return
+
+    logic = (
+        f"{entry_system} 突破：收盘 {close:.2f} 突破 {item.get('period', '?')} 日通道高点 "
+        f"{item.get('channel_high', 0):.2f}（+{item.get('breakout_pct', 0):.2f}%）"
+    )
+    trade = Trade(
+        股票代码=symbol,
+        股票名称=args.name or "",
+        账户类型=account,
+        风险簇=_resolve_cluster(symbol, args.cluster),
+        入场系统=entry_system,
+        核心逻辑=logic,
+        入场价=close,
+        止损价=stop,
+        风险率=calc["风险率"],
+        股数=calc["股数"],
+        仓位金额=calc["仓位金额"],
+        是否系统内交易=True,
+    )
+    if not _apply_entry_gate(trade, log, equity, force=args.force, drawdown_state=state):
+        return
+    log.add(trade)
+    print(f"[OK] 已添加交易: {trade.交易编号}")
+    print(f"     {trade.股票代码} {trade.股票名称} @ {trade.入场价} 止损 {trade.止损价} {trade.股数}股")
+    card = generate_buy_card(trade, calc, scan_info=item)
+    if card:
+        print(f"[OK] 买入卡: {card}")
+
+
 def cmd_from_scan(args):
-    """从当天扫描 JSON 读取突破数据，输出建议入场参数"""
+    """从当天扫描 JSON 读取突破数据，输出建议入场参数（--execute 时直接落库）"""
     scan_data = _load_scan_json(args.date)
     if not scan_data:
         scan_date = args.date or datetime.now().strftime("%Y-%m-%d")
@@ -190,6 +367,11 @@ def cmd_from_scan(args):
         return
 
     symbol = args.symbol.zfill(6)[-6:]
+
+    if args.execute:
+        _execute_from_scan(args, scan_data, symbol)
+        return
+
     breakout, entry_system = _find_breakout_in_scan(scan_data, symbol)
     if not breakout:
         print(f"[ERROR] {symbol} 不在今日突破候选列表中")
@@ -206,7 +388,7 @@ def cmd_from_scan(args):
     close = breakout["close"]
     channel_high = breakout["channel_high"]
     atr = breakout.get("atr_20", 0) or 0
-    suggested_stop = round(close - atr * 2, 2) if atr > 0 else round(close * 0.95, 2)
+    suggested_stop = round(close - atr * ATR_STOP_MULT, 2) if atr > 0 else round(close * 0.95, 2)
 
     print(f"[OK] 从扫描 JSON 读取 {symbol} 突破数据")
     print(f"     扫描日期:   {scan_data.get('date')}")
@@ -216,7 +398,7 @@ def cmd_from_scan(args):
     print(f"     通道高点:   {channel_high:.2f}")
     print(f"     突破幅度:   {breakout.get('breakout_pct', 0):.2f}%")
     print(f"     ATR(20):    {atr:.2f}")
-    print(f"     建议止损:   {suggested_stop:.2f}  (收盘价 - ATR×2)")
+    print(f"     建议止损:   {suggested_stop:.2f}  (收盘价 - ATR×{ATR_STOP_MULT:g})")
     print()
     print("添加交易示例:")
     print(
@@ -225,6 +407,8 @@ def cmd_from_scan(args):
         f"--entry {close} --stop {suggested_stop} "
         f"--risk 0.5 --shares 100"
     )
+    print("或一键落库（含合规闸门与买入卡）:")
+    print(f"  python review/cli.py from-scan {symbol} --execute")
 
 
 def cmd_show(args):
@@ -243,20 +427,23 @@ def main():
     )
     sub = parser.add_subparsers(dest="command", help="子命令")
 
-    p_add = sub.add_parser("add", help="添加新交易")
+    p_add = sub.add_parser("add", help="添加新交易（写入前自动过合规闸门）")
     p_add.add_argument("symbol", help="股票代码")
     p_add.add_argument("--name", default="", help="股票名称")
     p_add.add_argument("--date", default=None, help="入场日期 YYYY-MM-DD")
     p_add.add_argument("--account", required=True, help="账户类型: 核心/产业/事件/实验")
-    p_add.add_argument("--cluster", default="", help="风险簇: 创新药/AI算力/半导体等")
-    p_add.add_argument("--system", required=True, help="入场系统: S1-A/S2-A/预埋")
+    p_add.add_argument("--cluster", default="", help="风险簇: 创新药/AI算力/半导体等（默认查 config.INDUSTRY_MAP）")
+    p_add.add_argument("--system", required=True, choices=STRATEGY_CODES,
+                       help=f"入场系统: {'/'.join(STRATEGY_CODES)}")
     p_add.add_argument("--logic", default="", help="核心逻辑")
     p_add.add_argument("--entry", type=float, required=True, help="入场价")
     p_add.add_argument("--stop", type=float, required=True, help="止损价")
-    p_add.add_argument("--risk", type=float, required=True, help="风险率 (%)")
+    p_add.add_argument("--risk", type=float, required=True, help="风险率 (%%)")
     p_add.add_argument("--shares", type=int, required=True, help="股数")
     p_add.add_argument("--position", type=float, default=None, help="仓位金额")
+    p_add.add_argument("--equity", type=float, default=None, help="账户权益（默认 config.ACCOUNT_EQUITY）")
     p_add.add_argument("--off-system", action="store_true", help="标记为非系统内交易")
+    p_add.add_argument("--force", action="store_true", help="高级违规也强制写入（备注留痕）")
     p_add.set_defaults(func=cmd_add)
 
     p_upd = sub.add_parser("update", help="更新交易")
@@ -301,9 +488,21 @@ def main():
     p_check.add_argument("--equity", type=float, default=None, help="账户权益")
     p_check.set_defaults(func=cmd_check)
 
-    p_scan = sub.add_parser("from-scan", help="从扫描 JSON 读取突破数据")
+    p_pos = sub.add_parser("positions", help="持仓摘要（未实现盈亏/风险敞口/回撤状态）")
+    p_pos.add_argument("--equity", type=float, default=None, help="账户权益")
+    p_pos.set_defaults(func=cmd_positions)
+
+    p_scan = sub.add_parser("from-scan", help="从扫描 JSON 读取突破数据（--execute 一键建仓落库）")
     p_scan.add_argument("symbol", help="股票代码")
     p_scan.add_argument("--date", default=None, help="扫描日期 YYYY-MM-DD（默认今天）")
+    p_scan.add_argument("--execute", action="store_true", help="按信号建仓落库（含合规闸门与买入卡）")
+    p_scan.add_argument("--system", choices=["S1-A", "S2-A"], default=None,
+                        help="入场系统（默认：仅单一信号用该信号；同股双信号按 S2-A）")
+    p_scan.add_argument("--account", default=None, help="账户类型（默认按系统映射：S1→产业、S2→核心）")
+    p_scan.add_argument("--cluster", default="", help="风险簇（默认查 config.INDUSTRY_MAP）")
+    p_scan.add_argument("--name", default="", help="股票名称（买入卡用）")
+    p_scan.add_argument("--equity", type=float, default=None, help="账户权益（默认 config.ACCOUNT_EQUITY）")
+    p_scan.add_argument("--force", action="store_true", help="高级违规也强制写入（备注留痕）")
     p_scan.set_defaults(func=cmd_from_scan)
 
     args = parser.parse_args()

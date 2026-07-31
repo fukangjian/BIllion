@@ -13,6 +13,7 @@ from config import (
     RISK_CLUSTER_LIMITS,
     RISK_LIMITS_DRAWDOWN,
     RISK_LIMITS_NORMAL,
+    STRATEGY_CODES,
 )
 from review.trade_log import Trade, TradeLog
 
@@ -47,7 +48,8 @@ class ComplianceReport:
         self.违规列表.append(violation)
 
 
-def _get_risk_limit(account_type: str, drawdown_state: str) -> float:
+def get_risk_limit(account_type: str, drawdown_state: str) -> float:
+    """账户类型在给定回撤状态下的单笔风险率上限（%），供合规检查与仓位计算共用"""
     if drawdown_state in ("Caution", "Defensive", "Review"):
         for key, limit in RISK_LIMITS_DRAWDOWN.items():
             if key in account_type or account_type in key:
@@ -59,7 +61,8 @@ def _get_risk_limit(account_type: str, drawdown_state: str) -> float:
     return 0.5
 
 
-def _get_position_limit(account_type: str) -> float:
+def get_position_limit(account_type: str) -> float:
+    """账户类型的单票仓位上限（占权益 %），供合规检查与仓位计算共用"""
     for key, limit in POSITION_LIMITS.items():
         if key in account_type or account_type in key:
             return limit
@@ -83,7 +86,7 @@ def check_single_trade(
             建议="所有交易必须在入场前定义止损价",
         ))
 
-    risk_limit = _get_risk_limit(trade.账户类型, drawdown_state)
+    risk_limit = get_risk_limit(trade.账户类型, drawdown_state)
     if trade.风险率 > MAX_SINGLE_RISK_PCT:
         violations.append(Violation(
             交易编号=trade.交易编号,
@@ -105,7 +108,7 @@ def check_single_trade(
 
     if account_equity > 0 and trade.仓位金额 > 0:
         position_pct = trade.仓位金额 / account_equity * 100
-        pos_limit = _get_position_limit(trade.账户类型)
+        pos_limit = get_position_limit(trade.账户类型)
         if position_pct > pos_limit:
             violations.append(Violation(
                 交易编号=trade.交易编号,
@@ -137,6 +140,16 @@ def check_single_trade(
             严重程度="低",
             描述="该交易标记为非系统内交易",
             建议="复盘原因，避免重复",
+        ))
+    elif trade.入场系统 and trade.入场系统 not in STRATEGY_CODES:
+        # 入场系统不在五策略清单内（STRATEGY_CODES），同样视为非系统内交易
+        violations.append(Violation(
+            交易编号=trade.交易编号,
+            股票代码=trade.股票代码,
+            违规类型="非系统内交易",
+            严重程度="低",
+            描述=f"入场系统「{trade.入场系统}」不在策略清单 {'/'.join(STRATEGY_CODES)} 内",
+            建议="按策略评估筛选框架核对该交易的系统归属",
         ))
 
     return violations

@@ -2,14 +2,16 @@
 巨潮信息网公告全文抓取 — 搜索、HTML 解析、本地缓存、长文分块摘要
 """
 import hashlib
+import io
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
+import pandas as pd
 import requests
 
 from config import ANNOUNCEMENT_CACHE_DIR, ANNOUNCEMENT_MAX_CHARS
@@ -190,6 +192,26 @@ def _is_valid_extracted_text(text: str) -> bool:
     return True
 
 
+# 未取得正文时的占位标记（命中即表示 content 只是链接/提示，绝不可交给 LLM 分析）
+NO_CONTENT_MARKERS = (
+    "需手动查看",
+    "请手动查阅",
+    "解析失败",
+    "未能获取公告链接",
+    "完整正文请访问",
+)
+
+
+def has_real_content(content: str) -> bool:
+    """判断是否为真实公告正文（而非链接占位/降级提示）。
+
+    防编造护栏：analyze 侧只对返回 True 的内容调用 LLM。
+    """
+    if not content or len(content) < 50:
+        return False
+    return not any(marker in content for marker in NO_CONTENT_MARKERS)
+
+
 def _cache_path(symbol: str, date: str, title: str) -> Path:
     """生成公告缓存文件路径（同一公告只抓取一次）"""
     raw = f"{normalize_symbol(symbol)}|{date}|{title}"
@@ -243,6 +265,93 @@ def _cninfo_column(symbol: str) -> str:
     if s.startswith(("8", "4")):
         return "bj"
     return "szse"
+
+
+def _normalize_announcement_df(df: pd.DataFrame) -> pd.DataFrame:
+    """将各来源公告 DataFrame 的列统一为 title / date / category / url"""
+    col_map = {}
+    for col in df.columns:
+        c = str(col)
+        if "标题" in c:
+            col_map[col] = "title"
+        elif "时间" in c or "日期" in c:
+            col_map[col] = "date"
+        elif "类型" in c:
+            col_map[col] = "category"
+        elif "网址" in c or "url" in c.lower() or "链接" in c:
+            col_map[col] = "url"
+    df = df.rename(columns=col_map)
+    if "date" in df.columns:
+        df = df.sort_values("date", ascending=False)
+    return df
+
+
+def _fetch_today_notices(symbol: str) -> pd.DataFrame:
+    """AkShare 东财当日公告（stock_notice_report）：数据新鲜，但仅覆盖当日"""
+    import akshare as ak
+
+    symbol = normalize_symbol(symbol)
+    today_str = datetime.now().strftime("%Y%m%d")
+    try:
+        df = ak.stock_notice_report(symbol="全部", date=today_str)
+    except Exception as e:
+        logger.info("东财当日公告获取失败 (%s): %s", symbol, e)
+        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    code_col = next((c for c in df.columns if "代码" in str(c)), None)
+    if code_col is None:
+        return pd.DataFrame()
+    df = df[df[code_col].astype(str).str.strip() == symbol]
+    if df.empty:
+        return pd.DataFrame()
+    return _normalize_announcement_df(df)
+
+
+def _fetch_cninfo_history(symbol: str, days: int = 400) -> pd.DataFrame:
+    """直查巨潮 hisAnnouncement HTTP API，获取个股历史公告（AkShare 个股接口失效后的主渠道）"""
+    symbol = normalize_symbol(symbol)
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    end = datetime.now().strftime("%Y-%m-%d")
+    try:
+        announcements = _query_cninfo(symbol, se_date=f"{start}~{end}")
+    except Exception as e:
+        logger.warning("巨潮历史公告查询失败 (%s): %s", symbol, e)
+        return pd.DataFrame()
+
+    rows = []
+    for item in announcements:
+        title = re.sub(r"<[^>]+>", "", item.get("announcementTitle", "") or "").strip()
+        try:
+            date = datetime.fromtimestamp(int(item.get("announcementTime")) / 1000).strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OSError):
+            date = ""
+        rows.append({
+            "title": title,
+            "date": date,
+            "category": "公告",
+            "url": _announcement_to_result(item).get("url", ""),
+        })
+    return pd.DataFrame(rows)
+
+
+def fetch_latest_announcements(symbol: str, limit: int = 10, days: int = 400) -> pd.DataFrame:
+    """
+    获取个股最新公告列表，统一列: title / date / category / url（按日期倒序）。
+
+    fallback 链（2026-07 实测）：
+      1) AkShare stock_notice_report（东财当日公告，新鲜但仅覆盖当日）
+      2) 巨潮 hisAnnouncement HTTP API 直查（个股历史公告主渠道）
+    已弃用：ak.stock_zh_a_disclosure_report_cninfo 返回停在 2023-12 的陈旧数据，
+    ak.stock_zh_a_disclosure_relation_cninfo 接口失效（KeyError）。
+    """
+    df = _fetch_today_notices(symbol)
+    if df.empty:
+        df = _fetch_cninfo_history(symbol, days=days)
+    if df.empty:
+        logger.warning("股票 %s 未获取到公告（东财/巨潮均不可用）", normalize_symbol(symbol))
+    return df.head(limit)
 
 
 def fetch_cninfo_announcement(symbol: str, title: str) -> dict:
@@ -329,6 +438,50 @@ def extract_html_content(url: str) -> str:
     return "\n".join(lines)
 
 
+PDF_MAX_PAGES = 30  # 最多提取前 N 页，防止超大 PDF 卡死
+
+
+def extract_pdf_content(url: str, max_pages: int = PDF_MAX_PAGES) -> str:
+    """下载 PDF 公告并用 pypdf 提取文本（最多前 max_pages 页），失败返回空串。
+
+    公告 PDF 含大量表格/乱码属正常，提取到多少算多少。
+    """
+    if not url:
+        return ""
+
+    with bypass_proxy():
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=60)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+        except Exception as e:
+            logger.warning("下载 PDF 公告失败: %s — %s", url[:60], e)
+            return ""
+
+    if not pdf_bytes or len(pdf_bytes) < 100:
+        logger.warning("PDF 内容为空或过小: %s", url[:60])
+        return ""
+
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        logger.warning("未安装 pypdf，无法解析 PDF 公告（pip install pypdf）")
+        return ""
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        texts = []
+        for page in reader.pages[:max_pages]:
+            try:
+                texts.append(page.extract_text() or "")
+            except Exception as e:
+                logger.warning("PDF 单页提取失败，跳过: %s", e)
+        return "\n".join(t for t in texts if t).strip()
+    except Exception as e:
+        logger.warning("PDF 解析失败: %s — %s", url[:60], e)
+        return ""
+
+
 def fetch_announcement_full_text(
     url: str,
     symbol: str = "",
@@ -360,7 +513,11 @@ def fetch_announcement_full_text(
         return "（未能获取公告链接，请手动查阅巨潮资讯网）"
 
     if content_type == "pdf" or fetch_url.lower().endswith(".pdf"):
-        content = f"公告链接: {fetch_url}\n（PDF 公告需手动查看）"
+        body = extract_pdf_content(fetch_url)
+        if _is_valid_extracted_text(body):
+            content = body
+        else:
+            content = f"公告链接: {fetch_url}\n（PDF 正文提取失败，PDF 公告需手动查看）"
         if symbol and title and date:
             cache_announcement(symbol, date, title, content, url=fetch_url, content_type="pdf")
         return content

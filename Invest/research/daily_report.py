@@ -129,7 +129,16 @@ def fetch_announcement_summary(symbol: str) -> str:
         title = str(row.get("title", ""))[:40]
         date = str(row.get("date", ""))[:10]
         items.append(f"{date} {title}")
-    return f"- **{name}({symbol})**: " + " | ".join(items)
+    line = f"- **{name}({symbol})**: " + " | ".join(items)
+
+    # 新鲜度检查：最新公告距今 >30 天时标注
+    try:
+        latest_date = str(df.iloc[0].get("date", ""))[:10]
+        if (datetime.now() - datetime.strptime(latest_date, "%Y-%m-%d")).days > 30:
+            line += f" ⚠️ 公告数据可能陈旧（最新：{latest_date}）"
+    except ValueError:
+        pass
+    return line
 
 
 def load_breakout_candidates() -> str:

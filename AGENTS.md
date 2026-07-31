@@ -10,9 +10,9 @@
 
 - **信息整理**：A 股行情抓取（AkShare）、公告/财报/产业链研究（LLM）、每日研究日报
 - **计算执行**：技术指标、市场扫描（突破候选）、仓位计算、策略回测
-- **纪律审计**：交易日志、合规检查、周/月复盘报告
+- **纪律审计**：持仓监控（止损/退出警报）、交易日志、入场合规闸门、周/月复盘报告、信号验证
 
-仓库其余目录（`【1】宏观经济` … `【11】统一体系`）均为 Markdown 笔记，无代码。其中 `【10】实盘记录/` 是 Invest 复盘模块的输出目标（周报/月报/统计直接写入 vault），`【11】统一体系/投资体系_V5.0.md` 是合规规则与策略命名的业务依据。
+仓库其余目录（`【1】宏观经济` … `【11】统一体系`）均为 Markdown 笔记，无代码。其中 `【10】实盘记录/` 是 Invest 复盘模块的输出目标（买入卡/周报/月报/统计直接写入 vault），`【11】统一体系/投资体系_V5.0.md` 是合规规则与策略命名的业务依据。
 
 ## 2. 仓库结构
 
@@ -24,34 +24,38 @@ E:/Billion/                     # Obsidian vault 根
     ├── README.md               # 使用文档（命令速查）
     ├── ARCHITECTURE.md         # 完整架构与设计文档（含函数索引、数据流图）
     ├── requirements.txt        # 唯一依赖清单（无 pyproject.toml / 无打包）
-    ├── config.py               # 统一配置：路径、API 密钥、股票池、合规规则
-    ├── run_all.py              # 统一入口：盘前一键（数据管道 + 研究日报）
+    ├── config.py               # 统一配置：路径、API 密钥、股票池、合规规则、策略参数
+    ├── run_all.py              # 统一入口：盘前一键（取数→扫描→持仓监控→信号结算→日报）
     ├── server.py               # FastAPI 服务 + APScheduler 定时调度（端口 8900）
-    ├── position_calculator.py  # 仓位计算器（风险预算法 + 簇风险检查）
+    ├── position_calculator.py  # 仓位计算器（calc_position 纯函数，口径同 config）
     ├── shared/                 # 共享服务层
     │   ├── utils.py            # 代理绕过、重试、Markdown/frontmatter 工具
     │   ├── data_fetcher.py     # AkShare 数据获取（ThreadPoolExecutor 并行）
     │   ├── llm_client.py       # 多 LLM 路由（Kimi→DeepSeek→Custom）+ 24h 缓存
     │   └── prompts.py          # 提示词模板（纯字符串常量）
     ├── pipeline/               # 数据管道
-    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert）
+    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert，含 signals 表）
     │   ├── indicators.py       # Donchian 通道、ATR、市场状态 A/B/C/D
-    │   ├── market_scanner.py   # 市场扫描，同写 MD（人读）+ JSON（机器读）
+    │   ├── market_scanner.py   # 市场扫描 + 持仓监控区块，同写 MD + JSON
+    │   ├── signal_tracker.py   # 信号追踪：突破信号入库、每日结算、胜率/平均R 统计
     │   └── run_daily.py        # CLI 入口
     ├── research/               # AI 研究助手
     │   ├── daily_report.py         # 每日研究日报
-    │   ├── announcement_analyzer.py / announcement_fetcher.py  # 巨潮公告全文 + 分块摘要
+    │   ├── announcement_analyzer.py / announcement_fetcher.py  # 公告 fallback 链 + 防编造护栏 + PDF 提取
     │   ├── financial_comparison.py # 财报对比
     │   └── industry_mapper.py      # 产业链映射
-    ├── backtest/               # Backtrader 回测（S1-A / S2-A 策略，权益曲线 + 回撤图）
+    ├── backtest/               # Backtrader 回测（S1-A / S2-A 策略，与实盘共用 config 策略参数）
     ├── review/                 # 交易复盘
-    │   ├── cli.py              # 子命令：add/update/list/stats/weekly/monthly/check/from-scan
+    │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/from-scan
     │   ├── trade_log.py        # Trade dataclass + trades.json 存储
-    │   ├── positions.py        # 持仓视图与风险敞口
+    │   ├── monitor.py          # 持仓监控：止损/退出通道警报、回撤状态自动推导
+    │   ├── entry_gate.py       # 入场合规闸门（高级违规拒绝，--force 留痕）
+    │   ├── buy_card.py         # 建仓后自动生成买入卡（写入 vault 交易日志/）
+    │   ├── positions.py        # 持仓视图、风险敞口、未实现盈亏（market.db 收盘价）
     │   ├── metrics.py / compliance_check.py / report_generator.py
-    ├── tests/                  # pytest 单元测试（30 用例）
+    ├── tests/                  # pytest 单元测试（142 用例）
     ├── data/                   # 数据存储（market.db、trades.json、公告与 LLM 缓存）
-    └── output/                 # 报告输出（日报、扫描、回测图等）
+    └── output/                 # 报告输出（日报、扫描、持仓监控 JSON、回测图等）
 ```
 
 ## 3. 技术栈
@@ -65,6 +69,7 @@ E:/Billion/                     # Obsidian vault 根
   - `backtrader` + `matplotlib` — 回测引擎与图表
   - `fastapi` + `uvicorn` + `apscheduler` — HTTP 服务与定时调度
   - `beautifulsoup4` / `requests` — 巨潮公告 HTML 抓取解析
+  - `pypdf` — 巨潮 PDF 公告正文提取（最多前 30 页）
   - `pytest` — 测试
   - `python-dotenv`、`tabulate` 为预留依赖，当前代码未直接 import
 
@@ -77,7 +82,7 @@ cd "e:\Billion\Invest"
 pip install -r requirements.txt        # 安装依赖
 
 # —— 盘前工作流 ——
-python run_all.py                      # 一键：并行取数 + 市场扫描 + 研究日报
+python run_all.py                      # 一键：取数→扫描→持仓监控→信号结算→研究日报
 python run_all.py --skip-fetch         # 跳过取数（用已有数据库）
 python pipeline/run_daily.py           # 仅数据管道
 python research/run_daily_report.py    # 仅研究日报
@@ -86,12 +91,20 @@ python research/run_daily_report.py    # 仅研究日报
 python server.py                       # 启动；POST /pre-market、/pipeline、/research，GET /status、/latest-scan、/latest-report
 $env:ENABLE_SCHEDULER="true"           # 可选：每天 08:30（SCHEDULER_TIME）自动盘前
 
-# —— 其他工具 ——
-python position_calculator.py -s 600519 -e 1800 --stop 1700 -t core --equity 1000000
-python backtest/run_backtest.py --strategy S1-A --symbol 600519 --start 2020-01-01
+# —— 交易执行链路 ——
+python review/cli.py from-scan 600519             # 只打印突破参数与建议（不落库）
+python review/cli.py from-scan 600519 --execute   # 一键建仓：仓位计算→合规闸门→写库→生成买入卡
 python review/cli.py add 600519 --account 核心 --system S1-A --entry 1800 --stop 1700 --risk 0.5 --shares 100
-python review/cli.py from-scan 600519  # 从扫描 JSON 读取突破参数快速建仓
-python review/cli.py weekly / monthly  # 周报/月报写入 vault 的【10】实盘记录/
+python review/cli.py positions                    # 持仓摘要（未实现盈亏/风险敞口/回撤状态）
+python review/cli.py check                        # 手动合规检查
+python position_calculator.py -s 600519 -e 1800 --stop 1700 -t 核心 --equity 1000000
+
+# —— 信号验证与复盘 ——
+python pipeline/signal_tracker.py stats --days 90  # 信号胜率/平均R/PF
+python pipeline/signal_tracker.py settle           # 手动结算信号（盘前流程已自动执行）
+python review/cli.py weekly / monthly              # 周报/月报（含信号验证节）写入 vault【10】实盘记录/
+python review/cli.py stats                         # 终端统计 + 写【10】实盘记录/统计/
+python backtest/run_backtest.py --strategy S1-A --symbol 600519 --start 2020-01-01
 
 # —— 测试 ——
 python -m pytest tests/ -v
@@ -107,27 +120,29 @@ $env:DEEPSEEK_API_KEY="sk-..."    # 备选
 $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端点
 ```
 
-其他环境变量：`ACCOUNT_EQUITY`（默认 1000000）、`DRAWDOWN_STATE`（Normal/Caution/Defensive/Review）、`SERVER_PORT`（8900）等，完整列表见 `Invest/README.md` 与 `Invest/ARCHITECTURE.md` 第 7 章。
+其他环境变量：`ACCOUNT_EQUITY`（默认 1000000）、`DRAWDOWN_STATE`（Normal/Caution/Defensive/Review；未显式设置时由 `review/monitor.py` 按权益曲线自动推导，冲突时以推导值为准）、`SERVER_PORT`（8900）等，完整列表见 `Invest/README.md` 与 `Invest/ARCHITECTURE.md` 第 7 章。
 
 ## 5. 开发约定
 
 改动代码时请遵守以下既有约定（源自 `ARCHITECTURE.md` 与代码实践）：
 
-- **配置集中化**：所有路径、API、规则参数统一放 `config.py`，**禁止在业务代码中硬编码** vault 路径、密钥或规则数值。合规规则（风险上限、仓位上限、簇限制）映射「投资体系 V5.0」，改动需与该体系对齐。
+- **配置集中化**：所有路径、API、规则参数统一放 `config.py`，**禁止在业务代码中硬编码** vault 路径、密钥或规则数值。合规规则（风险上限、仓位上限、簇限制）映射「投资体系 V5.0」，改动需与该体系对齐。**策略参数单一来源**：通道周期、ATR、止损倍数、加仓间距等全部在 `STRATEGY_PARAMS` / `ATR_*` / `ADD_SPACING_*`，扫描、监控、信号追踪、回测、仓位计算共同引用，不得另起字面量。
 - **注释与文档使用中文**。部分业务数据结构直接使用中文键名/字段名（如 `review/trade_log.py` 的 `Trade` dataclass 字段为中文），保持一致，不要擅自英文化。
 - **模块独立可运行**：每个脚本都有 `if __name__ == "__main__"` CLI 入口，可单独调试；脚本/测试文件顶部用 `sys.path.insert(0, str(ROOT))` 定位项目根后再 `from config import ...`。
-- **优雅降级**：无 LLM Key、网络失败、数据源不可用时必须仍能输出原始数据或 fallback 模板，并在报告中标注；单只股票抓取失败不阻塞其他标的。
+- **优雅降级**：无 LLM Key、网络失败、数据源不可用时必须仍能输出原始数据或 fallback 模板，并在报告中标注；单只股票抓取失败不阻塞其他标的；持仓监控/信号追踪失败不得拖垮扫描与日报主流程。
+- **入场合规闸门**：所有写入 trades.json 的建仓路径（`add`、`from-scan --execute`）必须经 `review/entry_gate.py` 检查；新增建仓入口时同样接入，高级违规默认拒绝、`--force` 强制须在备注留痕。
+- **公告防编造护栏**：未取得公告正文时禁止调用 LLM 分析（`announcement_fetcher.has_real_content` 判定），只列标题+链接并标注；LLM 输出不得出现无正文来源的精确数字。
 - **Obsidian 原生输出**：报告输出 Markdown + YAML frontmatter（`shared/utils.py` 的 `obsidian_frontmatter` / `write_markdown` / `df_to_markdown_table`），支持 wikilink 与标签检索。
-- **结构化双写**：机器可消费的结果（如市场扫描）同时输出 `.md`（人读）与 `.json`（`review/cli.py from-scan` 等程序化消费）。
+- **结构化双写**：机器可消费的结果（如市场扫描、持仓监控）同时输出 `.md`（人读）与 `.json`（`review/cli.py from-scan` 等程序化消费）。
 - **缓存 aside 模式**：公告全文（`data/announcements/`）与 LLM 响应（`data/llm_cache/`，sha256(prompt) 为键，24h TTL）均为本地 JSON 缓存。
 - **Windows 代理**：访问外部数据源前用 `shared/utils.py` 的 `patch_bypass_proxy` / `bypass_proxy` 绕过系统代理，否则东财等数据源会失败（历史教训，见 git log）。
 - 无 linter/formatter/type-checker 配置，代码风格以周边文件为准（类型标注 + docstring 普遍使用）。
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **30 个用例**（指标 10 + 合规 12 + 持仓 8），已验证全部通过（`30 passed`）。
+- 框架：pytest，目录 `Invest/tests/`，共 **142 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 41 + 信号追踪 14 + 策略参数 19 + 回测 12），已验证全部通过（`142 passed`）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
-- 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
+- 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。
 - 目前无 CI；ARCHITECTURE.md 将 GitHub Actions 每日 smoke test（mock AkShare）列为未来方向。
 
@@ -135,7 +150,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 - **密钥仅走环境变量**（`KIMI_API_KEY` 等），仓库中不得出现真实密钥；`.env` 已在 `.gitignore` 中。
 - `.gitignore` 还排除 `__pycache__/`、`*.pyc`、`*.db`、`*.db-journal` —— `data/market.db` 不入库。
-- `data/trades.json`（交易日志）是人工可编辑的核心数据，读写时注意保持 JSON 结构；损坏时 `TradeLog` 会降级为空列表。
+- `data/trades.json`（交易日志）是人工可编辑的核心数据，读写时注意保持 JSON 结构；损坏时 `TradeLog` 会降级为空列表。测试一律用 `tmp_path` 副本，**禁止污染真实 trades.json 与 market.db**。
 - FastAPI 服务默认仅绑定 `127.0.0.1`，不要改为对外暴露；长任务经 `_execute_task` 串行执行（单线程池 + 600s 超时 + 409 并发冲突）。
 - LLM 缓存与公告缓存含抓取的原文，注意其中可能含未公开信息，不要外传。
 
@@ -145,12 +160,12 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 1. **CLI**：各模块脚本直接运行（日常主力）。
 2. **FastAPI 服务**：`python server.py`，供 Obsidian/Webhook/脚本 HTTP 触发。
-3. **定时调度**：服务内设 `ENABLE_SCHEDULER=true` + `SCHEDULER_TIME=08:30`，APScheduler 每日自动盘前。
+3. **定时调度**：服务内设 `ENABLE_SCHEDULER=true` + `SCHEDULER_TIME=08:30`，APScheduler 每日自动盘前（取数→扫描→持仓监控→信号结算→日报）。
 
 ## 9. 已知限制（摘自 ARCHITECTURE.md 第 13 章）
 
-- 持仓未实现盈亏暂无实时市价源（`positions._calc_unrealized_pnl` 待接入）。
-- 巨潮 PDF 公告仅返回链接，未做正文提取；向量检索、Web UI 为未来方向。
+- 未实现盈亏以 `data/market.db` 最新日线收盘价为市价源（非盘中实时），持仓监控同理——盘前使用足够，盘中需人工盯盘。
+- 巨潮 PDF 公告已支持 pypdf 正文提取（前 30 页）；向量检索、Web UI 为未来方向。
 - AkShare 依赖公开数据源接口，接口变动可能导致抓取失败——修改数据获取层后务必实际运行 `python run_all.py` 验证。
 
 ## 10. 参考文档

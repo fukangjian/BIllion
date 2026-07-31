@@ -11,10 +11,14 @@
             "id": "77dc22560a27a05a",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "【8】认知/第五项修炼/01_第五项修炼_思维导图.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "新标签页"
+              "title": "01_第五项修炼_思维导图"
             }
           }
         ]
@@ -181,6 +185,16 @@
   },
   "active": "77dc22560a27a05a",
   "lastOpenFiles": [
+    "Invest/data/market.db-journal",
+    "Invest/pipeline/__pycache__/signal_tracker.cpython-313.pyc",
+    "Invest/tests/__pycache__/test_signal_tracker.cpython-313-pytest-9.1.1.pyc",
+    "Invest/tests/test_signal_tracker.py",
+    "Invest/pipeline/signal_tracker.py",
+    "【8】认知/第五项修炼/00_阅读说明与文件索引.md",
+    "Invest/review/__pycache__/entry_gate.cpython-313.pyc",
+    "Invest/review/__pycache__/buy_card.cpython-313.pyc",
+    "Invest/tests/__pycache__/test_compliance_gate.cpython-313-pytest-9.1.1.pyc",
+    "Invest/tests/test_compliance_gate.py",
     "Invest/README.md",
     "Invest/ARCHITECTURE.md",
     "海龟交易法则/05_基于海龟交易法则的个人投资体系.md",
@@ -197,9 +211,6 @@
     "海龟交易法则_阅读学习包/01_海龟交易法则_思维导图.md",
     "海龟交易法则_阅读学习包/00_阅读成果索引.md",
     "海龟交易法则_阅读学习包",
-    "海龟交易法则_阅读学习包.zip",
-    "未命名.base",
-    "未命名 1.base",
     "证券分析/00_阅读成果索引.md",
     "股票大作手回忆录/股票大作手回忆录_读书笔记与投资体系.md",
     "日志.md",

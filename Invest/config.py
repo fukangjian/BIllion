@@ -46,9 +46,25 @@ ANNOUNCEMENT_LIMIT = 10
 DEFAULT_INDEX_SYMBOL = "000300"  # 沪深300
 DEFAULT_INDEX_CODE = "sh000300"
 
-CHANNEL_SHORT = 20
-CHANNEL_LONG = 55
-ATR_PERIOD = 20
+# --- 突破策略参数（投资体系 V5.0 §4.3 海龟突破系统，全仓库单一来源） ---
+# S1-A 快速系统：20 日通道突破入场 / 10 日通道低点退出
+# S2-A 慢速系统：55 日通道突破入场 / 20 日通道低点退出
+STRATEGY_PARAMS = {
+    "S1-A": {"entry_channel": 20, "exit_channel": 10},
+    "S2-A": {"entry_channel": 55, "exit_channel": 20},
+}
+
+ATR_PERIOD = 20            # N = ATR(20)，Wilder 平滑
+ATR_STOP_MULT = 2.0        # 初始止损 = 入场价 − 2N
+ADD_SPACING_MIN = 0.5      # 加仓最小间距 0.5N（每涨 0.5N 加一单位）
+ADD_SPACING_MAX = 1.0      # 加仓间距上限 1N（单根跳空超 1N 不追，跳过的单位不补）
+MAX_UNITS = 4              # 最大单位数（首仓 + 最多 3 次加仓）
+LOT_SIZE = 100             # A 股整手股数
+BACKTEST_RISK_PCT = 0.005  # 回测每单位风险比例 0.5%（实盘风险率由 RISK_LIMITS 账户限额决定）
+
+# 兼容别名：扫描默认通道周期（值统一来自 STRATEGY_PARAMS，勿再单独定义数值）
+CHANNEL_SHORT = STRATEGY_PARAMS["S1-A"]["entry_channel"]
+CHANNEL_LONG = STRATEGY_PARAMS["S2-A"]["entry_channel"]
 
 MARKET_STATE = {
     "ma_weeks": 20,
@@ -85,9 +101,35 @@ RESEARCH_WATCHLIST = [
 WEEKLY_OUTPUT_DIR = VAULT_ROOT / "【10】实盘记录" / "每周复盘"
 MONTHLY_OUTPUT_DIR = VAULT_ROOT / "【10】实盘记录" / "每月复盘"
 STATS_OUTPUT_DIR = VAULT_ROOT / "【10】实盘记录" / "统计"
+TRADE_LOG_OUTPUT_DIR = VAULT_ROOT / "【10】实盘记录" / "交易日志"  # 买入卡等建仓文档输出目录
 
 ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", "1000000"))
 DRAWDOWN_STATE = os.getenv("DRAWDOWN_STATE", "Normal")
+
+# --- 回撤状态阈值（投资体系 V5.0 §6，相对初始权益的峰值回撤 %） ---
+# 近似口径：累计 R × 平均风险率（见 review/monitor.py derive_drawdown_state）
+DRAWDOWN_THRESHOLDS = {
+    "Caution": 6.0,     # 回撤 6%：风险减半
+    "Defensive": 8.0,   # 回撤 8%：防御收缩
+    "Review": 12.0,     # 回撤 12%：停止实盘，全面复盘
+}
+
+# 月度回撤轨道（%，当月已实现回撤触线后的动作标记）
+MONTHLY_DRAWDOWN_LIMITS = {
+    "event_trade_halt": -4.0,   # 月度回撤 -4%：停止事件交易
+    "new_position_halt": -6.0,  # 月度回撤 -6%：停止开新仓
+}
+
+# 持仓退出通道周期（按入场系统关键字匹配：含 S1→10 日最低价，含 S2→20 日最低价）
+# 值统一来自 STRATEGY_PARAMS（monitor / signal_tracker / buy_card 共用此表）
+EXIT_CHANNEL_PERIODS = {
+    "S1": STRATEGY_PARAMS["S1-A"]["exit_channel"],
+    "S2": STRATEGY_PARAMS["S2-A"]["exit_channel"],
+}
+
+# --- 信号验证（pipeline/signal_tracker.py，突破信号入库/结算/统计） ---
+SIGNAL_MAX_HOLDING_DAYS = 20  # 信号最大持有交易日数，到期按收盘价强制结算
+SIGNAL_STATS_MIN_SAMPLE = 5   # 统计最小样本量，低于此值标注「样本不足」
 
 # --- 合规规则（投资体系 V5.0） ---
 MAX_SINGLE_RISK_PCT = 1.0
@@ -145,7 +187,36 @@ FORBIDDEN_IN_DRAWDOWN = {
     "Review": ["预埋", "事件", "事件交易", "实验", "产业", "产业趋势"],
 }
 
-VALID_ENTRY_SYSTEMS = ["S1-A", "S2-A", "预埋", "S1-A快速", "S2-A慢速"]
+# --- 建仓链路（仓位计算 / from-scan 落库） ---
+# 策略代码枚举（【11】统一体系/策略评估筛选框架.md §1.1 五策略清单，与投资体系 V5.0 对应）：
+# 建仓 --system 校验与「非系统内交易」合规检查共用；list/show 等展示场景不校验历史值
+STRATEGY_CODES = ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C"]
+
+STRATEGY_INFO = {
+    "S1-A":  {"名称": "20日突破（快速系统）", "适用账户": "产业/事件", "典型持有期": "2—8周"},
+    "S2-A":  {"名称": "55日突破（慢速系统）", "适用账户": "核心/产业", "典型持有期": "3—18月"},
+    "STR-A": {"名称": "创新药价值重估",       "适用账户": "产业",      "典型持有期": "3—12月"},
+    "STR-B": {"名称": "事件驱动第二波",       "适用账户": "事件",      "典型持有期": "1—4周"},
+    "STR-C": {"名称": "核心复利",             "适用账户": "核心",      "典型持有期": "1—5年"},
+}
+
+# 账户类型中文枚举（投资体系 V5.0，仓位计算器 CLI 与合规检查共用）
+ACCOUNT_TYPES = ["核心", "产业", "事件", "实验"]
+
+# 入场系统 → 默认账户类型（from-scan --execute 建仓映射，可用 --account 覆盖）
+SYSTEM_DEFAULT_ACCOUNT = {"S1": "产业", "S2": "核心"}
+
+# 股票代码 → 风险簇 映射（值必须对齐 RISK_CLUSTER_LIMITS 的键，否则簇限额不生效；
+# None = 已核对但不属于 V5.0 现有簇，建仓流程提示人工指定，记为「未指定」；可按需扩展）
+INDUSTRY_MAP = {
+    "600519": None,      # 贵州茅台：白酒消费，不在 V5.0 六簇内
+    "000858": None,      # 五粮液：白酒消费，不在 V5.0 六簇内
+    "300760": None,      # 迈瑞医疗：医疗器械，非「创新药」簇
+    "688235": "创新药",
+    "688331": "创新药",
+    "300750": None,      # 宁德时代：电池制造；V5.0「能源资源」指石油/煤炭/黄金等周期资源，不归入
+    "002594": None,      # 比亚迪：整车制造，不在 V5.0 六簇内
+}
 
 # --- 数据获取并行度 ---
 FETCH_MAX_WORKERS = 4  # 并行抓取线程数，避免被数据源限流

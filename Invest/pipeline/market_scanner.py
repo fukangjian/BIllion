@@ -51,6 +51,17 @@ def _load_limit_stats_from_db(db_path=None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _run_position_monitor(output_dir: Path) -> dict | None:
+    """调用持仓监控（review.monitor），失败时降级返回 None，不拖垮扫描"""
+    try:
+        from review.monitor import run_monitor
+
+        return run_monitor(output_dir=output_dir)
+    except Exception as e:
+        logger.warning("持仓监控失败（已降级，扫描报告不含监控区块）: %s", e)
+        return None
+
+
 def run_scan(
     symbols: list[str] | None = None,
     output_dir: Path | None = None,
@@ -100,16 +111,33 @@ def run_scan(
             "notes": "; ".join(state_info["notes"]),
         })
 
-    md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols)
+    monitor_result = _run_position_monitor(output_dir)
+
+    md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols, monitor_result)
     report_path.write_text(md, encoding="utf-8")
 
     json_path = output_dir / f"market_scan_{today}.json"
     scan_json = _build_scan_json(today, state_info, breakout_20, breakout_55, sector_rank)
+    scan_json["position_monitor"] = monitor_result  # None 表示监控已降级
     json_path.write_text(json.dumps(scan_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info("扫描报告已生成: %s", report_path)
     logger.info("扫描 JSON 已生成: %s", json_path)
+    _record_breakout_signals(scan_json, today)
     return report_path
+
+
+def _record_breakout_signals(scan_json: dict, signal_date: str) -> None:
+    """突破候选写入 signals 表（信号验证）；失败降级不阻塞扫描"""
+    try:
+        from pipeline.signal_tracker import record_signals
+
+        n1 = record_signals(scan_json.get("breakout_s1a", []), system="S1-A", signal_date=signal_date)
+        n2 = record_signals(scan_json.get("breakout_s2a", []), system="S2-A", signal_date=signal_date)
+        if n1 or n2:
+            logger.info("信号入库: S1-A +%d, S2-A +%d", n1, n2)
+    except Exception as e:
+        logger.warning("信号入库失败（已降级，不影响扫描结果）: %s", e)
 
 
 def _df_to_breakout_list(df: pd.DataFrame) -> list[dict]:
@@ -192,6 +220,7 @@ def _format_report(
     breakout_55: pd.DataFrame,
     sector_rank: pd.DataFrame,
     symbols: list[str],
+    monitor_result: dict | None = None,
 ) -> str:
     lines = [
         "# 每日市场扫描报告",
@@ -199,6 +228,22 @@ def _format_report(
         f"> 生成时间: {date}",
         f"> 扫描股票数: {len(symbols)}",
         "",
+        "---",
+        "",
+    ]
+
+    # 持仓监控区块（报告顶部）；monitor_result 为 None 表示监控降级
+    if monitor_result is None:
+        lines.extend(["## 持仓监控", "", "_持仓监控不可用（已降级跳过，详见日志）_", ""])
+    else:
+        try:
+            from review.monitor import monitor_to_markdown
+
+            lines.extend(monitor_to_markdown(monitor_result))
+        except Exception as e:
+            lines.extend(["## 持仓监控", "", f"_持仓监控渲染失败（已降级）: {e}_", ""])
+
+    lines.extend([
         "---",
         "",
         "## 一、市场状态判断",
@@ -225,7 +270,7 @@ def _format_report(
         "",
         "## 二、20日通道突破候选 (S1-A)",
         "",
-    ]
+    ])
 
     if breakout_20.empty:
         lines.append("_暂无突破候选_")

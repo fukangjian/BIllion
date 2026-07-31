@@ -1,6 +1,7 @@
 """
 Invest FastAPI 服务 — 盘前流程触发、状态查询、定时调度
 """
+import json
 import logging
 import sys
 import threading
@@ -267,10 +268,19 @@ def status():
 
 @app.get("/latest-scan")
 def latest_scan():
-    """返回最新 market_scan 内容"""
+    """返回最新 market_scan 内容（附带扫描 JSON 中的持仓监控结果）"""
     latest = _latest_file(MARKET_SCAN_OUTPUT_DIR)
     data = _read_file_safe(latest)
-    return {"status": "ok", **data}
+    position_monitor = None
+    if latest is not None:
+        json_file = latest.with_suffix(".json")
+        if json_file.exists():
+            try:
+                scan_data = json.loads(json_file.read_text(encoding="utf-8"))
+                position_monitor = scan_data.get("position_monitor")
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning("读取扫描 JSON 失败（position_monitor 降级为 None）: %s", e)
+    return {"status": "ok", **data, "position_monitor": position_monitor}
 
 
 @app.get("/latest-report")

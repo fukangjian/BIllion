@@ -92,9 +92,27 @@ CREATE TABLE IF NOT EXISTS market_state (
     notes           TEXT
 );
 
+CREATE TABLE IF NOT EXISTS signals (
+    signal_date     TEXT NOT NULL,
+    symbol          TEXT NOT NULL,
+    system          TEXT NOT NULL,
+    entry_price     REAL,
+    stop_price      REAL,
+    channel_period  INTEGER,
+    status          TEXT NOT NULL DEFAULT 'open',
+    exit_date       TEXT,
+    exit_price      REAL,
+    exit_reason     TEXT,
+    r_multiple      REAL,
+    created_at      TEXT,
+    PRIMARY KEY (signal_date, symbol, system)
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily_quotes(symbol);
 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_quotes(trade_date);
 CREATE INDEX IF NOT EXISTS idx_sector_date ON sector_quotes(trade_date);
+CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
+CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
 """
 
 

@@ -15,14 +15,18 @@ from datetime import datetime
 import pandas as pd
 
 from config import ANNOUNCEMENT_LIMIT, ANNOUNCEMENT_MAX_CHARS, ANNOUNCEMENT_OUTPUT_DIR
-from research.announcement_fetcher import fetch_announcement_full_text, summarize_long_announcement
+from research.announcement_fetcher import (
+    fetch_announcement_full_text,
+    fetch_latest_announcements,
+    has_real_content,
+    summarize_long_announcement,
+)
 from shared.llm_client import call_llm, has_llm_api_key
 from shared.prompts import ANNOUNCEMENT_ANALYSIS, ANNOUNCEMENT_SYSTEM
 from shared.utils import (
     get_stock_name,
     normalize_symbol,
     obsidian_frontmatter,
-    safe_fetch,
     write_markdown,
 )
 
@@ -31,55 +35,19 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_announcements(symbol: str, limit: int = ANNOUNCEMENT_LIMIT) -> pd.DataFrame:
-    """使用 AkShare 获取最新公告列表"""
-    import akshare as ak
+    """获取最新公告列表（列: title/date/category/url，按日期倒序）。
 
+    fallback 链（东财当日公告 → 巨潮 HTTP API 历史公告）在 fetcher 内实现。
+    """
     symbol = normalize_symbol(symbol)
-    today_str = datetime.now().strftime("%Y%m%d")
-    df = safe_fetch(
-        ak.stock_notice_report,
-        symbol="全部",
-        date=today_str,
-        default=pd.DataFrame(),
-    )
-
-    if df is not None and not df.empty:
-        code_col = None
-        for col in df.columns:
-            if "代码" in str(col):
-                code_col = col
-                break
-        if code_col:
-            df = df[df[code_col].astype(str).str.strip() == symbol]
-
-    if df is None or df.empty:
-        logger.info("今日无 %s 公告，尝试巨潮信息网历史公告", symbol)
-        df = safe_fetch(
-            ak.stock_zh_a_disclosure_report_cninfo,
-            symbol=symbol,
-            default=pd.DataFrame(),
-        )
-
-    if df is None or df.empty:
-        logger.warning("股票 %s 未获取到公告", symbol)
+    try:
+        df = fetch_latest_announcements(symbol, limit=limit)
+    except Exception as e:
+        logger.error("获取 %s 公告失败: %s", symbol, e)
         return pd.DataFrame()
-
-    col_map = {}
-    for col in df.columns:
-        c = str(col)
-        if "标题" in c:
-            col_map[col] = "title"
-        elif "时间" in c or "日期" in c:
-            col_map[col] = "date"
-        elif "类型" in c:
-            col_map[col] = "category"
-        elif "网址" in c or "url" in c.lower() or "链接" in c:
-            col_map[col] = "url"
-
-    df = df.rename(columns=col_map)
-    if "date" in df.columns:
-        df = df.sort_values("date", ascending=False)
-    return df.head(limit)
+    if df.empty:
+        logger.warning("股票 %s 未获取到公告", symbol)
+    return df
 
 
 def fetch_announcement_content(
@@ -116,6 +84,10 @@ def analyze_announcement(
     content: str,
     stock_name: str = "",
 ) -> str:
+    # 防编造护栏：未取得真实正文时绝不调用 LLM，避免凭空编造数字
+    if not has_real_content(content):
+        return "> ⚠️ 未取得公告正文，不做解读。请通过公告链接查阅原文。"
+
     if not has_llm_api_key():
         return _fallback_analysis(title, date)
 
@@ -190,6 +162,16 @@ def generate_report(
         lines.extend(list_rows)
         lines.append("")
 
+        # 新鲜度检查：最新公告距今 >30 天时显式标注
+        latest_date_str = str(announcements.iloc[0].get("date", ""))[:10]
+        try:
+            age_days = (datetime.now() - datetime.strptime(latest_date_str, "%Y-%m-%d")).days
+        except ValueError:
+            age_days = -1
+        if age_days > 30:
+            lines.append(f"> ⚠️ 公告数据可能陈旧（最新：{latest_date_str}，距今 {age_days} 天）")
+            lines.append("")
+
         latest = announcements.iloc[0]
         title = str(latest.get("title", ""))
         date = str(latest.get("date", ""))[:10]
@@ -198,14 +180,24 @@ def generate_report(
 
         lines.append("---")
         lines.append("")
-        lines.append(f"## 最新公告深度分析: {title}")
+        lines.append(f"## 最新公告: {title}")
         lines.append("")
-        analysis = analyze_announcement(symbol, title, date, content, stock_name)
-        lines.append(analysis)
+        lines.append(f"- 日期: {date}")
+        lines.append(f"- 链接: {url or '巨潮资讯网'}")
+        lines.append("")
 
-        if not has_llm_api_key():
+        if not has_real_content(content):
+            # 防编造护栏：无正文时只列标题+日期+链接，绝不交给 LLM 分析
+            lines.append("> ⚠️ 未取得公告正文，不做解读。")
+        else:
+            lines.append("### 深度分析")
             lines.append("")
-            lines.append("> ⚠️ 未配置 LLM API 密钥，以上为降级输出。")
+            analysis = analyze_announcement(symbol, title, date, content, stock_name)
+            lines.append(analysis)
+
+            if not has_llm_api_key():
+                lines.append("")
+                lines.append("> ⚠️ 未配置 LLM API 密钥，以上为降级输出。")
 
     output_path = output_dir / f"{today}_{symbol}_{stock_name}_公告摘要.md"
     return write_markdown("\n".join(lines), output_path)

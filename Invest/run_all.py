@@ -1,5 +1,5 @@
 """
-统一入口 — 盘前一键运行：数据管道 + 市场扫描 + 研究日报
+统一入口 — 盘前一键运行：数据管道 + 市场扫描（含持仓监控）+ 研究日报
 
 用法:
     python run_all.py                    # 完整流程
@@ -33,9 +33,27 @@ logging.basicConfig(
 logger = logging.getLogger("run_all")
 
 
-def run_pipeline(skip_fetch: bool = False, symbols: list[str] | None = None) -> Path:
-    """运行数据管道：获取数据 + 市场扫描"""
-    symbols = symbols or WATCHLIST
+def watchlist_with_positions() -> list[str]:
+    """
+    取数股票池：config.WATCHLIST ∪ trades.json 未平仓持仓股。
+    保证持仓监控对任意持仓股都有行情可查；TradeLog 读取失败时降级为 WATCHLIST。
+    """
+    try:
+        from review.positions import get_position_for_watchlist
+
+        held = get_position_for_watchlist()
+    except Exception as e:
+        logger.warning("读取持仓股失败，降级使用 WATCHLIST: %s", e)
+        return list(WATCHLIST)
+    extra = [s for s in held if s not in WATCHLIST]
+    if extra:
+        logger.info("持仓股补抓 %d 只: %s", len(extra), ", ".join(extra))
+    return list(WATCHLIST) + extra
+
+
+def run_pipeline(skip_fetch: bool = False, symbols: list[str] | None = None) -> Path | None:
+    """运行数据管道：获取数据 + 市场扫描（含持仓监控，失败自动降级）"""
+    symbols = symbols or watchlist_with_positions()
     init_database()
 
     if not skip_fetch:
@@ -47,9 +65,28 @@ def run_pipeline(skip_fetch: bool = False, symbols: list[str] | None = None) -> 
             logger.error("数据获取失败: %s", e)
             logger.warning("将尝试使用已有数据进行扫描...")
 
-    logger.info("开始市场扫描...")
-    report_path = run_scan(symbols=symbols)
-    logger.info("市场扫描完成: %s", report_path)
+    logger.info("开始市场扫描（含持仓监控）...")
+    report_path = None
+    try:
+        report_path = run_scan(symbols=symbols)
+        logger.info("市场扫描完成: %s", report_path)
+    except Exception as e:
+        # 扫描/监控失败不阻塞研究日报
+        logger.error("市场扫描失败（降级继续研究日报）: %s", e)
+
+    # 信号每日结算：扫描（含新信号入库）之后执行；
+    # settle 内部以 signal_date < 当天 过滤，当天新记录的信号不会被立即结算
+    try:
+        from pipeline.signal_tracker import settle_signals
+
+        sr = settle_signals()
+        logger.info(
+            "信号结算完成: 检查 %d 个 open 信号，关闭 %d 个（%s）",
+            sr["checked"], sr["settled"], sr["by_reason"],
+        )
+    except Exception as e:
+        logger.warning("信号结算失败（已降级，不影响盘前流程）: %s", e)
+
     return report_path
 
 

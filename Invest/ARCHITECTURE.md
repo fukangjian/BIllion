@@ -1,6 +1,6 @@
 # Invest 项目架构与设计文档
 
-> 版本：基于 2026-07-29 代码库（三代理并行改进后集成验证版）  
+> 版本：基于 2026-07-30 代码库（实战化改造后：持仓监控闭环、入场合规闸门、信号验证、回测同口径）  
 > 受众：后续迭代开发者  
 > 项目路径：`e:\Billion\Invest`
 
@@ -34,18 +34,21 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 
 | 模块 | 路径 | 职责 |
 |------|------|------|
-| 统一入口 | `run_all.py` | 盘前 pipeline + research 编排 |
+| 统一入口 | `run_all.py` | 盘前 pipeline + research 编排（取数→扫描→持仓监控→信号结算→日报） |
 | **FastAPI 服务** | `server.py` | HTTP 触发盘前流程、状态查询、定时调度 |
-| 配置 | `config.py` | 路径、API、股票池、合规规则 |
-| 仓位计算 | `position_calculator.py` | 风险预算股数、簇风险检查（含 `--check-existing`） |
+| 配置 | `config.py` | 路径、API、股票池、合规规则、策略参数（`STRATEGY_PARAMS` 单一来源） |
+| 仓位计算 | `position_calculator.py` | `calc_position` 风险预算股数（口径同 config.RISK_LIMITS） |
 | 共享层 | `shared/` | 数据抓取、LLM 路由、工具函数 |
 | 数据管道 | `pipeline/` | SQLite 缓存、指标、市场扫描（MD + JSON） |
-| 研究助手 | `research/` | 日报、公告、财报、产业链 |
-| **公告抓取** | `research/announcement_fetcher.py` | 巨潮全文抓取、缓存、长文分块摘要 |
+| **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库、逐根回放结算、胜率/平均R 统计 |
+| 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链 |
 | 交易复盘 | `review/` | 交易日志、合规、周报月报 |
-| **持仓视图** | `review/positions.py` | 从 trades.json 导出开放持仓与风险敞口 |
-| 回测 | `backtest/` | Backtrader 策略验证、权益曲线图 |
-| 测试 | `tests/` | 指标、合规、持仓单元测试（30 用例） |
+| **持仓监控** | `review/monitor.py` | 止损/退出通道警报、回撤状态自动推导 |
+| **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查，高级违规拒绝，`--force` 留痕 |
+| **买入卡** | `review/buy_card.py` | 建仓后自动生成买入卡（写 vault 交易日志/） |
+| 持仓视图 | `review/positions.py` | 开放持仓、风险敞口、未实现盈亏（market.db 收盘价） |
+| 回测 | `backtest/` | Backtrader 策略验证、权益曲线图（参数与实盘共用 config） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测（142 用例） |
 
 ---
 
@@ -78,6 +81,10 @@ flowchart TB
         CC[compliance_check]
         RG[report_generator]
         POS[review/positions]
+        MON[review/monitor]
+        EG[review/entry_gate]
+        BC[review/buy_card]
+        ST[signal_tracker]
     end
 
     subgraph Shared["共享服务层"]
@@ -108,19 +115,23 @@ flowchart TB
     SV --> RA
     PR --> MS
     RR --> DR
-    RC --> MET & CC & RG & MS
+    RC --> MET & CC & RG & MS & EG
     RB --> STR
-    PC --> POS
+    PC --> POS & CC
 
-    MS --> IND & DB
+    MS --> IND & DB & MON & ST
+    MON --> IND & DB & TJ
+    ST --> DB
+    EG --> CC & BC
+    BC --> VAULT
     DR --> AA & MS & LLM & POS
     AA --> AF & LLM
     AF --> CN & AC
     FC & IM --> LLM & PM
     MET --> TJ
     CC --> TJ
-    RG --> TJ & VAULT
-    POS --> TJ
+    RG --> TJ & VAULT & ST
+    POS --> TJ & DB
 
     DF --> AK & DB
     LLM --> KIMI & DS & LC
@@ -209,17 +220,24 @@ sequenceDiagram
     participant Fetch as data_fetcher
     participant DB as market.db
     participant Scan as market_scanner
+    participant Mon as review/monitor
+    participant ST as signal_tracker
     participant Report as daily_report
     participant LLM as llm_client
     participant Out as output/
 
     User->>Entry: CLI 或 POST /pre-market
     Entry->>DB: init_database()
-    Entry->>Fetch: fetch_and_save_all_parallel(symbols)
+    Entry->>Fetch: fetch_and_save_all_parallel(WATCHLIST ∪ 持仓股)
     Fetch->>DB: save_daily/sector/limit/etf/lhb
     Entry->>Scan: run_scan(symbols)
     Scan->>DB: load_daily_quotes / load_sector_quotes
-    Scan->>Out: market_scan_{date}.md + .json
+    Scan->>Mon: check_positions（失败降级，不阻塞）
+    Mon->>DB: 读持仓股日线，比对止损/退出通道
+    Scan->>ST: record_signals（突破候选入库）
+    Scan->>Out: market_scan_{date}.md + .json + position_monitor_{date}.json
+    Entry->>ST: settle_signals（结算历史信号，当日新信号除外）
+    ST->>DB: 逐根回放日线，写 exit/r_multiple
     Entry->>Report: generate_report(watchlist, sectors)
     Report->>Out: 读取 market_scan 文件
     Report->>LLM: generate_executive_summary (可选)
@@ -248,6 +266,7 @@ sequenceDiagram
 | `uvicorn` | >=0.27.0 | ASGI 服务器 |
 | `apscheduler` | >=3.10.0 | 定时盘前调度（可选） |
 | `beautifulsoup4` | >=4.12.0 | 巨潮 HTML 公告解析 |
+| `pypdf` | >=4.0.0 | 巨潮 PDF 公告正文提取（最多前 30 页） |
 
 **已移除**：`anthropic`、`jinja2`（原预留依赖，当前代码未使用）。
 
@@ -282,15 +301,16 @@ sequenceDiagram
 
 #### `run_all.py` — 统一入口
 
-**职责**：盘前一键编排 pipeline + research。
+**职责**：盘前一键编排 pipeline + research（取数→扫描→持仓监控→信号结算→日报）。
 
 | 函数 | 签名 | 返回值 | 职责 |
 |------|------|--------|------|
-| `run_pipeline` | `(skip_fetch: bool = False, symbols: list[str] \| None = None) -> Path` | 扫描报告路径 | 初始化 DB → 可选并行 fetch → run_scan |
+| `watchlist_with_positions` | `() -> list[str]` | 股票池 | `WATCHLIST` ∪ trades.json 未平仓代码（TradeLog 失败降级为 WATCHLIST） |
+| `run_pipeline` | `(skip_fetch: bool = False, symbols: list[str] \| None = None) -> Path` | 扫描报告路径 | 初始化 DB → 可选并行 fetch（默认 `watchlist_with_positions()`）→ run_scan（含持仓监控、信号入库）→ settle_signals |
 | `run_research` | `(watchlist: list[str] \| None = None, sectors: list[str] \| None = None) -> Path` | 日报路径 | 调用 generate_report |
 | `main` | `() -> None` | — | argparse CLI |
 
-**依赖**：`config`, `pipeline.database`, `pipeline.market_scanner`, `research.daily_report`, `shared.data_fetcher.fetch_and_save_all_parallel`
+**依赖**：`config`, `pipeline.database`, `pipeline.market_scanner`, `pipeline.signal_tracker`, `research.daily_report`, `review.positions`, `shared.data_fetcher.fetch_and_save_all_parallel`
 
 #### `server.py` — FastAPI 服务
 
@@ -351,20 +371,16 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 #### `position_calculator.py` — 仓位计算器
 
-**职责**：风险预算法股数计算、单票上限、风险簇检查；支持从 `trades.json` 自动加载持仓。
+**职责**：风险预算法股数计算、单票上限、风险簇检查；风险率/仓位上限统一读 `config.RISK_LIMITS` / `POSITION_LIMITS`（经 `compliance_check.get_risk_limit` / `get_position_limit`），账户类型为中文枚举（核心/产业/事件/实验，`config.ACCOUNT_TYPES`）。
 
-**枚举类**：`AccountType` / `AccountState` / `GapRisk`
-
-**数据类**：`Position`, `PositionResult`（见源码）
+**枚举类**：`GapRisk`（跳空风险折扣）
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
-| `get_risk_rate` | `(account_type: AccountType, account_state: AccountState, use_conservative: bool = True) -> float` | 风险比例 |
-| `calc_shares` | `(equity, entry_price, stop_price, account_type, account_state, gap_risk=GapRisk.NONE, gap_buffer=0.0, use_conservative=True) -> PositionResult` | 仓位结果 |
-| `check_cluster_risk` | `(result: PositionResult, existing_positions: list[Position], new_symbol, new_industry="", is_innovative_pharma=False, equity=1_000_000) -> PositionResult` | 附加簇警告 |
-| `format_result` | `(result: PositionResult) -> str` | 终端格式化文本 |
-
-**CLI 新增**：`--check-existing` 通过 `review.positions.export_open_positions()` 从 `trades.json` 加载未平仓交易进行簇风险检查（替代手动 `--positions-file`）。
+| `lookup_cluster` | `(symbol: str) -> str \| None` | 风险簇归属（查 `config.INDUSTRY_MAP`，未收录返回 None） |
+| `calc_position` | `(equity, entry, stop, account_type, drawdown_state, gap_risk=GapRisk.NONE, gap_buffer=0.0, atr=None) -> dict` | 纯函数：风险率/风险预算/每股风险/股数/仓位金额/加仓价（可被 `review/cli.py` import） |
+| `format_calc_text` | `(calc: dict, symbol: str = "") -> str` | 终端格式化文本 |
+| `main` | `() -> None` | CLI：`-t/--account-type` 接受中文（choices=`ACCOUNT_TYPES`），`--drawdown-state`，`--check-existing` 复用 `compliance_check` 组合级簇检查 |
 
 ---
 
@@ -448,23 +464,42 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 |------|------|--------|
 | `run_scan` | `(symbols: list[str] \| None = None, output_dir: Path \| None = None) -> Path` | Markdown 报告路径（同时写 JSON） |
 | `_load_limit_stats_from_db` | `(db_path=None) -> pd.DataFrame` | 最近 5 日 limit_stats |
+| `_run_position_monitor` | `() -> Optional[dict]` | 持仓监控（调 `review.monitor`，失败降级返回 None，不阻塞扫描） |
+| `_record_breakout_signals` | `(scan_data: dict) -> None` | 突破候选写入 signals 表（调 `signal_tracker.record_signals`） |
 | `_df_to_breakout_list` | `(df: pd.DataFrame) -> list[dict]` | 突破候选 JSON 结构 |
 | `_df_to_sector_list` | `(df: pd.DataFrame) -> list[dict]` | 板块排名 JSON 结构 |
 | `_build_scan_json` | `(date, state_info, breakout_20, breakout_55, sector_rank) -> dict` | 完整扫描 JSON |
 | `_build_sector_ranking` | `(benchmark_df) -> pd.DataFrame` | Top 板块排名 |
-| `_format_report` | `(date, state_info, breakout_20, breakout_55, sector_rank, symbols) -> str` | Markdown 正文 |
+| `_format_report` | `(date, state_info, breakout_20, breakout_55, sector_rank, symbols) -> str` | Markdown 正文（顶部含「持仓监控」区块） |
 
 **JSON 输出结构**（`market_scan_{date}.json`）：
 
 ```json
 {
-  "date": "2026-07-29",
-  "market_state": "C",
+  "date": "2026-07-30",
+  "market_state": "D",
   "breakout_s1a": [{"symbol", "close", "channel_high", "breakout_pct", "atr_20", "period"}],
   "breakout_s2a": [...],
-  "sector_ranking": [{"rank", "sector_name", "relative_strength", "period_return"}]
+  "sector_ranking": [{"rank", "sector_name", "relative_strength", "period_return"}],
+  "position_monitor": {"date", "data_date", "open_count", "alerts", "positions_ok", "drawdown_state"}
 }
 ```
+
+持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。
+
+#### `signal_tracker.py` — 信号追踪（可验证性）
+
+**职责**：扫描突破信号自动入库（SQLite `signals` 表），每日盘前逐根回放结算，产出各系统胜率/平均R/PF——回答"S1-A 信号最近到底灵不灵"。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `record_signals` | `(scan_data: dict, db_path=None) -> int` | 候选入库；同 (symbol, system) 有 open 信号则跳过（防连续突破日重复） |
+| `settle_signals` | `(db_path=None, settle_date=None) -> dict` | 结算 `signal_date < settle_date` 的 open 信号：逐根回放日线，先判止损（R=−1）再判退出通道，满 `SIGNAL_MAX_HOLDING_DAYS`(20) 个交易日到期关闭 |
+| `signal_stats` | `(db_path=None, days=90, as_of=None) -> dict` | 近 N 天已关闭信号按系统分组：样本数/胜率/平均R/期望值/PF；<`SIGNAL_STATS_MIN_SAMPLE`(5) 标注「样本不足」 |
+| `signal_stats_to_markdown` | `(stats: dict) -> str` | 表格 + 自动解读（周报/月报/CLI 共用） |
+| `main` | `() -> None` | CLI：`settle [--date]` / `stats [--days 90]` |
+
+**结算口径**：入场价=信号日收盘价，止损=入场价−`ATR_STOP_MULT`×ATR(20)，退出通道 S1=10 日/S2=20 日低点（shift(1) 无未来函数，与 monitor、回测同口径）。
 
 #### `run_daily.py`
 
@@ -501,15 +536,21 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 | `_load_cache` | `(symbol, date, title) -> Optional[dict]` | 读取本地缓存 |
 | `cache_announcement` | `(symbol, date, title, content, **extra) -> Path` | 写入 `data/announcements/` |
 | `_cninfo_column` | `(symbol: str) -> str` | 交易所 column 参数 |
+| `_normalize_announcement_df` | `(df) -> pd.DataFrame` | 各来源列名统一为 title/date/category/url |
+| `_fetch_today_notices` | `(symbol: str) -> pd.DataFrame` | 东财当日公告（AkShare stock_notice_report） |
+| `_fetch_cninfo_history` | `(symbol, days=400) -> pd.DataFrame` | 巨潮 HTTP API 直查个股历史公告 |
+| `fetch_latest_announcements` | `(symbol, limit=10, days=400) -> pd.DataFrame` | 最新公告列表 fallback 链（东财当日 → 巨潮 API） |
+| `has_real_content` | `(content: str) -> bool` | 判断是否真实正文（防编造护栏依据） |
 | `fetch_cninfo_announcement` | `(symbol, title) -> dict` | 搜索匹配公告 |
 | `extract_html_content` | `(url: str) -> str` | BeautifulSoup 正文提取 |
+| `extract_pdf_content` | `(url, max_pages=30) -> str` | pypdf PDF 正文提取（最多前 30 页） |
 | `fetch_announcement_full_text` | `(url, symbol="", title="", date="") -> str` | 全文获取（缓存优先） |
 | `chunk_text` | `(text, max_chars=2000, overlap=200) -> list[str]` | 长文分块 |
 | `summarize_long_announcement` | `(text, symbol="", title="", max_chars=ANNOUNCEMENT_MAX_CHARS) -> str` | 分块 LLM 摘要合并 |
 
 #### `announcement_analyzer.py`
 
-`fetch_announcement_content` 已集成 `announcement_fetcher`：巨潮 HTML 解析、PDF 标注、长文 RAG 分块摘要（`task_type="announcement"`）。
+`fetch_announcement_content` 已集成 `announcement_fetcher`：巨潮 HTML 解析、PDF 正文提取（pypdf）、长文 RAG 分块摘要（`task_type="announcement"`）。公告列表经 fetcher fallback 链获取（东财当日 → 巨潮 API；AkShare `stock_zh_a_disclosure_report_cninfo` 已陈旧弃用）。无正文时走降级路径（`has_real_content` 护栏），不调用 LLM；最新公告距今 >30 天标注「公告数据可能陈旧」。
 
 #### `financial_comparison.py` / `industry_mapper.py`
 
@@ -521,7 +562,12 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 
 #### `strategies.py`
 
-`S1A_Strategy` / `S2A_Strategy` + `STRATEGY_MAP`（同前版本）。
+`S1A_Strategy` / `S2A_Strategy` + `STRATEGY_MAP`。参数默认值全部引用 `config.STRATEGY_PARAMS` / `ATR_*` / `ADD_SPACING_*` / `MAX_UNITS` / `LOT_SIZE`，与实盘扫描/监控同口径。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `next_add_action` | `(last_add_price, current_price, atr, ...) -> dict` | 纯函数：加仓间距 [0.5N, 1N]；单根跳空 >1N 不追，跳过的单位不补（海龟原义） |
+| `calc_trade_r_multiple` | `(unit_positions, exit_price) -> float` | 纯函数：按单位真实风险（入场价−初始止损价）逐单位算 R 再汇总 |
 
 #### `run_backtest.py`
 
@@ -539,6 +585,39 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 
 ### 4.6 `review/` — 交易复盘
 
+#### `monitor.py` — 持仓监控（盘前闭环核心）
+
+**职责**：盘前流程中逐持仓检查止损与退出通道，生成警报；自动推导回撤状态。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `check_positions` | `(trade_log: TradeLog, db_path=None) -> dict` | `{"date","data_date","open_count","alerts","positions_ok","drawdown_state"}`；警报优先级 止损 > 退出 > 接近止损（<1N） |
+| `derive_drawdown_state` | `(trade_log, db_path=None, floating_r=None) -> dict` | 按已平仓累计 R 曲线+浮动 R 推导 Normal/Caution/Defensive/Review（阈值 `config.DRAWDOWN_THRESHOLDS`）；月度轨道输出停事件/停开仓标记；env 显式设置冲突时以推导值为准并提示 |
+| `run_monitor` | `(trade_log=None, db_path=None, output_dir=None) -> dict` | 执行监控并写 `position_monitor_{date}.json` |
+| `monitor_to_markdown` | `(result: dict) -> list[str]` | 扫描报告嵌入区块 |
+| `format_monitor_text` | `(result: dict) -> str` | 终端文本 |
+| `main` | `() -> None` | CLI：`python review/monitor.py` |
+
+退出通道按「入场系统」选择：含 S1→10 日低点、含 S2→20 日低点（`config.EXIT_CHANNEL_PERIODS`），其它系统只查止损；通道 shift(1) 不含当根 K 线（无未来函数，与扫描/回测同口径）。行情源为 market.db 本地日线（离线可用），持仓股已由 `run_all.watchlist_with_positions()` 保证在库。
+
+#### `entry_gate.py` — 入场合规闸门
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `derive_state_safe` | `(trade_log=None) -> str` | 回撤状态：优先 monitor 推导，失败降级 `config.DRAWDOWN_STATE` |
+| `check_entry` | `(trade_log, new_trade_dict, ...) -> list[Violation]` | 单笔 + 组合级簇检查（复用 `compliance_check`） |
+| `split_by_severity` / `format_violations` / `force_note` | — | 高级违规拒绝写入；`--force` 强制时备注留痕「⚠️ 强制建仓，违规：xxx」 |
+
+所有写 trades.json 的建仓路径（`add`、`from-scan --execute`）必须经此闸门。
+
+#### `buy_card.py` — 买入卡生成
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `calc_dict_from_trade` | `(trade: Trade, equity: float) -> dict` | 按实际成交参数构造计算 dict |
+| `build_buy_card_content` | `(trade, calc, scan_info=None) -> str` | 按 vault 买入卡模板栏目生成（逻辑/证据链/确认清单留「（待填写）」） |
+| `generate_buy_card` | `(trade, calc=None, scan_info=None, output_dir=None) -> Path \| None` | 写 `【10】实盘记录/交易日志/{交易编号}_{名称}_买入卡.md`；失败打印警告不阻塞建仓 |
+
 #### `positions.py` — 持仓与风险视图
 
 | 函数 | 签名 | 返回值 |
@@ -548,20 +627,24 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 | `get_current_exposure` | `(industry: str, trade_log=None, account_equity=ACCOUNT_EQUITY) -> float` | 指定风险簇敞口 % |
 | `get_total_risk` | `(trade_log=None) -> float` | 未平仓总风险率 % |
 | `get_position_for_watchlist` | `(trade_log=None) -> list[str]` | 持仓代码列表（去重） |
-| `_calc_unrealized_pnl` | `(trade: Trade) -> Optional[float]` | 未实现盈亏（暂无市价源） |
-| `print_portfolio_summary` | `(trade_log=None, account_equity=ACCOUNT_EQUITY) -> None` | 终端持仓摘要 |
+| `get_latest_price` | `(symbol: str, db_path=None) -> Optional[dict]` | market.db 最新收盘价与日期 |
+| `_calc_unrealized_pnl` | `(trade: Trade) -> Optional[dict]` | 未实现盈亏/浮动 R（market.db 最新收盘价为市价源，非盘中实时） |
+| `print_portfolio_summary` | `(trade_log=None, account_equity=ACCOUNT_EQUITY) -> None` | 终端持仓摘要（含市价数据日期、回撤状态） |
 
 #### `trade_log.py` / `metrics.py` / `compliance_check.py` / `report_generator.py`
 
-（同前版本。）
+（同前版本。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`。`report_generator` 新增 `signal_verification_section(days=90)`，周报/月报含「信号验证」节。）
 
 #### `cli.py`
 
-子命令：`add`, `update`, `list`, `show`, `stats`, `weekly`, `monthly`, `check`, **`from-scan`**
+子命令：`add`, `update`, `list`, `show`, `stats`, `weekly`, `monthly`, `check`, `positions`, **`from-scan`**
 
-**`from-scan` 子命令**：从 `market_scan_{date}.json` 读取突破数据，输出建议入场系统（S1-A/S2-A）、收盘价、ATR 建议止损（close - ATR×2），并打印 `add` 命令示例。
+- **`add`**：写入前自动过入场合规闸门（`entry_gate`）；`--system` 校验 `STRATEGY_CODES`；`--equity`/`--force`；成功后自动生成买入卡
+- **`positions`**：调 `print_portfolio_summary`（未实现盈亏/风险敞口/回撤状态）
+- **`stats`**：终端输出同时写 `STATS_OUTPUT_DIR/{date}_交易统计.md`
+- **`from-scan`**：默认只打印建议（收盘价/ATR 止损/示例命令）；`--execute` 一键建仓：信号→止损=close−2×ATR→`calc_position`→合规闸门→写 Trade→买入卡；同股双信号默认 S2-A（`--system` 覆盖），`--account/--equity/--force` 可调
 
-内部辅助：`_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`
+内部辅助：`_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`, `_resolve_cluster`, `_apply_entry_gate`, `_execute_from_scan`
 
 ---
 
@@ -570,6 +653,25 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 ### 5.1 SQLite Schema（`data/market.db`）
 
 （同前版本：`daily_quotes`, `sector_quotes`, `etf_flow`, `limit_stats`, `dragon_tiger`, `market_state`。）
+
+**新增 `signals` 表**（信号追踪，`init_database()` 幂等建表）：
+
+```sql
+CREATE TABLE IF NOT EXISTS signals (
+    signal_date TEXT NOT NULL,      -- 信号日期
+    symbol TEXT NOT NULL,           -- 股票代码
+    system TEXT NOT NULL,           -- S1-A / S2-A
+    entry_price REAL,               -- 入场价（信号日收盘价）
+    stop_price REAL,                -- 止损价（入场价 − 2×ATR）
+    channel_period INTEGER,         -- 退出通道周期（10 / 20）
+    status TEXT NOT NULL DEFAULT 'open',  -- open / closed
+    exit_date TEXT, exit_price REAL,
+    exit_reason TEXT,               -- 止损 / 通道退出 / 到期
+    r_multiple REAL,                -- 结算 R 倍数
+    created_at TEXT,
+    PRIMARY KEY (signal_date, symbol, system)
+);
+```
 
 ### 5.2 JSON 结构（`data/trades.json`）
 
@@ -665,8 +767,8 @@ flowchart TD
     C --> F[报告中标注 ⚠️ 或未配置提示]
 ```
 
-- **announcement_analyzer**：`_fallback_analysis()`；PDF 返回链接提示
-- **announcement_fetcher**：HTML 解析失败时保留链接
+- **announcement_analyzer**：`_fallback_analysis()`；无正文时输出「未取得公告正文，不做解读」，不调用 LLM
+- **announcement_fetcher**：PDF 用 pypdf 提取，提取/HTML 解析失败时保留链接
 - **financial_comparison / industry_mapper / daily_report**：同前版本 fallback
 
 ---
@@ -685,9 +787,13 @@ flowchart TD
 | 重试 | `LLM_MAX_RETRIES`, `FETCH_RETRY`, `FETCH_MAX_WORKERS` | 代码默认 |
 | 研究 | `RESEARCH_WATCHLIST`, `DEFAULT_SECTORS`, `ANNOUNCEMENT_*` | 代码默认 |
 | 管道 | `WATCHLIST`, `CHANNEL_*`, `MARKET_STATE` | 代码默认 |
+| 策略参数 | `STRATEGY_PARAMS`, `ATR_PERIOD`, `ATR_STOP_MULT`, `ADD_SPACING_MIN/MAX`, `MAX_UNITS`, `LOT_SIZE`, `BACKTEST_RISK_PCT` | 投资体系 V5.0（单一来源，扫描/监控/信号/回测/仓位共用） |
+| 策略枚举 | `STRATEGY_CODES`, `STRATEGY_INFO`, `ACCOUNT_TYPES`, `SYSTEM_DEFAULT_ACCOUNT` | 投资体系 V5.0 |
+| 监控/回撤 | `DRAWDOWN_THRESHOLDS`, `MONTHLY_DRAWDOWN_LIMITS`, `EXIT_CHANNEL_PERIODS` | 投资体系 V5.0 §6 |
+| 信号追踪 | `SIGNAL_MAX_HOLDING_DAYS`, `SIGNAL_STATS_MIN_SAMPLE` | 代码默认 |
 | 服务/调度 | `SERVER_HOST`, `SERVER_PORT`, `SCHEDULER_*` | 环境变量 |
-| 复盘 | `ACCOUNT_EQUITY`, `DRAWDOWN_STATE` | 环境变量 |
-| 合规 | `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS` | 投资体系 V5.0 |
+| 复盘 | `ACCOUNT_EQUITY`, `DRAWDOWN_STATE`, `TRADE_LOG_OUTPUT_DIR` | 环境变量/代码推导 |
+| 合规 | `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `INDUSTRY_MAP` | 投资体系 V5.0 |
 
 ### 7.2 环境变量
 
@@ -737,7 +843,7 @@ flowchart TD
 | fetch 失败但 DB 有数据 | 继续扫描 |
 | 单只股票 fetch 失败 | 记录 error，跳过 |
 | LLM 不可用 | fallback 模板 |
-| 公告 PDF | 返回链接 +「PDF 需手动查看」 |
+| 公告 PDF | pypdf 提取正文（前 30 页）；失败时返回链接 +「PDF 需手动查看」 |
 | 公告 HTML 解析失败 | 返回链接 + 解析失败提示 |
 | 无效公告缓存 | 忽略并重新抓取 |
 | JSON 损坏 | TradeLog 初始化为 `[]` |
@@ -766,9 +872,10 @@ python run_all.py
 等价步骤：
 
 1. `init_database()`
-2. `fetch_and_save_all_parallel(WATCHLIST)` — 并行日线 + 串行全局数据
-3. `run_scan()` → `market_scan_{date}.md` + `.json`
-4. `generate_report()` → `{date}_每日研究日报.md`（watchlist = 持仓 + RESEARCH_WATCHLIST）
+2. `fetch_and_save_all_parallel(watchlist_with_positions())` — 股票池 = WATCHLIST ∪ 未平仓持仓股
+3. `run_scan()` → 突破候选 + 市场状态 + `check_positions()` 持仓监控 → `market_scan_{date}.md` + `.json` + `position_monitor_{date}.json`；候选写入 signals 表
+4. `settle_signals()` — 逐根回放结算历史信号（当日新信号不结算）
+5. `generate_report()` → `{date}_每日研究日报.md`（watchlist = 持仓 + RESEARCH_WATCHLIST）
 
 **加速**：`python run_all.py --skip-fetch`
 
@@ -793,16 +900,20 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 
 | 时机 | 命令 | 输出 |
 |------|------|------|
-| 交易录入 | `review/cli.py add ...` | trades.json |
-| 从扫描添加 | `review/cli.py from-scan 600519` | 终端建议参数 |
+| 交易录入 | `review/cli.py add ...` | trades.json + 买入卡（先过合规闸门） |
+| 从扫描查看 | `review/cli.py from-scan 600519` | 终端建议参数（不落库） |
+| 从扫描建仓 | `review/cli.py from-scan 600519 --execute` | 仓位计算→闸门→trades.json + 买入卡 |
 | 平仓更新 | `review/cli.py update ... --exit-price` | 自动算 R |
 | 合规审计 | `review/cli.py check` | 终端报告 |
-| 持仓摘要 | `python -c "from review.positions import print_portfolio_summary; print_portfolio_summary()"` | 终端 |
-| 仓位计算 | `position_calculator.py --check-existing ...` | 含 trades.json 簇检查 |
-| 周末 | `review/cli.py weekly` | vault 周报 |
-| 月末 | `review/cli.py monthly` | vault 月报 |
+| 持仓摘要 | `review/cli.py positions` | 未实现盈亏/敞口/回撤状态 |
+| 持仓监控 | `review/monitor.py`（盘前流程已自动执行） | 止损/退出警报 JSON |
+| 信号统计 | `pipeline/signal_tracker.py stats --days 90` | 各系统胜率/平均R/PF |
+| 仓位计算 | `position_calculator.py -t 核心 --check-existing ...` | 含 trades.json 簇检查 |
+| 周末 | `review/cli.py weekly` | vault 周报（含信号验证节） |
+| 月末 | `review/cli.py monthly` | vault 月报（含信号验证节） |
+| 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 30 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 142 passed |
 
 ### 10.4 模块联动点
 
@@ -810,12 +921,20 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 flowchart LR
     A[market_scanner] -->|md + json| B[daily_report]
     A -->|json| C[review/cli from-scan]
+    A -->|候选| ST[signal_tracker 入库/结算]
+    A -->|持仓监控区块| MON[review/monitor]
     D[data_fetcher parallel] --> E[database]
     E --> A
     E --> F[backtest]
+    E --> MON
+    E --> ST
     G[trades.json] --> H[review/positions]
+    G --> MON
     H --> I[daily_report watchlist]
     H --> J[position_calculator --check-existing]
+    C -->|execute| EG[entry_gate 合规闸门] --> G
+    EG --> BC[buy_card → vault]
+    ST --> RG[report_generator 信号验证节]
     K[announcement_fetcher] --> L[announcement_analyzer]
     L --> M[llm_client cache]
     N[server.py] --> O[run_all]
@@ -901,18 +1020,33 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 4 | Obsidian Webhook 触发 | ✅ | `server.py` FastAPI 端点 `/pre-market` 等 |
 | 5 | 策略-扫描-复盘闭环 | ✅ | `market_scan_{date}.json` + `review/cli.py from-scan` |
 | 6 | 多 LLM 路由与缓存 | ✅ | `LLM_PROVIDER_PRIORITY` + `data/llm_cache/` 24h TTL |
-| 7 | 测试与 CI 基础设施 | ✅ | `tests/` 30 用例（indicators/compliance/positions） |
+| 7 | 测试与 CI 基础设施 | ✅ | `tests/` 142 用例（indicators/compliance/positions/monitor/entry_gate/signal_tracker/strategy_params/backtest） |
 
 ### 13.3 未来方向
 
 | 方向                | 说明                                         |
 | ----------------- | ------------------------------------------ |
 | **CI/CD**         | GitHub Actions 每日 smoke test（mock AkShare） |
-| **持仓市价**          | `positions._calc_unrealized_pnl` 接入实时行情    |
-| **PDF 正文解析**      | 巨潮 PDF 公告自动提取（当前仅链接）                       |
+| **盘中实时监控**        | 持仓监控/未实现盈亏目前以 market.db 日线收盘价为准，盘前足够；盘中实时行情源待接入 |
 | **向量检索**          | 公告分块 embedding + 本地 FTS/ChromaDB           |
 | **Web UI**        | 扫描结果与持仓仪表盘                                 |
 | **python-dotenv** | 自动加载 `.env` 中的 API 密钥                      |
+
+### 13.4 本轮已完成（2026-07-30 实战化改造 ✅）
+
+| # | 方向 | 实现方式 |
+|---|------|----------|
+| 1 | 市场宽度日期 bug | `indicators.calc_market_breadth` 排序后取最新一天（原用最旧一天） |
+| 2 | 公告源失效（停 2023）+ LLM 编造数字 | fetcher fallback 链（东财当日→巨潮 API）+ `has_real_content` 防编造护栏（无正文不调 LLM）+ >30 天陈旧标注 |
+| 3 | PDF 正文提取 | `extract_pdf_content`（pypdf，前 30 页） |
+| 4 | 持仓期无监控 | `review/monitor.py`：止损/退出通道/接近止损警报 + 回撤状态自动推导，接入盘前流程与扫描报告 |
+| 5 | 入场无合规闸门 | `review/entry_gate.py`：add / from-scan --execute 写入前强制检查，高级违规拒绝，`--force` 留痕 |
+| 6 | 仓位计算双口径 | calculator 重写：风险率/上限统一读 config，账户类型中文枚举，`calc_position` 纯函数 |
+| 7 | from-scan 不落库 | `--execute`：信号→仓位→闸门→写库→买入卡（`review/buy_card.py`） |
+| 8 | 未实现盈亏无市价源 | `positions._calc_unrealized_pnl` 以 market.db 最新收盘价计价 |
+| 9 | 信号不可验证 | `pipeline/signal_tracker.py`：signals 表 + 逐根回放结算 + 胜率/平均R 统计，周报/月报「信号验证」节 |
+| 10 | 回测与实盘两套参数 | `config.STRATEGY_PARAMS` 单一来源；加仓间距上限与按单位真实风险算 R |
+| 11 | 策略/簇命名不统一 | `STRATEGY_CODES` 5 策略枚举（删除 `VALID_ENTRY_SYSTEMS`）；`INDUSTRY_MAP` 对齐 `RISK_CLUSTER_LIMITS` 六簇键 |
 
 ---
 
@@ -955,11 +1089,51 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 <details>
 <summary>position_calculator.py</summary>
 
-- `get_risk_rate(...) -> float`
-- `calc_shares(...) -> PositionResult`
-- `check_cluster_risk(...) -> PositionResult`
-- `format_result(result) -> str`
-- `main()` — 含 `--check-existing`
+- `lookup_cluster(symbol) -> str | None`
+- `calc_position(equity, entry, stop, account_type, drawdown_state, gap_risk, gap_buffer, atr) -> dict`
+- `format_calc_text(calc, symbol) -> str`
+- `main()` — `--account-type 中文` / `--drawdown-state` / `--check-existing`
+
+</details>
+
+<details>
+<summary>review/monitor.py</summary>
+
+- `check_positions(trade_log, db_path) -> dict`
+- `derive_drawdown_state(trade_log, db_path, floating_r) -> dict`
+- `run_monitor(trade_log, db_path, output_dir) -> dict`
+- `monitor_to_markdown(result) -> list[str]`
+- `format_monitor_text(result) -> str`
+- `main()`
+
+</details>
+
+<details>
+<summary>review/entry_gate.py</summary>
+
+- `derive_state_safe(trade_log) -> str`
+- `check_entry(trade_log, new_trade_dict, ...) -> list[Violation]`
+- `split_by_severity(violations)`, `format_violations(violations)`, `force_note(violations)`
+
+</details>
+
+<details>
+<summary>review/buy_card.py</summary>
+
+- `calc_dict_from_trade(trade, equity) -> dict`
+- `build_buy_card_content(trade, calc, scan_info) -> str`
+- `generate_buy_card(trade, calc, scan_info, output_dir) -> Path | None`
+
+</details>
+
+<details>
+<summary>pipeline/signal_tracker.py</summary>
+
+- `record_signals(scan_data, db_path) -> int`
+- `settle_signals(db_path, settle_date) -> dict`
+- `signal_stats(db_path, days, as_of) -> dict`
+- `signal_stats_to_markdown(stats) -> str`
+- `main()` — `settle` / `stats [--days 90]`
 
 </details>
 
@@ -1010,9 +1184,11 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 <details>
 <summary>review/cli.py</summary>
 
-- `cmd_add`, `cmd_update`, `cmd_list`, `cmd_stats`, `cmd_weekly`, `cmd_monthly`, `cmd_check`, `cmd_show`
-- `cmd_from_scan(args)` — 从扫描 JSON 读取突破参数
+- `cmd_add`（合规闸门 + 买入卡）, `cmd_update`, `cmd_list`, `cmd_stats`（写 vault 统计）, `cmd_weekly`, `cmd_monthly`, `cmd_check`, `cmd_show`
+- `cmd_positions` — 持仓摘要（未实现盈亏/敞口/回撤状态）
+- `cmd_from_scan(args)` — 默认只打印；`--execute` 一键建仓（仓位→闸门→写库→买入卡）
 - `_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`
+- `_resolve_cluster`, `_apply_entry_gate`, `_execute_from_scan`
 - `main()`
 
 </details>
@@ -1028,11 +1204,16 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/</summary>
+<summary>tests/（142 用例，全部离线）</summary>
 
-- `test_indicators.py` — 10 用例
+- `test_indicators.py` — 13 用例（含市场宽度取最新日回归）
 - `test_compliance.py` — 12 用例
 - `test_positions.py` — 8 用例
+- `test_monitor.py` — 23 用例（止损/退出通道/回撤推导）
+- `test_compliance_gate.py` — 41 用例（口径统一/闸门/force 留痕/from-scan --execute/买入卡）
+- `test_signal_tracker.py` — 14 用例（入库去重/回放结算/统计）
+- `test_strategy_params.py` — 19 用例（config 单一来源/枚举/簇映射）
+- `test_backtest.py` — 12 用例（加仓间距/单位 R/合成行情全流程）
 
 </details>
 
@@ -1080,7 +1261,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `DEFAULT_SECTORS` | 创新药, AI算力, 半导体, 新能源 |
 | `ANNOUNCEMENT_LIMIT` | 10 |
 | `ANNOUNCEMENT_MAX_CHARS` | 3000 |
-| `CHANNEL_SHORT/LONG` | 20 / 55 |
+| `CHANNEL_SHORT/LONG` | 20 / 55（`STRATEGY_PARAMS` 派生别名） |
 | `SECTOR_FETCH_LIMIT` | 30 |
 
 #### 服务 / 调度
@@ -1094,7 +1275,28 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 
 #### 复盘 / 合规
 
-（同前版本：`ACCOUNT_EQUITY`, `DRAWDOWN_STATE`, `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `FORBIDDEN_IN_DRAWDOWN`, `VALID_ENTRY_SYSTEMS`。）
+（同前版本：`ACCOUNT_EQUITY`, `DRAWDOWN_STATE`, `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `FORBIDDEN_IN_DRAWDOWN`。`VALID_ENTRY_SYSTEMS` 已删除，策略枚举统一为 `STRATEGY_CODES` + `STRATEGY_INFO`（5 策略）；新增 `ACCOUNT_TYPES`, `SYSTEM_DEFAULT_ACCOUNT`, `INDUSTRY_MAP`（值对齐簇键）, `TRADE_LOG_OUTPUT_DIR`。）
+
+#### 策略参数（单一来源）
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `STRATEGY_PARAMS["S1-A"]` | entry 20 / exit 10 | 快速系统通道 |
+| `STRATEGY_PARAMS["S2-A"]` | entry 55 / exit 20 | 慢速系统通道 |
+| `ATR_PERIOD` | 20 | N = ATR(20) |
+| `ATR_STOP_MULT` | 2.0 | 初始止损 = 入场价 − 2N |
+| `ADD_SPACING_MIN/MAX` | 0.5 / 1.0 | 加仓间距 0.5N~1N，跳空 >1N 不追 |
+| `MAX_UNITS` / `LOT_SIZE` | 4 / 100 | 最大单位数 / 整手 |
+| `EXIT_CHANNEL_PERIODS` | S1:10, S2:20 | 派生别名（监控/信号/买入卡共用） |
+
+#### 监控 / 回撤 / 信号
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `DRAWDOWN_THRESHOLDS` | Caution 6% / Defensive 8% / Review 12% | 峰值回撤状态机（V5.0 §6） |
+| `MONTHLY_DRAWDOWN_LIMITS` | −4% 停事件 / −6% 停开仓 | 月度轨道 |
+| `SIGNAL_MAX_HOLDING_DAYS` | 20 | 信号到期强制结算（交易日） |
+| `SIGNAL_STATS_MIN_SAMPLE` | 5 | 统计最小样本量 |
 
 ---
 

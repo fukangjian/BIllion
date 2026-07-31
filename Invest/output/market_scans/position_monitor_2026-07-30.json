@@ -1,0 +1,25 @@
+{
+  "date": "2026-07-30",
+  "data_date": null,
+  "open_count": 0,
+  "alerts": [],
+  "positions_ok": [],
+  "drawdown_state": {
+    "state": "Normal",
+    "derived": "Normal",
+    "env": null,
+    "conflict": false,
+    "drawdown_pct": 0.0,
+    "peak_r": 0.0,
+    "current_r": 0.0,
+    "floating_r": 0.0,
+    "avg_risk_rate": 0.0,
+    "monthly_realized_r": 0,
+    "monthly_realized_pct": 0.0,
+    "monthly_flags": {
+      "event_trade_halt": false,
+      "new_position_halt": false
+    },
+    "note": "近似口径：累计R × 平均风险率；样本为空，默认 Normal"
+  }
+}

@@ -84,6 +84,17 @@ def _get_month_range(ref_date: datetime | None = None) -> tuple[str, str, str]:
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), month_id
 
 
+def signal_verification_section(days: int = 90) -> str:
+    """信号验证节内容（周报/月报/统计快照共用）；信号统计失败时降级标注"""
+    try:
+        from pipeline.signal_tracker import signal_stats, signal_stats_to_markdown
+
+        return signal_stats_to_markdown(signal_stats(days=days))
+    except Exception as e:
+        logger.warning("信号统计不可用（已降级）: %s", e)
+        return f"_信号统计不可用（已降级，详见日志）: {e}_"
+
+
 def generate_weekly_report(
     trades: list[Trade] | None = None,
     ref_date: datetime | None = None,
@@ -134,7 +145,11 @@ def generate_weekly_report(
         "",
         report_to_markdown(compliance),
         "",
-        "## 五、本周反思",
+        "## 五、信号验证（近 90 天）",
+        "",
+        signal_verification_section(),
+        "",
+        "## 六、本周反思",
         "",
         "### 最大错误",
         "> （待填写）",
@@ -236,7 +251,11 @@ def generate_monthly_report(
         "",
         report_to_markdown(compliance),
         "",
-        "## 七、改进方向",
+        "## 七、信号验证（近 90 天）",
+        "",
+        signal_verification_section(),
+        "",
+        "## 八、改进方向",
         "",
         "### 本月亮点",
         "> （待填写）",
