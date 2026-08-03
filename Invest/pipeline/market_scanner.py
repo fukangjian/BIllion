@@ -115,7 +115,7 @@ def run_scan(
         })
 
     monitor_result = _run_position_monitor(output_dir)
-    hot_section = _build_hot_section(today)
+    hot_section = _build_hot_section(today, sector_rank, state_info.get("state", ""))
 
     md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols, monitor_result, hot_section)
     report_path.write_text(md, encoding="utf-8")
@@ -233,9 +233,120 @@ def _build_sector_ranking(benchmark_df: pd.DataFrame) -> pd.DataFrame:
     return rank_sectors_by_strength(sector_data, benchmark_df)
 
 
-def _build_hot_section(today: str) -> dict:
+# 买入规则 8 条（用户手写体系）：满足 4 条以上才允许买入；⑧ 逻辑/持续性最重要
+_BUY_RULE_NAMES = {
+    1: "板块Top5",
+    2: "涨停家数增加",
+    3: "前排",
+    4: "放量突破",
+    5: "次日无高开低走",
+    6: "分时均价线承接",
+    7: "大盘环境",
+    8: "事件催化",
+}
+
+_RULE_NUMERALS = "①②③④⑤⑥⑦⑧"
+
+
+def _volume_ratio(df: pd.DataFrame, days: int = 20) -> float | None:
+    """当日成交量 / 前 N 日均量（不含当日）；数据不足返回 None"""
+    if df is None or df.empty or "volume" not in df.columns:
+        return None
+    vol = pd.to_numeric(df["volume"], errors="coerce").dropna()
+    if len(vol) < days + 1:
+        return None
+    base = vol.iloc[-days - 1:-1].mean()
+    if not base or base <= 0:
+        return None
+    return float(vol.iloc[-1] / base)
+
+
+def _evaluate_buy_rules(
+    rec: dict,
+    info_row,
+    df: pd.DataFrame | None,
+    top_sectors: set,
+    limit_today_by_sector: dict,
+    limit_prev_by_sector: dict | None,
+    market_state: str,
+) -> dict:
     """
-    超短热点区块：涨停/连板/炸板名单 + 热点池突破候选（HOT-S）。
+    按手写买入规则 8 条逐条核对（盘前离线可判 ①②③④⑦；⑤⑥ 需次日/盘中观察；⑧ 须人工核对）。
+    返回 {"rules": {编号: True/False/None}, "met": 自动满足条数, "text": 推荐分析文本}
+    True=满足，False=明确不满足，None=无法自动判定。
+    ⑧ 涉及事件/政策/业绩等事实，无公告正文不自动判定（防编造），标注人工核对。
+    """
+    sector = str(rec.get("sector", "") or "")
+    source = str(rec.get("source", "") or "")
+    try:
+        lbc = int(info_row.get("lbc", 0) or 0) if info_row is not None and len(info_row) else 0
+    except (TypeError, ValueError):
+        lbc = 0
+    rules: dict[int, bool | None] = {}
+
+    # ① 所属板块当天涨幅排名前 5（板块名双向子串近似匹配）
+    if not top_sectors:
+        rules[1] = None
+    else:
+        rules[1] = bool(sector) and any(sector == s or sector in s or s in sector for s in top_sectors)
+
+    # ② 板块涨停家数较上一交易日增加
+    today_n = limit_today_by_sector.get(sector, 0)
+    if limit_prev_by_sector is None:
+        rules[2] = None
+    else:
+        prev_n = limit_prev_by_sector.get(sector, 0)
+        rules[2] = today_n >= 1 and today_n > prev_n
+
+    # ③ 前排（来源含连板/领涨或 lbc>=2 近似；「有逻辑支撑」部分归入⑧人工）
+    rules[3] = ("连板" in source) or ("领涨" in source) or lbc >= 2
+
+    # ④ 放量突破，或涨停后换手承接强（两分支满足其一）
+    vr = _volume_ratio(df)
+    if "涨停" in source or "连板" in source:
+        rules[4] = True  # 涨停/连板来源视为「涨停后换手承接强」分支
+    elif vr is None:
+        rules[4] = None
+    else:
+        rules[4] = vr >= 1.5
+
+    # ⑤ 次日没有高开低走 / ⑥ 跌破分时均价线能快速拉回——次日/盘中观察项，盘前不判
+    rules[5] = None
+    rules[6] = None
+
+    # ⑦ 大盘红盘数改善（用市场状态 A/B 近似）
+    rules[7] = market_state in ("A", "B") if market_state else None
+
+    # ⑧ 事件/政策/业绩/技术突破/转型——最重要，人工核对（公告/新闻）
+    rules[8] = None
+
+    met = sum(1 for v in rules.values() if v is True)
+    auto_ok = [n for n, v in rules.items() if v is True]
+    auto_no = [n for n, v in rules.items() if v is False]
+    numerals = "".join(_RULE_NUMERALS[n - 1] for n in auto_ok)
+
+    if met >= 4:
+        verdict = f"符合 {met} 条（{numerals}）"
+    else:
+        verdict = f"自动满足 {met}/8 条（{numerals or '无'}，差 {4 - met} 条）"
+    parts = [verdict]
+    if auto_no:
+        parts.append("✗" + "、".join(_BUY_RULE_NAMES[n] for n in auto_no))
+    parts.append("⑤⑥盘中确认、⑧人工核对(最重要)")
+    return {"rules": rules, "met": met, "text": "；".join(parts)}
+
+
+def _limit_count_by_sector(df: pd.DataFrame) -> dict:
+    """涨停池（pool_type=up）按板块统计家数"""
+    if df is None or df.empty:
+        return {}
+    up = df[df["pool_type"] == "up"] if "pool_type" in df.columns else df
+    return up.groupby("sector").size().to_dict() if not up.empty else {}
+
+
+def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, market_state: str = "") -> dict:
+    """
+    超短热点区块：涨停/连板/炸板名单 + 热点池突破候选（HOT-S，含名称与 8 条买入规则推荐分析）。
     数据全部来自本地 DB（limit_pool / hot_pool / daily_quotes，由 run_all 取数阶段写入），
     热点池未构建或构建失败时降级为标注，不拖垮扫描报告。
     """
@@ -262,6 +373,22 @@ def _build_hot_section(today: str) -> dict:
         )
         result["broken"] = broken.to_dict("records") if not broken.empty else []
 
+        # 规则①②⑦所需上下文：板块 Top5、今日/上一交易日各板块涨停家数、市场状态
+        top_sectors: set = set()
+        if sector_rank is not None and not sector_rank.empty and "sector_name" in sector_rank.columns:
+            top_sectors = {str(s) for s in sector_rank["sector_name"].head(5)}
+        limit_today_by_sector = _limit_count_by_sector(limit_today)
+        limit_prev_by_sector = None
+        try:
+            limit_all = load_limit_pool()
+            prev_dates = sorted(d for d in limit_all["trade_date"].unique() if d < today)
+            if prev_dates:
+                limit_prev_by_sector = _limit_count_by_sector(
+                    limit_all[limit_all["trade_date"] == prev_dates[-1]]
+                )
+        except Exception as e:
+            logger.warning("上一交易日涨停池读取失败（规则②降级为不判定）: %s", e)
+
         # 热点池突破扫描（S1-A 20 日通道，与主扫描同函数同参数）
         if not pool.empty:
             symbols_data = {}
@@ -275,8 +402,9 @@ def _build_hot_section(today: str) -> dict:
                 records = []
                 for _, r in breakout.iterrows():
                     prow = info.loc[r["symbol"]] if r["symbol"] in info.index else {}
-                    records.append({
+                    rec = {
                         "symbol": r["symbol"],
+                        "name": str(prow.get("name", "")) if len(prow) else "",
                         "close": round(float(r["close"]), 2),
                         "channel_high": round(float(r["channel_high"]), 2),
                         "breakout_pct": round(float(r["breakout_pct"]), 2),
@@ -284,7 +412,16 @@ def _build_hot_section(today: str) -> dict:
                         "period": int(r.get("period", 0)),
                         "source": str(prow.get("source", "")) if len(prow) else "",
                         "sector": str(prow.get("sector", "")) if len(prow) else "",
-                    })
+                    }
+                    evaluation = _evaluate_buy_rules(
+                        rec, prow, symbols_data.get(r["symbol"]),
+                        top_sectors, limit_today_by_sector, limit_prev_by_sector, market_state,
+                    )
+                    rec["rules_met"] = evaluation["met"]
+                    rec["analysis"] = evaluation["text"]
+                    records.append(rec)
+                # 规则满足条数高的排前面，便于盘前快速筛选
+                records.sort(key=lambda x: (-x["rules_met"], -x["breakout_pct"]))
                 result["hot_breakout"] = records
 
         result["available"] = True
@@ -428,15 +565,23 @@ def _format_report(
             lines.extend([
                 "### 热点池突破候选（S1-A 通道；HOT-S 信号跟踪，5 日强制结算）",
                 "",
-                "| 代码 | 来源 | 板块 | 收盘价 | 通道高点 | 突破幅度% | ATR(20) |",
-                "|------|------|------|--------|----------|-----------|---------|",
+                "| 代码 | 名称 | 来源 | 板块 | 收盘价 | 通道高点 | 突破幅度% | ATR(20) | 推荐分析 |",
+                "|------|------|------|------|--------|----------|-----------|---------|----------|",
             ])
             for r in hb:
                 lines.append(
-                    f"| {r['symbol']} | {r.get('source', '')} | {r.get('sector', '')} "
+                    f"| {r['symbol']} | {r.get('name', '')} | {r.get('source', '')} | {r.get('sector', '')} "
                     f"| {r['close']:.2f} | {r['channel_high']:.2f} "
-                    f"| {r['breakout_pct']:.2f} | {r.get('atr_20', 0):.2f} |"
+                    f"| {r['breakout_pct']:.2f} | {r.get('atr_20', 0):.2f} | {r.get('analysis', '')} |"
                 )
+            lines.extend([
+                "",
+                "> **口径说明**：突破幅度% =（收盘价 − 20 日通道高点）/ 通道高点 ×100，即收盘越过前 20 日最高价的幅度；",
+                "> ATR(20) = 20 日平均真实波幅（该股一天的平均波动金额），用于设止损：建议止损 = 收盘价 − ATR × 倍数。",
+                "> **推荐分析**：按买入规则 8 条核对——①板块涨幅Top5 ②板块涨停家数增加 ③前排（连板/领涨）④放量突破 ⑦大盘环境 可自动判定；",
+                "> ⑤次日无高开低走、⑥分时均价线承接 需次日/盘中观察；⑧事件/政策/业绩/技术突破/转型（逻辑与持续性，最重要）须人工核对公告与新闻。",
+                "> 满足 4 条以上才允许买入；候选按规则满足条数排序。",
+            ])
         lines.append("")
 
     lines.extend([
