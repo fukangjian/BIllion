@@ -146,7 +146,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **196 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3），已验证全部通过（`196 passed`）。
+- 框架：pytest，目录 `Invest/tests/`，共 **213 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17），已验证全部通过（`213 passed`）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。

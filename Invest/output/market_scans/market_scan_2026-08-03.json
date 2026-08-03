@@ -1,0 +1,605 @@
+{
+  "date": "2026-08-03",
+  "market_state": "C",
+  "breakout_s1a": [
+    {
+      "symbol": "000001",
+      "close": 11.63,
+      "channel_high": 11.62,
+      "breakout_pct": 0.09,
+      "atr_20": 0.22,
+      "period": 20
+    }
+  ],
+  "breakout_s2a": [
+    {
+      "symbol": "000001",
+      "close": 11.63,
+      "channel_high": 11.62,
+      "breakout_pct": 0.09,
+      "atr_20": 0.22,
+      "period": 55
+    }
+  ],
+  "sector_ranking": [
+    {
+      "rank": 1,
+      "sector_name": "电子化学品",
+      "relative_strength": 7.1476,
+      "period_return": -0.3749
+    },
+    {
+      "rank": 2,
+      "sector_name": "半导体",
+      "relative_strength": 5.8379,
+      "period_return": -0.3062
+    },
+    {
+      "rank": 3,
+      "sector_name": "非金属材料",
+      "relative_strength": 5.4186,
+      "period_return": -0.2842
+    },
+    {
+      "rank": 4,
+      "sector_name": "光学光电子",
+      "relative_strength": 4.6477,
+      "period_return": -0.2438
+    },
+    {
+      "rank": 5,
+      "sector_name": "电池",
+      "relative_strength": 3.5953,
+      "period_return": -0.1886
+    },
+    {
+      "rank": 6,
+      "sector_name": "电机",
+      "relative_strength": 3.1732,
+      "period_return": -0.1664
+    },
+    {
+      "rank": 7,
+      "sector_name": "光伏设备",
+      "relative_strength": 2.9511,
+      "period_return": -0.1548
+    },
+    {
+      "rank": 8,
+      "sector_name": "环保设备",
+      "relative_strength": 2.8769,
+      "period_return": -0.1509
+    },
+    {
+      "rank": 9,
+      "sector_name": "风电设备",
+      "relative_strength": 2.3208,
+      "period_return": -0.1217
+    },
+    {
+      "rank": 10,
+      "sector_name": "白色家电",
+      "relative_strength": 2.0591,
+      "period_return": -0.108
+    },
+    {
+      "rank": 11,
+      "sector_name": "黑色家电",
+      "relative_strength": 1.8079,
+      "period_return": -0.0948
+    },
+    {
+      "rank": 12,
+      "sector_name": "包装印刷",
+      "relative_strength": 1.7148,
+      "period_return": -0.0899
+    },
+    {
+      "rank": 13,
+      "sector_name": "工程机械",
+      "relative_strength": 1.6386,
+      "period_return": -0.0859
+    },
+    {
+      "rank": 14,
+      "sector_name": "电网设备",
+      "relative_strength": 1.4692,
+      "period_return": -0.0771
+    },
+    {
+      "rank": 15,
+      "sector_name": "服装家纺",
+      "relative_strength": 1.4436,
+      "period_return": -0.0757
+    }
+  ],
+  "hot_pool": {
+    "available": true,
+    "limit_up_count": 99,
+    "lianban_count": 10,
+    "broken_count": 107,
+    "lianban": [
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "603221",
+        "name": "爱丽家居",
+        "pool_type": "up",
+        "change_pct": 10.00487995147705,
+        "amount": 450589344.0,
+        "lbc": 9,
+        "sector": "家居用品"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "003032",
+        "name": "传智教育",
+        "pool_type": "up",
+        "change_pct": 9.987516403198242,
+        "amount": 359753920.0,
+        "lbc": 5,
+        "sector": "教育"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "605179",
+        "name": "一鸣食品",
+        "pool_type": "up",
+        "change_pct": 9.9943208694458,
+        "amount": 397360288.0,
+        "lbc": 4,
+        "sector": "饮料乳品"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "002827",
+        "name": "高争民爆",
+        "pool_type": "up",
+        "change_pct": 10.015897750854492,
+        "amount": 760995408.0,
+        "lbc": 3,
+        "sector": "化学制品"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "000820",
+        "name": "神雾节能",
+        "pool_type": "up",
+        "change_pct": 10.0,
+        "amount": 27586867.0,
+        "lbc": 2,
+        "sector": "环保设备"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "000009",
+        "name": "中国宝安",
+        "pool_type": "up",
+        "change_pct": 10.069930076599121,
+        "amount": 1105250720.0,
+        "lbc": 2,
+        "sector": "综合Ⅱ"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "600162",
+        "name": "香江控股",
+        "pool_type": "up",
+        "change_pct": 10.034602165222168,
+        "amount": 836513376.0,
+        "lbc": 2,
+        "sector": "房地产开"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "300996",
+        "name": "普联软件",
+        "pool_type": "up",
+        "change_pct": 19.974227905273438,
+        "amount": 1192361584.0,
+        "lbc": 2,
+        "sector": "软件开发"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "603171",
+        "name": "税友股份",
+        "pool_type": "up",
+        "change_pct": 10.007233619689941,
+        "amount": 962360704.0,
+        "lbc": 2,
+        "sector": "IT服务Ⅱ"
+      },
+      {
+        "trade_date": "2026-08-03",
+        "symbol": "603039",
+        "name": "泛微网络",
+        "pool_type": "up",
+        "change_pct": 9.994120597839355,
+        "amount": 859784960.0,
+        "lbc": 2,
+        "sector": "软件开发"
+      }
+    ],
+    "hot_breakout": [
+      {
+        "symbol": "600162",
+        "name": "香江控股",
+        "close": 3.18,
+        "channel_high": 3.05,
+        "breakout_pct": 4.26,
+        "atr_20": 0.26,
+        "period": 20,
+        "source": "连板",
+        "sector": "房地产开",
+        "rules_met": 3,
+        "analysis": "自动满足 3/8 条（②③④，差 1 条）；✗板块Top5、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "300996",
+        "name": "普联软件",
+        "close": 18.62,
+        "channel_high": 15.52,
+        "breakout_pct": 19.97,
+        "atr_20": 0.92,
+        "period": 20,
+        "source": "连板",
+        "sector": "软件开发",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "000009",
+        "name": "中国宝安",
+        "close": 7.87,
+        "channel_high": 7.15,
+        "breakout_pct": 10.07,
+        "atr_20": 0.27,
+        "period": 20,
+        "source": "连板",
+        "sector": "综合Ⅱ",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "002827",
+        "name": "高争民爆",
+        "close": 34.6,
+        "channel_high": 31.45,
+        "breakout_pct": 10.02,
+        "atr_20": 1.41,
+        "period": 20,
+        "source": "连板",
+        "sector": "化学制品",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603221",
+        "name": "爱丽家居",
+        "close": 22.54,
+        "channel_high": 20.49,
+        "breakout_pct": 10.0,
+        "atr_20": 0.97,
+        "period": 20,
+        "source": "连板",
+        "sector": "家居用品",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "000820",
+        "name": "神雾节能",
+        "close": 3.52,
+        "channel_high": 3.2,
+        "breakout_pct": 10.0,
+        "atr_20": 0.16,
+        "period": 20,
+        "source": "连板",
+        "sector": "环保设备",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "605179",
+        "name": "一鸣食品",
+        "close": 19.37,
+        "channel_high": 17.61,
+        "breakout_pct": 9.99,
+        "atr_20": 0.88,
+        "period": 20,
+        "source": "连板",
+        "sector": "饮料乳品",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "003032",
+        "name": "传智教育",
+        "close": 8.81,
+        "channel_high": 8.01,
+        "breakout_pct": 9.99,
+        "atr_20": 0.38,
+        "period": 20,
+        "source": "连板",
+        "sector": "教育",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603171",
+        "name": "税友股份",
+        "close": 45.62,
+        "channel_high": 42.6,
+        "breakout_pct": 7.09,
+        "atr_20": 2.37,
+        "period": 20,
+        "source": "连板",
+        "sector": "IT服务Ⅱ",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "300789",
+        "name": "唐源电气",
+        "close": 18.96,
+        "channel_high": 18.0,
+        "breakout_pct": 5.33,
+        "atr_20": 1.09,
+        "period": 20,
+        "source": "涨停",
+        "sector": "计算机设",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（②④，差 2 条）；✗板块Top5、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603533",
+        "name": "掌阅科技",
+        "close": 22.26,
+        "channel_high": 21.19,
+        "breakout_pct": 5.05,
+        "atr_20": 1.36,
+        "period": 20,
+        "source": "涨停",
+        "sector": "数字媒体",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（②④，差 2 条）；✗板块Top5、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603106",
+        "name": "恒银科技",
+        "close": 7.47,
+        "channel_high": 7.33,
+        "breakout_pct": 1.91,
+        "atr_20": 0.34,
+        "period": 20,
+        "source": "涨停",
+        "sector": "计算机设",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（②④，差 2 条）；✗板块Top5、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603956",
+        "name": "威派格",
+        "close": 6.59,
+        "channel_high": 6.47,
+        "breakout_pct": 1.85,
+        "atr_20": 0.39,
+        "period": 20,
+        "source": "涨停",
+        "sector": "专用设备",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（②④，差 2 条）；✗板块Top5、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603696",
+        "name": "安记食品",
+        "close": 13.44,
+        "channel_high": 13.23,
+        "breakout_pct": 1.59,
+        "atr_20": 0.68,
+        "period": 20,
+        "source": "涨停",
+        "sector": "调味发酵",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（②④，差 2 条）；✗板块Top5、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603039",
+        "name": "泛微网络",
+        "close": 37.42,
+        "channel_high": 36.98,
+        "breakout_pct": 1.19,
+        "atr_20": 2.13,
+        "period": 20,
+        "source": "连板",
+        "sector": "软件开发",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（③④，差 2 条）；✗板块Top5、涨停家数增加、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603337",
+        "name": "杰克科技",
+        "close": 43.11,
+        "channel_high": 42.98,
+        "breakout_pct": 0.3,
+        "atr_20": 2.03,
+        "period": 20,
+        "source": "涨停",
+        "sector": "专用设备",
+        "rules_met": 2,
+        "analysis": "自动满足 2/8 条（②④，差 2 条）；✗板块Top5、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "688369",
+        "name": "致远互联",
+        "close": 22.0,
+        "channel_high": 20.28,
+        "breakout_pct": 8.48,
+        "atr_20": 1.31,
+        "period": 20,
+        "source": "炸板",
+        "sector": "软件开发",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "920130",
+        "name": "立方控股",
+        "close": 20.42,
+        "channel_high": 18.88,
+        "breakout_pct": 8.16,
+        "atr_20": 1.45,
+        "period": 20,
+        "source": "涨停",
+        "sector": "IT服务Ⅱ",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "300795",
+        "name": "米奥会展",
+        "close": 16.44,
+        "channel_high": 15.31,
+        "breakout_pct": 7.38,
+        "atr_20": 1.2,
+        "period": 20,
+        "source": "炸板",
+        "sector": "专业服务",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603336",
+        "name": "宏辉果蔬",
+        "close": 9.77,
+        "channel_high": 9.13,
+        "breakout_pct": 7.01,
+        "atr_20": 0.62,
+        "period": 20,
+        "source": "涨停",
+        "sector": "种植业",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "600588",
+        "name": "用友网络",
+        "close": 11.08,
+        "channel_high": 10.36,
+        "breakout_pct": 6.95,
+        "atr_20": 0.51,
+        "period": 20,
+        "source": "涨停",
+        "sector": "软件开发",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "688095",
+        "name": "福昕软件",
+        "close": 67.03,
+        "channel_high": 63.01,
+        "breakout_pct": 6.38,
+        "atr_20": 3.95,
+        "period": 20,
+        "source": "涨停",
+        "sector": "软件开发",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "002659",
+        "name": "凯文教育",
+        "close": 4.62,
+        "channel_high": 4.42,
+        "breakout_pct": 4.52,
+        "atr_20": 0.21,
+        "period": 20,
+        "source": "涨停",
+        "sector": "教育",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "600986",
+        "name": "浙文互联",
+        "close": 7.82,
+        "channel_high": 7.52,
+        "breakout_pct": 3.99,
+        "atr_20": 0.45,
+        "period": 20,
+        "source": "涨停",
+        "sector": "广告营销",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "603682",
+        "name": "锦和商管",
+        "close": 9.6,
+        "channel_high": 9.3,
+        "breakout_pct": 3.23,
+        "atr_20": 0.59,
+        "period": 20,
+        "source": "涨停",
+        "sector": "一般零售",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      },
+      {
+        "symbol": "300063",
+        "name": "天龙集团",
+        "close": 9.1,
+        "channel_high": 9.02,
+        "breakout_pct": 0.89,
+        "atr_20": 0.55,
+        "period": 20,
+        "source": "炸板",
+        "sector": "广告营销",
+        "rules_met": 1,
+        "analysis": "自动满足 1/8 条（④，差 3 条）；✗板块Top5、涨停家数增加、前排、大盘环境；⑤⑥盘中确认、⑧人工核对(最重要)"
+      }
+    ],
+    "note": ""
+  },
+  "position_monitor": {
+    "date": "2026-08-03",
+    "data_date": "2026-07-31",
+    "open_count": 1,
+    "alerts": [],
+    "positions_ok": [
+      {
+        "交易编号": "T20260731_d580e2",
+        "股票代码": "605388",
+        "股票名称": "均瑶健康",
+        "类型": null,
+        "现价": 6.21,
+        "止损价": 0.0,
+        "通道下轨": null,
+        "浮动R": 0.04,
+        "距止损N": null,
+        "数据日期": "2026-07-31",
+        "建议动作": "",
+        "备注": ""
+      }
+    ],
+    "drawdown_state": {
+      "state": "Normal",
+      "derived": "Normal",
+      "env": null,
+      "conflict": false,
+      "drawdown_pct": 0.0,
+      "peak_r": 0.04,
+      "current_r": 0.04,
+      "floating_r": 0.04,
+      "avg_risk_rate": 0.0,
+      "monthly_realized_r": 0,
+      "monthly_realized_pct": 0.0,
+      "monthly_flags": {
+        "event_trade_halt": false,
+        "new_position_halt": false
+      },
+      "note": "近似口径：累计R × 平均风险率"
+    }
+  }
+}

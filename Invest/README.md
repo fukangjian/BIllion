@@ -173,7 +173,7 @@ python pipeline/database.py
 - `output/market_scans/market_scan_YYYY-MM-DD.md`（顶部含持仓监控区块）
 - `output/market_scans/market_scan_YYYY-MM-DD.json`（含 `position_monitor` 与 `hot_pool` 字段）
 
-扫描报告新增「五、超短热点池（1-5 天，HOT-S）」节：涨停/连板/炸板名单统计 + 热点池突破候选（与主扫描同通道参数）。热点池突破信号以系统 `HOT-S` 写入 signals 表、5 个交易日强制结算，分组胜率见 `python pipeline/signal_tracker.py stats`。
+扫描报告新增「五、超短热点池（1-5 天，HOT-S）」节：涨停/连板/炸板名单统计 + 热点池突破候选（与主扫描同通道参数；含**名称**与**推荐分析**——按买入规则 8 条自动核对 ①板块Top5 ②板块涨停家数增加 ③前排 ④放量突破 ⑦大盘环境，⑤⑥盘中确认、⑧事件催化人工核对，候选按满足条数排序，表下附口径说明）。热点池突破信号以系统 `HOT-S` 写入 signals 表、5 个交易日强制结算，分组胜率见 `python pipeline/signal_tracker.py stats`。
 
 ### 信号追踪（可验证性）
 
@@ -278,7 +278,7 @@ python -m pytest tests/test_monitor.py -v
 python -m pytest tests/test_signal_tracker.py -v
 ```
 
-共 196 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 46（含 from-scan HOT-S 与禁买板块）、信号追踪 14、策略参数 19、回测 12、热点池 9、券商导入 14、纪律审计 14、卖点检查 9、统计口径 3。全部离线运行，不依赖 API Key 或网络。
+共 213 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 46（含 from-scan HOT-S 与禁买板块）、信号追踪 14、策略参数 19、回测 12、热点池 9、券商导入 14、纪律审计 14、卖点检查 9、统计口径 3、热点规则 17。全部离线运行，不依赖 API Key 或网络。
 
 ## 目录结构
 
@@ -324,7 +324,7 @@ Invest/
 │   ├── metrics.py
 │   ├── compliance_check.py
 │   └── report_generator.py
-├── tests/                 # 单元测试（196 用例）
+├── tests/                 # 单元测试（213 用例）
 ├── data/                  # 数据存储
 │   ├── market.db
 │   ├── trades.json

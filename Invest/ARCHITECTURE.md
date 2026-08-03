@@ -51,7 +51,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、导入、纪律、卖点检查、统计口径（196 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、导入、纪律、卖点检查、统计口径、热点规则（213 用例） |
 
 ---
 
@@ -490,7 +490,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `run_scan` | `(symbols: list[str] \| None = None, output_dir: Path \| None = None) -> Path` | Markdown 报告路径（同时写 JSON） |
 | `_load_limit_stats_from_db` | `(db_path=None) -> pd.DataFrame` | 最近 5 日 limit_stats |
 | `_run_position_monitor` | `() -> Optional[dict]` | 持仓监控（调 `review.monitor`，失败降级返回 None，不阻塞扫描） |
-| `_build_hot_section` | `(today: str) -> dict` | 超短热点区块：从 DB 读 limit_pool/hot_pool，池内个股跑 `scan_breakout_candidates(CHANNEL_SHORT)`（与主扫描同函数同参数），标注 source/sector；热点池未构建时降级标注，不拖垮报告 |
+| `_build_hot_section` | `(today: str, sector_rank=None, market_state="") -> dict` | 超短热点区块：从 DB 读 limit_pool/hot_pool，池内个股跑 `scan_breakout_candidates(CHANNEL_SHORT)`（与主扫描同函数同参数），标注 name/source/sector，并按买入规则 8 条生成推荐分析（`_evaluate_buy_rules`：①板块Top5 ②板块涨停家数较上一交易日增加 ③前排 ④放量突破/涨停承接 ⑦市场状态 A/B 可离线判定，⑤⑥⑧ 人工；候选按满足条数排序，记录含 `rules_met`/`analysis`）；热点池未构建时降级标注，不拖垮报告 |
 | `_record_breakout_signals` | `(scan_data: dict) -> None` | 突破候选写入 signals 表（S1-A/S2-A + 热点池 hot_breakout 以 system=HOT-S，调 `signal_tracker.record_signals`） |
 | `_df_to_breakout_list` | `(df: pd.DataFrame) -> list[dict]` | 突破候选 JSON 结构 |
 | `_df_to_sector_list` | `(df: pd.DataFrame) -> list[dict]` | 板块排名 JSON 结构 |
@@ -512,7 +512,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 }
 ```
 
-持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。热点池区块嵌入扫描 JSON：`lianban` 为连板股表（报告取 Top10），`hot_breakout` 为热点池突破候选（入库 signals 表 system=HOT-S），热点池未构建时 `available=false` 并在 `note` 标注。
+持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。热点池区块嵌入扫描 JSON：`lianban` 为连板股表（报告取 Top10），`hot_breakout` 为热点池突破候选（记录含 symbol/name/close/channel_high/breakout_pct/atr_20/period/source/sector/rules_met/analysis，入库 signals 表 system=HOT-S），热点池未构建时 `available=false` 并在 `note` 标注。
 
 #### `signal_tracker.py` — 信号追踪（可验证性）
 
@@ -1026,7 +1026,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 196 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 213 passed |
 
 ### 10.4 模块联动点
 
@@ -1205,6 +1205,17 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 8 | 周/月报自动调度 | server.py 新增两个 cron job：每周五 `WEEKLY_REVIEW_TIME`（15:45）生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）生成月报，均经 `_execute_task` 串行，`/status` 展示 |
 | 9 | 统计口径 | `TradeStats.总盈亏金额`（已平仓盈亏合计，元）；胜率改金额符号口径（无止损历史交易也可统计）；R 系指标仍仅统计有止损交易 |
 | 10 | 测试 | 新增 `test_import_broker.py`（14）/`test_discipline_audit.py`（14）/`test_sell_check.py`（9）/`test_metrics.py`（3），`test_compliance_gate.py` 增加 TestFromScanHot（41→46），全量 196 passed |
+
+### 13.8 热点候选「名称 + 8 条买入规则推荐分析」（2026-08-03 ✅）
+
+**背景**：用户手写买入规则 8 条（满足 ≥4 条才允许买入，⑧逻辑/持续性最重要）；热点候选表原来只有代码无名称，盘前人工核对成本高。
+
+| # | 方向 | 实现方式 |
+|---|------|----------|
+| 1 | 名称列 | hot_breakout 记录从 hot_pool 表补 `name`（离线 join，不联网反查） |
+| 2 | 推荐分析 | `market_scanner._evaluate_buy_rules`：①板块涨幅Top5（sector_rank 传入，名称双向子串近似）②板块涨停家数较上一交易日增加（limit_pool 跨日对比，无昨日数据不判）③前排（来源含连板/领涨或 lbc≥2）④放量突破（当日量/前 20 日均量 ≥1.5）或涨停承接（来源含涨停/连板直接满足）⑦大盘环境（市场状态 A/B）可离线判定；⑤次日观察 ⑥分时承接 盘中确认；⑧事件催化人工核对（无公告正文不自动判，守防编造护栏） |
+| 3 | 呈现与排序 | 候选表加 名称/推荐分析 两列，按 rules_met 降序；表下附口径说明（突破幅度、ATR、8 条规则判定方式）；JSON 记录含 `rules_met`/`analysis` 双写 |
+| 4 | 测试 | `tests/test_hot_rules.py` 17 用例（量比/逐规则真值表/集成 mock），全量 213 passed |
 
 ---
 
@@ -1418,12 +1429,15 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `_build_scan_json(...) -> dict`
 - `_df_to_breakout_list`, `_df_to_sector_list`
 - `_load_limit_stats_from_db`, `_build_sector_ranking`, `_format_report`
-- `_build_hot_section(today) -> dict` — 超短热点区块（limit_pool/hot_pool + 热点池突破候选）
+- `_build_hot_section(today, sector_rank=None, market_state="") -> dict` — 超短热点区块（limit_pool/hot_pool + 热点池突破候选，含名称与 8 条买入规则推荐分析）
+- `_evaluate_buy_rules(rec, info_row, df, top_sectors, limit_today_by_sector, limit_prev_by_sector, market_state) -> dict` — 买入规则 8 条逐条核对（True/False/None），输出 rules/met/text
+- `_volume_ratio(df, days=20) -> float | None` — 当日量/前 N 日均量
+- `_limit_count_by_sector(df) -> dict` — 涨停池按板块统计家数
 
 </details>
 
 <details>
-<summary>tests/（196 用例，全部离线）</summary>
+<summary>tests/（213 用例，全部离线）</summary>
 
 - `test_indicators.py` — 13 用例（含市场宽度取最新日回归）
 - `test_compliance.py` — 12 用例

@@ -1,0 +1,40 @@
+{
+  "date": "2026-08-03",
+  "data_date": "2026-07-31",
+  "open_count": 1,
+  "alerts": [],
+  "positions_ok": [
+    {
+      "交易编号": "T20260731_d580e2",
+      "股票代码": "605388",
+      "股票名称": "均瑶健康",
+      "类型": null,
+      "现价": 6.21,
+      "止损价": 0.0,
+      "通道下轨": null,
+      "浮动R": 0.04,
+      "距止损N": null,
+      "数据日期": "2026-07-31",
+      "建议动作": "",
+      "备注": ""
+    }
+  ],
+  "drawdown_state": {
+    "state": "Normal",
+    "derived": "Normal",
+    "env": null,
+    "conflict": false,
+    "drawdown_pct": 0.0,
+    "peak_r": 0.04,
+    "current_r": 0.04,
+    "floating_r": 0.04,
+    "avg_risk_rate": 0.0,
+    "monthly_realized_r": 0,
+    "monthly_realized_pct": 0.0,
+    "monthly_flags": {
+      "event_trade_halt": false,
+      "new_position_halt": false
+    },
+    "note": "近似口径：累计R × 平均风险率"
+  }
+}
