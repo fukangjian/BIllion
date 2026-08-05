@@ -42,7 +42,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | 数据管道 | `pipeline/` | SQLite 缓存、指标、市场扫描（MD + JSON）、超短热点池 |
 | **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
 | **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库、逐根回放结算、胜率/平均R 统计（持有天数按系统分：HOT-S=5） |
-| 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链 |
+| 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链、热点候选⑧催化判定 |
 | 交易复盘 | `review/` | 交易日志、合规、周报月报（含纪律审计节） |
 | **持仓监控** | `review/monitor.py` | 止损/退出通道警报、回撤状态自动推导 |
 | **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查，高级违规拒绝，`--force` 留痕 |
@@ -51,7 +51,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、导入、纪律、卖点检查、统计口径、热点规则（213 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、导入、纪律、卖点检查、统计口径、热点规则、催化分析（231 用例） |
 
 ---
 
@@ -459,9 +459,9 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 | task_type | Kimi | DeepSeek | Custom |
 |-----------|------|----------|--------|
-| `announcement` | `KIMI_MODEL_LONG` (32k) | `DEEPSEEK_MODEL` | `CUSTOM_LLM_MODEL` |
-| `summary` | `KIMI_MODEL` (8k) | `DEEPSEEK_MODEL` | `CUSTOM_LLM_MODEL` |
-| `analysis`（默认） | `KIMI_MODEL` | `DEEPSEEK_MODEL` | `CUSTOM_LLM_MODEL` |
+| `announcement` | `KIMI_MODEL_LONG` (32k) | `DEEPSEEK_MODEL_PRO` (v4-pro) | `CUSTOM_LLM_MODEL` |
+| `summary` | `KIMI_MODEL` (8k) | `DEEPSEEK_MODEL` (v4-flash) | `CUSTOM_LLM_MODEL` |
+| `analysis`（默认） | `KIMI_MODEL` | `DEEPSEEK_MODEL` (v4-flash) | `CUSTOM_LLM_MODEL` |
 
 **提供商优先级**：`LLM_PROVIDER_PRIORITY = ["kimi", "deepseek", "custom"]`，取第一个已配置 API Key 的提供商。
 
@@ -490,7 +490,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `run_scan` | `(symbols: list[str] \| None = None, output_dir: Path \| None = None) -> Path` | Markdown 报告路径（同时写 JSON） |
 | `_load_limit_stats_from_db` | `(db_path=None) -> pd.DataFrame` | 最近 5 日 limit_stats |
 | `_run_position_monitor` | `() -> Optional[dict]` | 持仓监控（调 `review.monitor`，失败降级返回 None，不阻塞扫描） |
-| `_build_hot_section` | `(today: str, sector_rank=None, market_state="") -> dict` | 超短热点区块：从 DB 读 limit_pool/hot_pool，池内个股跑 `scan_breakout_candidates(CHANNEL_SHORT)`（与主扫描同函数同参数），标注 name/source/sector，并按买入规则 8 条生成推荐分析（`_evaluate_buy_rules`：①板块Top5 ②板块涨停家数较上一交易日增加 ③前排 ④放量突破/涨停承接 ⑦市场状态 A/B 可离线判定，⑤⑥⑧ 人工；候选按满足条数排序，记录含 `rules_met`/`analysis`）；热点池未构建时降级标注，不拖垮报告 |
+| `_build_hot_section` | `(today: str, sector_rank=None, market_state="") -> dict` | 超短热点区块：从 DB 读 limit_pool/hot_pool，池内个股跑 `scan_breakout_candidates(CHANNEL_SHORT)`（与主扫描同函数同参数），标注 name/source/sector，并按买入规则 8 条生成推荐分析（`_evaluate_buy_rules`：①板块Top5 ②板块涨停家数较上一交易日增加 ③前排 ④放量突破/涨停承接 ⑦市场状态 A/B 可离线判定，⑤⑥ 盘中确认，⑧ 催化自动判定见 13.9）；⑧催化分析为**可选联网**环节：两遍评估（离线初评排序 → 前 `HOT_CATALYST_MAX` 只做 `_analyze_catalysts_safe` → 终评重排），失败逐股降级人工核对，`HOT_CATALYST_ENABLED=false` 恢复纯离线；候选按满足条数排序，记录含 `rules_met`/`analysis`/`catalyst_basis`/`catalyst_titles`；热点池未构建时降级标注，不拖垮报告 |
 | `_record_breakout_signals` | `(scan_data: dict) -> None` | 突破候选写入 signals 表（S1-A/S2-A + 热点池 hot_breakout 以 system=HOT-S，调 `signal_tracker.record_signals`） |
 | `_df_to_breakout_list` | `(df: pd.DataFrame) -> list[dict]` | 突破候选 JSON 结构 |
 | `_df_to_sector_list` | `(df: pd.DataFrame) -> list[dict]` | 板块排名 JSON 结构 |
@@ -512,7 +512,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 }
 ```
 
-持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。热点池区块嵌入扫描 JSON：`lianban` 为连板股表（报告取 Top10），`hot_breakout` 为热点池突破候选（记录含 symbol/name/close/channel_high/breakout_pct/atr_20/period/source/sector/rules_met/analysis，入库 signals 表 system=HOT-S），热点池未构建时 `available=false` 并在 `note` 标注。
+持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。热点池区块嵌入扫描 JSON：`lianban` 为连板股表（报告取 Top10），`hot_breakout` 为热点池突破候选（记录含 symbol/name/close/channel_high/breakout_pct/atr_20/period/source/sector/rules_met/analysis/catalyst_basis/catalyst_titles，入库 signals 表 system=HOT-S），热点池未构建时 `available=false` 并在 `note` 标注。
 
 #### `signal_tracker.py` — 信号追踪（可验证性）
 
@@ -598,6 +598,16 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 #### `announcement_analyzer.py`
 
 `fetch_announcement_content` 已集成 `announcement_fetcher`：巨潮 HTML 解析、PDF 正文提取（pypdf）、长文 RAG 分块摘要（`task_type="announcement"`）。公告列表经 fetcher fallback 链获取（东财当日 → 巨潮 API；AkShare `stock_zh_a_disclosure_report_cninfo` 已陈旧弃用）。无正文时走降级路径（`has_real_content` 护栏），不调用 LLM；最新公告距今 >30 天标注「公告数据可能陈旧」。
+
+#### `catalyst_analyzer.py` — 买入规则⑧催化自动判定
+
+**职责**：对热点候选自动判定买入规则⑧（事件/政策/业绩/技术突破/转型催化），供 `market_scanner._build_hot_section` 两遍评估调用（接入方式见 13.9）。无公告/无 Key/无正文/LLM 失败逐级降级 `satisfied=None`（人工核对），公告标题事实始终尽量给出。CLI：`python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发`。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `analyze_catalyst` | `(symbol: str, name: str = "", sector: str = "") -> dict` | {satisfied: bool\|None, catalyst_type, sustainability, basis, titles} |
+| `_pick_relevant_announcements` | `(df: pd.DataFrame, limit: int = 3) -> pd.DataFrame` | 标题关键词（预增/中标/收购/重组/转型/研发/突破等）筛相关公告 |
+| `parse_verdict` | `(text: str) -> dict \| None` | 解析 LLM 四行格式（判定/催化类型/持续性/依据） |
 
 #### `financial_comparison.py` / `industry_mapper.py`
 
@@ -855,6 +865,7 @@ flowchart TD
 | 场景 | System Prompt | task_type | 输出结构 |
 |------|---------------|-----------|----------|
 | 公告分析 | `ANNOUNCEMENT_SYSTEM` | `announcement` | 类型/关键数字/逻辑影响/风险/跟踪 |
+| 热点候选⑧催化 | `CATALYST_SYSTEM` / `CATALYST_ANALYSIS` | `announcement` | 判定/催化类型/持续性/依据（四行格式；严格依据公告原文、禁外部信息，拿不准判「不满足」） |
 | 长公告分块 | 内置摘要 prompt | `announcement` | 各段摘要合并 |
 | 财报对比 | `FINANCIAL_COMPARISON_SYSTEM` | `analysis` | 概览/亮点/差异/启示 |
 | 产业链 | `INDUSTRY_MAPPING_SYSTEM` | `analysis` | 全景/公司/催化/观察/传导 |
@@ -892,7 +903,7 @@ flowchart TD
 | 重试 | `LLM_MAX_RETRIES`, `FETCH_RETRY`, `FETCH_MAX_WORKERS` | 代码默认 |
 | 研究 | `RESEARCH_WATCHLIST`, `DEFAULT_SECTORS`, `ANNOUNCEMENT_*` | 代码默认 |
 | 管道 | `WATCHLIST`, `CHANNEL_*`, `MARKET_STATE` | 代码默认 |
-| 超短热点池 | `HOT_SECTOR_TOP_N`, `HOT_POOL_MAX`, `HOT_HISTORY_DAYS`, `HOT_SIGNAL_SYSTEM` | 代码默认 |
+| 超短热点池 | `HOT_SECTOR_TOP_N`, `HOT_POOL_MAX`, `HOT_HISTORY_DAYS`, `HOT_SIGNAL_SYSTEM`, `HOT_CATALYST_MAX`, `CATALYST_ANNOUNCE_DAYS`（`HOT_CATALYST_ENABLED` 为 env） | 代码默认 |
 | 策略参数 | `STRATEGY_PARAMS`, `ATR_PERIOD`, `ATR_STOP_MULT`, `ADD_SPACING_MIN/MAX`, `MAX_UNITS`, `LOT_SIZE`, `BACKTEST_RISK_PCT` | 投资体系 V5.0（单一来源，扫描/监控/信号/回测/仓位共用） |
 | 策略枚举 | `STRATEGY_CODES`, `STRATEGY_INFO`, `ACCOUNT_TYPES`, `SYSTEM_DEFAULT_ACCOUNT` | 投资体系 V5.0 |
 | 监控/回撤 | `DRAWDOWN_THRESHOLDS`, `MONTHLY_DRAWDOWN_LIMITS`, `EXIT_CHANNEL_PERIODS` | 投资体系 V5.0 §6 |
@@ -911,11 +922,12 @@ flowchart TD
 | `KIMI_MODEL` | `moonshot-v1-8k` | 默认模型 |
 | `KIMI_MODEL_LONG` | `moonshot-v1-32k` | 长文/公告模型 |
 | `DEEPSEEK_API_KEY` | `""` | DeepSeek API 密钥 |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek 端点 |
-| `DEEPSEEK_MODEL` | `deepseek-chat` | DeepSeek 模型 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 端点 |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 默认模型（快速） |
 | `CUSTOM_LLM_API_KEY` | `""` | 自定义 OpenAI 兼容密钥 |
 | `CUSTOM_LLM_BASE_URL` | `""` | 自定义 base_url |
 | `CUSTOM_LLM_MODEL` | `""` | 自定义模型名 |
+| `HOT_CATALYST_ENABLED` | `true` | 热点候选⑧催化分析开关（false 恢复纯离线扫描） |
 | `ACCOUNT_EQUITY` | `32500` | 合规检查基准权益（3.25 万实盘） |
 | `DRAWDOWN_STATE` | `Normal` | Normal/Caution/Defensive/Review |
 | `ENABLE_SCHEDULER` | `""` | 设为 `true` 启用定时盘前 |
@@ -1026,7 +1038,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 213 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 231 passed |
 
 ### 10.4 模块联动点
 
@@ -1217,6 +1229,20 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 3 | 呈现与排序 | 候选表加 名称/推荐分析 两列，按 rules_met 降序；表下附口径说明（突破幅度、ATR、8 条规则判定方式）；JSON 记录含 `rules_met`/`analysis` 双写 |
 | 4 | 测试 | `tests/test_hot_rules.py` 17 用例（量比/逐规则真值表/集成 mock），全量 213 passed |
 
+### 13.9 买入规则⑧催化自动判定（2026-08-03 ✅）
+
+**背景**：13.8 中⑧事件催化只能人工核对，盘前逐票翻公告成本高；⑧是 8 条规则中最重要的一条，需要系统级自动判定（公告事实 + LLM，守防编造护栏）。
+
+| # | 方向 | 实现方式 |
+|---|------|----------|
+| 1 | 公告链 | `research/catalyst_analyzer.py`：复用 `announcement_fetcher.fetch_latest_announcements`（东财/巨潮 fallback，回溯 `CATALYST_ANNOUNCE_DAYS`=90 天）→ `_pick_relevant_announcements` 标题关键词（预增/中标/收购/重组/转型/研发/突破等）筛 3 篇 → 前 2 篇取正文（缓存 aside） |
+| 2 | 护栏 | `has_real_content`：无正文禁调 LLM（与公告分析同一防编造护栏）；无公告/无 Key/无正文逐级降级 `satisfied=None`（人工核对），但公告标题+日期（事实）始终尽量给出 |
+| 3 | LLM 判定 | prompt `CATALYST_ANALYSIS`/`CATALYST_SYSTEM`（task_type=announcement，24h 缓存；严格依据公告原文、禁外部信息、拿不准判「不满足」）；`parse_verdict` 解析四行格式（判定/催化类型/持续性/依据），返回 {satisfied: bool\|None, catalyst_type, sustainability, basis, titles} |
+| 4 | 两遍评估接入 | `market_scanner._build_hot_section` 改两遍评估：离线初评排序 → 前 `HOT_CATALYST_MAX`（=8）只做 `_analyze_catalysts_safe`（逐股 try/except 降级）→ 终评重排；`_evaluate_buy_rules` 新增 `catalyst: dict \| None = None` 参数，satisfied 为 True/False 计入 met、None 维持人工核对；文本分支 ⑧满足·类型（持续性）／⑧无明确催化／⑧人工核对(最重要)；记录新增 `catalyst_basis`/`catalyst_titles`（JSON 双写），报告候选表下新增「候选⑧催化依据」区块（公告标题事实或 LLM 依据，≤10 行） |
+| 5 | 配置项 | `HOT_CATALYST_ENABLED`（env，默认 true；false 恢复纯离线）、`HOT_CATALYST_MAX`=8（每日催化分析候选上限）、`CATALYST_ANNOUNCE_DAYS`=90 |
+| 6 | 测试 | `tests/test_catalyst_analyzer.py` 18 用例（parse_verdict/关键词筛选/无公告/无 Key/无正文护栏/LLM 成功与失败降级/规则⑧接入/集成），`test_hot_rules.py` 集成补 `_analyze_catalysts_safe` mock，全量 231 passed |
+| 7 | 降级验证 | 无 LLM Key 实跑：Top 8 候选全部抓到真实公告标题（东财/巨潮），⑧依据区块标注「未配置 LLM，需人工核对」；配置 `KIMI_API_KEY`（或 DEEPSEEK/CUSTOM）后自动升级为 LLM 判定 |
+
 ---
 
 ## 14. 附录
@@ -1398,6 +1424,16 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
+<summary>research/catalyst_analyzer.py</summary>
+
+- `analyze_catalyst(symbol, name="", sector="") -> dict` — 买入规则⑧催化判定主函数（公告链 → 护栏 → LLM，逐级降级 satisfied=None）
+- `_pick_relevant_announcements(df, limit=3) -> pd.DataFrame` — 标题关键词筛相关公告
+- `parse_verdict(text) -> dict | None` — 解析 LLM 四行格式（判定/催化类型/持续性/依据）
+- `main()` — CLI：`python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发`
+
+</details>
+
+<details>
 <summary>review/positions.py</summary>
 
 - `export_open_positions(trade_log) -> list[dict]`
@@ -1429,15 +1465,16 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `_build_scan_json(...) -> dict`
 - `_df_to_breakout_list`, `_df_to_sector_list`
 - `_load_limit_stats_from_db`, `_build_sector_ranking`, `_format_report`
-- `_build_hot_section(today, sector_rank=None, market_state="") -> dict` — 超短热点区块（limit_pool/hot_pool + 热点池突破候选，含名称与 8 条买入规则推荐分析）
-- `_evaluate_buy_rules(rec, info_row, df, top_sectors, limit_today_by_sector, limit_prev_by_sector, market_state) -> dict` — 买入规则 8 条逐条核对（True/False/None），输出 rules/met/text
+- `_build_hot_section(today, sector_rank=None, market_state="") -> dict` — 超短热点区块（limit_pool/hot_pool + 热点池突破候选，含名称与 8 条买入规则推荐分析；两遍评估：离线初评排序 → 前 `HOT_CATALYST_MAX` 催化分析 → 终评重排）
+- `_evaluate_buy_rules(rec, info_row, df, top_sectors, limit_today_by_sector, limit_prev_by_sector, market_state, catalyst=None) -> dict` — 买入规则 8 条逐条核对（True/False/None），输出 rules/met/text；`catalyst.satisfied` 为 True/False 时⑧取该值计入 met，None 维持人工核对
+- `_analyze_catalysts_safe(records) -> dict` — 逐股调 `catalyst_analyzer.analyze_catalyst`（单股 try/except 降级，`HOT_CATALYST_ENABLED=false` 直接跳过）
 - `_volume_ratio(df, days=20) -> float | None` — 当日量/前 N 日均量
 - `_limit_count_by_sector(df) -> dict` — 涨停池按板块统计家数
 
 </details>
 
 <details>
-<summary>tests/（213 用例，全部离线）</summary>
+<summary>tests/（231 用例，全部离线）</summary>
 
 - `test_indicators.py` — 13 用例（含市场宽度取最新日回归）
 - `test_compliance.py` — 12 用例
@@ -1452,6 +1489,8 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_discipline_audit.py` — 14 用例（5 条规则/时间缺失降级/Markdown 输出）
 - `test_sell_check.py` — 9 用例（警报复用/持有天数/HOT-S 倒计时/热点池降级/建议挂单价）
 - `test_metrics.py` — 3 用例（总盈亏金额/胜率金额口径/无止损交易）
+- `test_hot_rules.py` — 17 用例（量比/逐规则真值表/集成 mock 含 `_analyze_catalysts_safe`）
+- `test_catalyst_analyzer.py` — 18 用例（parse_verdict/关键词筛选/无公告/无 Key/无正文护栏/LLM 成功与失败降级/规则⑧接入/集成）
 
 </details>
 
@@ -1482,7 +1521,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `KIMI_MODEL` | `moonshot-v1-8k` |
 | `KIMI_MODEL_LONG` | `moonshot-v1-32k` |
 | `DEEPSEEK_API_KEY` | env, 默认 `""` |
-| `DEEPSEEK_MODEL` | `deepseek-chat` |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` |
 | `CUSTOM_LLM_*` | env, 默认 `""` |
 | `LLM_PROVIDER_PRIORITY` | `["kimi", "deepseek", "custom"]` |
 | `LLM_CACHE_TTL` | 86400 秒 |
@@ -1505,6 +1544,9 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `HOT_POOL_MAX` | 120（热点池总量上限） |
 | `HOT_HISTORY_DAYS` | 90（热点池日线补抓交易日目标，×1.7 折算自然日 ≈150 天） |
 | `HOT_SIGNAL_SYSTEM` | `"HOT-S"`（超短信号系统标识） |
+| `HOT_CATALYST_ENABLED` | env，默认 true（热点候选⑧催化分析开关；false 恢复纯离线扫描） |
+| `HOT_CATALYST_MAX` | 8（每日催化分析候选上限，按规则满足条数排序取前 N） |
+| `CATALYST_ANNOUNCE_DAYS` | 90（催化判定公告回溯天数） |
 
 #### 服务 / 调度
 

@@ -44,7 +44,8 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── daily_report.py         # 每日研究日报
     │   ├── announcement_analyzer.py / announcement_fetcher.py  # 公告 fallback 链 + 防编造护栏 + PDF 提取
     │   ├── financial_comparison.py # 财报对比
-    │   └── industry_mapper.py      # 产业链映射
+    │   ├── industry_mapper.py      # 产业链映射
+    │   └── catalyst_analyzer.py    # 买入规则⑧催化自动判定（公告链 + has_real_content 护栏 + LLM）
     ├── backtest/               # Backtrader 回测（S1-A / S2-A 策略，与实盘共用 config 策略参数）
     ├── review/                 # 交易复盘
     │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/import/sell-check/from-scan
@@ -56,7 +57,7 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── import_broker.py    # 券商成交导入（MD 表/CSV → FIFO 配对落库，不过入场闸门）
     │   ├── discipline_audit.py # 纪律自动审计（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
     │   ├── metrics.py / compliance_check.py / report_generator.py
-    ├── tests/                  # pytest 单元测试（142 用例）
+    ├── tests/                  # pytest 单元测试（231 用例）
     ├── data/                   # 数据存储（market.db、trades.json、公告与 LLM 缓存）
     └── output/                 # 报告输出（日报、扫描、持仓监控 JSON、回测图等）
 ```
@@ -89,6 +90,7 @@ python run_all.py                      # 一键：取数→扫描→持仓监控
 python run_all.py --skip-fetch         # 跳过取数（用已有数据库）
 python pipeline/run_daily.py           # 仅数据管道
 python research/run_daily_report.py    # 仅研究日报
+python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发  # 单票⑧催化判定（调试用）
 
 # —— API 服务（127.0.0.1:8900）——
 python server.py                       # 启动；POST /pre-market、/pipeline、/research，GET /status、/latest-scan、/latest-report
@@ -136,7 +138,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 - **模块独立可运行**：每个脚本都有 `if __name__ == "__main__"` CLI 入口，可单独调试；脚本/测试文件顶部用 `sys.path.insert(0, str(ROOT))` 定位项目根后再 `from config import ...`。
 - **优雅降级**：无 LLM Key、网络失败、数据源不可用时必须仍能输出原始数据或 fallback 模板，并在报告中标注；单只股票抓取失败不阻塞其他标的；持仓监控/信号追踪失败不得拖垮扫描与日报主流程。
 - **入场合规闸门**：所有写入 trades.json 的建仓路径（`add`、`from-scan --execute`）必须经 `review/entry_gate.py` 检查；新增建仓入口时同样接入，高级违规默认拒绝、`--force` 强制须在备注留痕。
-- **公告防编造护栏**：未取得公告正文时禁止调用 LLM 分析（`announcement_fetcher.has_real_content` 判定），只列标题+链接并标注；LLM 输出不得出现无正文来源的精确数字。
+- **公告防编造护栏**：未取得公告正文时禁止调用 LLM 分析（`announcement_fetcher.has_real_content` 判定），只列标题+链接并标注；LLM 输出不得出现无正文来源的精确数字。热点候选⑧催化判定（`research/catalyst_analyzer.py`）同样走 `has_real_content` 护栏。
 - **Obsidian 原生输出**：报告输出 Markdown + YAML frontmatter（`shared/utils.py` 的 `obsidian_frontmatter` / `write_markdown` / `df_to_markdown_table`），支持 wikilink 与标签检索。
 - **结构化双写**：机器可消费的结果（如市场扫描、持仓监控）同时输出 `.md`（人读）与 `.json`（`review/cli.py from-scan` 等程序化消费）。
 - **缓存 aside 模式**：公告全文（`data/announcements/`）与 LLM 响应（`data/llm_cache/`，sha256(prompt) 为键，24h TTL）均为本地 JSON 缓存。
@@ -146,7 +148,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **213 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17），已验证全部通过（`213 passed`）。
+- 框架：pytest，目录 `Invest/tests/`，共 **231 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18），已验证全部通过（`231 passed`）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。

@@ -140,6 +140,11 @@ HOT_POOL_MAX = 120          # 热点池总量上限（控制日线补抓量）
 HOT_HISTORY_DAYS = 90       # 热点池日线补抓长度（交易日目标，超短不需要长历史）
 HOT_SIGNAL_SYSTEM = "HOT-S"  # 超短热点信号系统标识（signals 表 system 列）
 
+# --- 候选催化分析（research/catalyst_analyzer.py，买入规则⑧事件/政策/业绩/技术突破/转型） ---
+HOT_CATALYST_ENABLED = os.getenv("HOT_CATALYST_ENABLED", "true").lower() == "true"  # 扫描时对热点候选做催化分析（联网，失败降级人工核对）
+HOT_CATALYST_MAX = 8         # 每日催化分析候选上限（按规则满足条数排序取前 N，控制耗时与 LLM 调用量）
+CATALYST_ANNOUNCE_DAYS = 90  # 公告回溯天数
+
 # --- 合规规则（投资体系 V5.0；限额已按 3.25 万小资金校准，2026-07） ---
 MAX_SINGLE_RISK_PCT = 1.0
 
@@ -250,8 +255,9 @@ ANNOUNCEMENT_MAX_CHARS = 3000
 
 # --- 多 LLM 提供商 ---
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_MODEL_PRO = os.getenv("DEEPSEEK_MODEL_PRO", "deepseek-v4-pro")
 
 CUSTOM_LLM_API_KEY = os.getenv("CUSTOM_LLM_API_KEY", "")
 CUSTOM_LLM_BASE_URL = os.getenv("CUSTOM_LLM_BASE_URL", "")

@@ -18,6 +18,8 @@ from config import (
     CHANNEL_LONG,
     CHANNEL_SHORT,
     DEFAULT_INDEX_SYMBOL,
+    HOT_CATALYST_ENABLED,
+    HOT_CATALYST_MAX,
     HOT_SIGNAL_SYSTEM,
     MARKET_STATE,
     MARKET_SCAN_OUTPUT_DIR,
@@ -269,12 +271,13 @@ def _evaluate_buy_rules(
     limit_today_by_sector: dict,
     limit_prev_by_sector: dict | None,
     market_state: str,
+    catalyst: dict | None = None,
 ) -> dict:
     """
-    按手写买入规则 8 条逐条核对（盘前离线可判 ①②③④⑦；⑤⑥ 需次日/盘中观察；⑧ 须人工核对）。
+    按手写买入规则 8 条逐条核对（盘前离线可判 ①②③④⑦；⑤⑥ 需次日/盘中观察；
+    ⑧ 由 catalyst_analyzer 公告+LLM 判定经 catalyst 参数传入，未分析时降级人工核对）。
     返回 {"rules": {编号: True/False/None}, "met": 自动满足条数, "text": 推荐分析文本}
     True=满足，False=明确不满足，None=无法自动判定。
-    ⑧ 涉及事件/政策/业绩等事实，无公告正文不自动判定（防编造），标注人工核对。
     """
     sector = str(rec.get("sector", "") or "")
     source = str(rec.get("source", "") or "")
@@ -317,8 +320,10 @@ def _evaluate_buy_rules(
     # ⑦ 大盘红盘数改善（用市场状态 A/B 近似）
     rules[7] = market_state in ("A", "B") if market_state else None
 
-    # ⑧ 事件/政策/业绩/技术突破/转型——最重要，人工核对（公告/新闻）
-    rules[8] = None
+    # ⑧ 事件/政策/业绩/技术突破/转型——catalyst_analyzer（公告+LLM）判定传入；
+    # 未分析或判定失败为 None，降级人工核对
+    c8 = (catalyst or {}).get("satisfied")
+    rules[8] = c8 if c8 is not None else None
 
     met = sum(1 for v in rules.values() if v is True)
     auto_ok = [n for n, v in rules.items() if v is True]
@@ -332,7 +337,15 @@ def _evaluate_buy_rules(
     parts = [verdict]
     if auto_no:
         parts.append("✗" + "、".join(_BUY_RULE_NAMES[n] for n in auto_no))
-    parts.append("⑤⑥盘中确认、⑧人工核对(最重要)")
+    parts.append("⑤⑥盘中确认")
+    if rules[8] is True:
+        ctype = (catalyst or {}).get("catalyst_type", "")
+        sustain = (catalyst or {}).get("sustainability", "")
+        parts.append(f"⑧满足·{ctype}（{sustain}）" if ctype else "⑧满足")
+    elif rules[8] is False:
+        parts.append("⑧无明确催化")
+    else:
+        parts.append("⑧人工核对(最重要)")
     return {"rules": rules, "met": met, "text": "；".join(parts)}
 
 
@@ -342,6 +355,26 @@ def _limit_count_by_sector(df: pd.DataFrame) -> dict:
         return {}
     up = df[df["pool_type"] == "up"] if "pool_type" in df.columns else df
     return up.groupby("sector").size().to_dict() if not up.empty else {}
+
+
+def _analyze_catalysts_safe(records: list) -> dict:
+    """
+    对 Top N 候选做规则⑧催化分析（公告 + LLM，全程缓存）；
+    HOT_CATALYST_ENABLED=false、无 LLM Key、网络失败时逐股降级为空，不拖垮扫描。
+    """
+    if not HOT_CATALYST_ENABLED or not records:
+        return {}
+    out = {}
+    for rec in records:
+        try:
+            from research.catalyst_analyzer import analyze_catalyst
+
+            out[rec["symbol"]] = analyze_catalyst(
+                rec["symbol"], name=rec.get("name", ""), sector=rec.get("sector", "")
+            )
+        except Exception as e:
+            logger.warning("催化分析失败 %s（该股规则⑧降级人工核对）: %s", rec["symbol"], e)
+    return out
 
 
 def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, market_state: str = "") -> dict:
@@ -399,7 +432,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
             breakout = scan_breakout_candidates(symbols_data, CHANNEL_SHORT)
             if not breakout.empty:
                 info = pool.set_index("symbol")
-                records = []
+                entries = []
                 for _, r in breakout.iterrows():
                     prow = info.loc[r["symbol"]] if r["symbol"] in info.index else {}
                     rec = {
@@ -413,12 +446,34 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                         "source": str(prow.get("source", "")) if len(prow) else "",
                         "sector": str(prow.get("sector", "")) if len(prow) else "",
                     }
-                    evaluation = _evaluate_buy_rules(
-                        rec, prow, symbols_data.get(r["symbol"]),
+                    entries.append((rec, prow))
+
+                # 第一遍：离线规则初评（⑧待定），取最有希望的 Top N 做催化分析
+                for rec, prow in entries:
+                    ev = _evaluate_buy_rules(
+                        rec, prow, symbols_data.get(rec["symbol"]),
                         top_sectors, limit_today_by_sector, limit_prev_by_sector, market_state,
                     )
-                    rec["rules_met"] = evaluation["met"]
-                    rec["analysis"] = evaluation["text"]
+                    rec["rules_met"] = ev["met"]
+                entries.sort(key=lambda e: (-e[0]["rules_met"], -e[0]["breakout_pct"]))
+                catalyst_map = _analyze_catalysts_safe([e[0] for e in entries[:HOT_CATALYST_MAX]])
+
+                # 终评：带入⑧催化判定，重算推荐分析并重新排序
+                records = []
+                for rec, prow in entries:
+                    cat = catalyst_map.get(rec["symbol"])
+                    ev = _evaluate_buy_rules(
+                        rec, prow, symbols_data.get(rec["symbol"]),
+                        top_sectors, limit_today_by_sector, limit_prev_by_sector, market_state,
+                        catalyst=cat,
+                    )
+                    rec["rules_met"] = ev["met"]
+                    rec["analysis"] = ev["text"]
+                    if cat:
+                        if cat.get("basis"):
+                            rec["catalyst_basis"] = cat["basis"]
+                        if cat.get("titles"):
+                            rec["catalyst_titles"] = cat["titles"]
                     records.append(rec)
                 # 规则满足条数高的排前面，便于盘前快速筛选
                 records.sort(key=lambda x: (-x["rules_met"], -x["breakout_pct"]))
@@ -574,13 +629,21 @@ def _format_report(
                     f"| {r['close']:.2f} | {r['channel_high']:.2f} "
                     f"| {r['breakout_pct']:.2f} | {r.get('atr_20', 0):.2f} | {r.get('analysis', '')} |"
                 )
+            basis_items = [
+                (r.get("name") or r["symbol"], r["catalyst_basis"])
+                for r in hb if r.get("catalyst_basis")
+            ]
+            if basis_items:
+                lines.extend(["", "**候选⑧催化依据（公告事实 / LLM 判定）**：", ""])
+                for nm, b in basis_items[:10]:
+                    lines.append(f"- {nm}：{b}")
             lines.extend([
                 "",
                 "> **口径说明**：突破幅度% =（收盘价 − 20 日通道高点）/ 通道高点 ×100，即收盘越过前 20 日最高价的幅度；",
                 "> ATR(20) = 20 日平均真实波幅（该股一天的平均波动金额），用于设止损：建议止损 = 收盘价 − ATR × 倍数。",
-                "> **推荐分析**：按买入规则 8 条核对——①板块涨幅Top5 ②板块涨停家数增加 ③前排（连板/领涨）④放量突破 ⑦大盘环境 可自动判定；",
-                "> ⑤次日无高开低走、⑥分时均价线承接 需次日/盘中观察；⑧事件/政策/业绩/技术突破/转型（逻辑与持续性，最重要）须人工核对公告与新闻。",
-                "> 满足 4 条以上才允许买入；候选按规则满足条数排序。",
+                "> **推荐分析**：按买入规则 8 条核对——①板块涨幅Top5 ②板块涨停家数增加 ③前排（连板/领涨）④放量突破 ⑦大盘环境 由系统自动判定；",
+                "> ⑧事件/政策/业绩/技术突破/转型（逻辑与持续性，最重要）由系统读取近期公告自动判定（仅前 N 只候选；无 LLM Key 或未取得公告正文时降级为「人工核对」，上方列出公告标题事实）；",
+                "> ⑤次日无高开低走、⑥分时均价线承接 需次日/盘中观察。满足 4 条以上才允许买入；候选按规则满足条数排序。",
             ])
         lines.append("")
 

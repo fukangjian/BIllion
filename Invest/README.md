@@ -30,8 +30,9 @@ pip install -r requirements.txt
 # Kimi（默认）
 $env:KIMI_API_KEY = "sk-..."
 
-# DeepSeek（备选）
+# DeepSeek（备选，默认使用 v4-flash）
 $env:DEEPSEEK_API_KEY = "sk-..."
+# 可选：$env:DEEPSEEK_MODEL = "deepseek-v4-pro"
 
 # 自定义 OpenAI 兼容接口
 $env:CUSTOM_LLM_API_KEY = "sk-..."
@@ -39,7 +40,7 @@ $env:CUSTOM_LLM_BASE_URL = "https://your-api.com/v1"
 $env:CUSTOM_LLM_MODEL = "your-model"
 ```
 
-无 API Key 时研究模块仍可运行，输出原始数据和降级模板。LLM 按优先级自动路由：Kimi → DeepSeek → Custom。相同 prompt 缓存 24 小时。
+无 API Key 时研究模块仍可运行，输出原始数据和降级模板。LLM 按优先级自动路由：Kimi → DeepSeek → Custom。相同 prompt 缓存 24 小时。配置 Key 后热点候选⑧催化自动判定，未配置则降级为公告标题 + 人工核对。
 
 ## 盘前工作流
 
@@ -127,6 +128,14 @@ python research/announcement_analyzer.py 600519 -n 5
 
 公告列表经 fallback 链获取（东财当日 → 巨潮 API），全文支持 HTML 解析与 PDF 正文提取（pypdf），长公告分块 RAG 摘要。**防编造护栏**：未取得正文时不调用 LLM，只列标题+链接并标注 ⚠️；最新公告超过 30 天自动标注数据陈旧。
 
+### 候选⑧催化判定（买入规则⑧）
+
+```powershell
+python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发
+```
+
+自动判定买入规则⑧（事件/政策/业绩/技术突破/转型催化）：取近 90 天公告（东财/巨潮 fallback）→ 标题关键词筛 3 篇 → 前 2 篇取正文 → `has_real_content` 护栏（无正文不调 LLM）→ LLM 判定（24h 缓存）。盘前扫描自动对热点候选前 `HOT_CATALYST_MAX`（8）只执行；无 Key / 无正文 / 失败时降级为「公告标题 + 人工核对」。
+
 ### 财报对比
 
 ```powershell
@@ -173,7 +182,7 @@ python pipeline/database.py
 - `output/market_scans/market_scan_YYYY-MM-DD.md`（顶部含持仓监控区块）
 - `output/market_scans/market_scan_YYYY-MM-DD.json`（含 `position_monitor` 与 `hot_pool` 字段）
 
-扫描报告新增「五、超短热点池（1-5 天，HOT-S）」节：涨停/连板/炸板名单统计 + 热点池突破候选（与主扫描同通道参数；含**名称**与**推荐分析**——按买入规则 8 条自动核对 ①板块Top5 ②板块涨停家数增加 ③前排 ④放量突破 ⑦大盘环境，⑤⑥盘中确认、⑧事件催化人工核对，候选按满足条数排序，表下附口径说明）。热点池突破信号以系统 `HOT-S` 写入 signals 表、5 个交易日强制结算，分组胜率见 `python pipeline/signal_tracker.py stats`。
+扫描报告新增「五、超短热点池（1-5 天，HOT-S）」节：涨停/连板/炸板名单统计 + 热点池突破候选（与主扫描同通道参数；含**名称**与**推荐分析**——按买入规则 8 条自动核对 ①板块Top5 ②板块涨停家数增加 ③前排 ④放量突破 ⑦大盘环境，⑤⑥盘中确认、⑧事件催化自动判定（需配置 LLM Key，未配置给公告标题人工核对），候选按满足条数排序，表下附「候选⑧催化依据」区块与口径说明）。热点池突破信号以系统 `HOT-S` 写入 signals 表、5 个交易日强制结算，分组胜率见 `python pipeline/signal_tracker.py stats`。
 
 ### 信号追踪（可验证性）
 
@@ -278,7 +287,7 @@ python -m pytest tests/test_monitor.py -v
 python -m pytest tests/test_signal_tracker.py -v
 ```
 
-共 213 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 46（含 from-scan HOT-S 与禁买板块）、信号追踪 14、策略参数 19、回测 12、热点池 9、券商导入 14、纪律审计 14、卖点检查 9、统计口径 3、热点规则 17。全部离线运行，不依赖 API Key 或网络。
+共 231 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 46（含 from-scan HOT-S 与禁买板块）、信号追踪 14、策略参数 19、回测 12、热点池 9、券商导入 14、纪律审计 14、卖点检查 9、统计口径 3、热点规则 17、催化分析 18。全部离线运行，不依赖 API Key 或网络。
 
 ## 目录结构
 
@@ -301,7 +310,8 @@ Invest/
 │   ├── announcement_analyzer.py
 │   ├── announcement_fetcher.py  # 公告 fallback 链 + 防编造护栏 + PDF 提取
 │   ├── financial_comparison.py
-│   └── industry_mapper.py
+│   ├── industry_mapper.py
+│   └── catalyst_analyzer.py     # 买入规则⑧催化自动判定（公告链 + 护栏 + LLM）
 ├── pipeline/              # 数据管道
 │   ├── database.py        # 含 signals/limit_pool/hot_pool 表
 │   ├── indicators.py
@@ -324,7 +334,7 @@ Invest/
 │   ├── metrics.py
 │   ├── compliance_check.py
 │   └── report_generator.py
-├── tests/                 # 单元测试（213 用例）
+├── tests/                 # 单元测试（231 用例）
 ├── data/                  # 数据存储
 │   ├── market.db
 │   ├── trades.json
@@ -350,6 +360,7 @@ Invest/
 | `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 空 |
 | `CUSTOM_LLM_API_KEY` | 自定义 LLM 密钥 | 空 |
 | `CUSTOM_LLM_BASE_URL` | 自定义 LLM 端点 | 空 |
+| `HOT_CATALYST_ENABLED` | 热点候选⑧催化分析开关（false 恢复纯离线扫描） | true |
 | `ACCOUNT_EQUITY` | 账户权益（元） | 32500 |
 | `DRAWDOWN_STATE` | 回撤状态（未设置时自动推导，冲突以推导值为准） | Normal |
 | `ENABLE_SCHEDULER` | 启用定时调度 | false |

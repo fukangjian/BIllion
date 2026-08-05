@@ -134,6 +134,7 @@ class TestBuildHotSectionIntegration:
             {"symbol": "600000", "close": 12.0, "channel_high": 11.5,
              "breakout_pct": 4.35, "atr_20": 0.5, "period": period},
         ]))
+        monkeypatch.setattr(ms, "_analyze_catalysts_safe", lambda records: {})  # 禁网：⑧降级
         sector_rank = pd.DataFrame({"sector_name": ["锂电池", "白酒"], "rank": [1, 2]})
 
         out = ms._build_hot_section(today, sector_rank, "A")

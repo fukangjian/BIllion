@@ -22,6 +22,7 @@ from config import (
     DEEPSEEK_API_KEY,
     DEEPSEEK_BASE_URL,
     DEEPSEEK_MODEL,
+    DEEPSEEK_MODEL_PRO,
     KIMI_API_KEY,
     KIMI_BASE_URL,
     KIMI_MODEL,
@@ -69,14 +70,14 @@ def _model_for_task(provider: str, task_type: str) -> str:
         if provider == "kimi":
             return KIMI_MODEL_LONG
         if provider == "deepseek":
-            return DEEPSEEK_MODEL
+            return DEEPSEEK_MODEL_PRO
         if provider == "custom":
             return CUSTOM_LLM_MODEL or "gpt-4o-mini"
     if task_type == "summary":
         if provider == "kimi":
             return KIMI_MODEL  # 默认 8k
         if provider == "deepseek":
-            return DEEPSEEK_MODEL
+            return DEEPSEEK_MODEL  # v4-flash 快速响应
         if provider == "custom":
             return CUSTOM_LLM_MODEL or "gpt-4o-mini"
     # analysis 及其他：各提供商默认模型
