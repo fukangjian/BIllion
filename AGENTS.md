@@ -25,7 +25,7 @@ E:/Billion/                     # Obsidian vault 根
     ├── ARCHITECTURE.md         # 完整架构与设计文档（含函数索引、数据流图）
     ├── requirements.txt        # 唯一依赖清单（无 pyproject.toml / 无打包）
     ├── config.py               # 统一配置：路径、API 密钥、股票池、合规规则、策略参数
-    ├── run_all.py              # 统一入口：盘前一键（取数→扫描→持仓监控→信号结算→日报）
+    ├── run_all.py              # 统一入口：盘前一键（取数→热点池构建→扫描→持仓监控→信号结算→日报）
     ├── server.py               # FastAPI 服务 + APScheduler 定时调度（端口 8900）
     ├── position_calculator.py  # 仓位计算器（calc_position 纯函数，口径同 config）
     ├── shared/                 # 共享服务层
@@ -42,6 +42,7 @@ E:/Billion/                     # Obsidian vault 根
     │   └── run_daily.py        # CLI 入口
     ├── research/               # AI 研究助手
     │   ├── daily_report.py         # 每日研究日报
+    │   ├── run_daily_report.py     # 日报 CLI 入口
     │   ├── announcement_analyzer.py / announcement_fetcher.py  # 公告 fallback 链 + 防编造护栏 + PDF 提取
     │   ├── financial_comparison.py # 财报对比
     │   ├── industry_mapper.py      # 产业链映射
@@ -86,9 +87,10 @@ cd "e:\Billion\Invest"
 pip install -r requirements.txt        # 安装依赖
 
 # —— 盘前工作流 ——
-python run_all.py                      # 一键：取数→扫描→持仓监控→信号结算→研究日报
+python run_all.py                      # 一键：取数→热点池构建→扫描→持仓监控→信号结算→研究日报
 python run_all.py --skip-fetch         # 跳过取数（用已有数据库）
-python pipeline/run_daily.py           # 仅数据管道
+python pipeline/run_daily.py           # 仅数据管道（取数 + 扫描，含持仓监控与信号入库）
+python pipeline/hot_pool.py            # 手动构建超短热点池（run_all 已自动执行）
 python research/run_daily_report.py    # 仅研究日报
 python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发  # 单票⑧催化判定（调试用）
 
@@ -119,11 +121,11 @@ python -m pytest tests/ -v
 
 ### LLM 配置（可选）
 
-通过环境变量配置，按优先级自动路由 `Kimi → DeepSeek → Custom`；相同 prompt 缓存 24 小时（`data/llm_cache/`）。**无任何 API Key 时全部功能仍可运行**，研究模块输出原始数据与降级模板。
+通过环境变量配置，按优先级自动路由 `Kimi → DeepSeek → Custom`；相同 prompt 缓存 24 小时（`data/llm_cache/`）。**无任何 API Key 时全部功能仍可运行**，研究模块输出原始数据与降级模板；配置 Key 后热点候选⑧催化自动判定，未配置则降级为公告标题 + 人工核对。
 
 ```powershell
 $env:KIMI_API_KEY="sk-..."        # 默认提供商
-$env:DEEPSEEK_API_KEY="sk-..."    # 备选
+$env:DEEPSEEK_API_KEY="sk-..."    # 备选（默认 deepseek-v4-flash，可用 DEEPSEEK_MODEL 覆盖）
 $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端点
 ```
 
@@ -148,16 +150,16 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **231 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18），已验证全部通过（`231 passed`）。
+- 框架：pytest，目录 `Invest/tests/`，共 **231 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18），已验证全部通过（`231 passed`，2026-08 复测）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
-- 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。
+- 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。部分用例由参数化/动态生成（如 `test_compliance_gate.py` 46 例、`test_strategy_params.py`），统计以 `pytest --collect-only` 为准。
 - 目前无 CI；ARCHITECTURE.md 将 GitHub Actions 每日 smoke test（mock AkShare）列为未来方向。
 
 ## 7. 数据与安全
 
 - **密钥仅走环境变量**（`KIMI_API_KEY` 等），仓库中不得出现真实密钥；`.env` 已在 `.gitignore` 中。
-- `.gitignore` 还排除 `__pycache__/`、`*.pyc`、`*.db`、`*.db-journal` —— `data/market.db` 不入库。
+- `.gitignore` 还排除 `__pycache__/`、`*.pyc`、`*.pyo`、`*.db`、`*.db-journal`（`data/market.db` 不入库）以及 `Invest/data/announcements/`、`Invest/data/llm_cache/`（抓取的原文缓存）。
 - `data/trades.json`（交易日志）是人工可编辑的核心数据，读写时注意保持 JSON 结构；损坏时 `TradeLog` 会降级为空列表。测试一律用 `tmp_path` 副本，**禁止污染真实 trades.json 与 market.db**。
 - FastAPI 服务默认仅绑定 `127.0.0.1`，不要改为对外暴露；长任务经 `_execute_task` 串行执行（单线程池 + 600s 超时 + 409 并发冲突）。
 - LLM 缓存与公告缓存含抓取的原文，注意其中可能含未公开信息，不要外传。
@@ -168,7 +170,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 1. **CLI**：各模块脚本直接运行（日常主力）。
 2. **FastAPI 服务**：`python server.py`，供 Obsidian/Webhook/脚本 HTTP 触发。
-3. **定时调度**：服务内设 `ENABLE_SCHEDULER=true` + `SCHEDULER_TIME=08:30`，APScheduler 每日自动盘前（取数→扫描→持仓监控→信号结算→日报）；另有两个 cron job——每周五 `WEEKLY_REVIEW_TIME`（15:45）自动生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）自动生成月报。
+3. **定时调度**：服务内设 `ENABLE_SCHEDULER=true` + `SCHEDULER_TIME=08:30`，APScheduler 每日自动盘前（取数→热点池构建→扫描→持仓监控→信号结算→日报）；另有两个 cron job——每周五 `WEEKLY_REVIEW_TIME`（15:45）自动生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）自动生成月报。
 
 ## 9. 已知限制（摘自 ARCHITECTURE.md 第 13 章）
 
