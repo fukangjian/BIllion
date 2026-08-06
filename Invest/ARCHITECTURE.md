@@ -43,10 +43,11 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
 | **趋势动态池** | `pipeline/trend_pool.py` | 强势板块 Top N → 东财成分股（名称模糊匹配）→ 剔除创业板 → 入池补抓日线（趋势候选来源） |
 | **三重滤网** | `pipeline/trend_filters.py` | 周线 20 周均线 / 板块强度前 20% / 成交额≥20 日中位数 /（S2-A）MA20>MA60，纯函数 |
+| **盘前操作清单** | `pipeline/daily_plan.py` | 明日操作计划：滤网全过候选带止损/股数/闸门预检 + 持仓行动 + 不交易条件 |
 | **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库（含市场状态/滤网/系统1附注）、逐根回放结算、胜率/平均R 统计 + 市场状态分层（持有天数按系统分：HOT-S=5） |
 | 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链、热点候选⑧催化判定 |
 | 交易复盘 | `review/` | 交易日志、合规、周报月报（含纪律审计节） |
-| **持仓监控** | `review/monitor.py` | 止损/退出通道警报、移动止损建议（+1R 保本 / +2R 兑现 1/3）、回撤状态自动推导 |
+| **持仓监控** | `review/monitor.py` | 止损/无止损/退出通道警报、移动止损建议（+1R 保本 / +2R 兑现 1/3）、回撤状态自动推导 |
 | **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查（单票/簇/组合总热度/市场状态门禁），高级违规拒绝，`--force` 留痕 |
 | **金字塔加仓** | `review/pyramid.py` | 单位链聚合、0.5N 触发判定（与回测同函数）、加仓统一止损上移、三档风险 40/30/30 |
 | **买入卡** | `review/buy_card.py` | 建仓后自动生成买入卡（写 vault 交易日志/） |
@@ -54,7 +55,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测等（318 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单等（334 用例） |
 
 ---
 
@@ -497,6 +498,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `_run_position_monitor` | `() -> Optional[dict]` | 持仓监控（调 `review.monitor`，失败降级返回 None，不阻塞扫描） |
 | `_load_trend_pool_safe` | `() -> pd.DataFrame` | 最新一期趋势池（未构建/读取失败降级空表） |
 | `_sector_rank_pct_map` | `(sector_rank) -> dict[str, float]` | 板块名 → 强度排名百分位（rank/总数） |
+| `_build_daily_plan_safe` | `(scan_json, monitor_result) -> dict \| None` | 盘前操作清单（调 `daily_plan.build_daily_plan`，失败降级 None 不阻塞扫描）；报告「二、明日操作计划」节 + JSON `daily_plan` 键 |
 | `_enrich_breakout` | `(breakout, prepared, sector_pct, pool_sector, system, signal_date, db_path=None) -> pd.DataFrame` | 突破候选附加三重滤网结果（`filters_passed`/`filters_required`/`filter_brief`）与系统1过滤附注（`note`/`record`）：滤网未全通过→标注「仅观察/极小仓」；S1 系列连续 ≥`FALSE_BREAKOUT_MAX`(3) 次假突破且最近止损在 `FALSE_BREAKOUT_COOLDOWN_DAYS`(20) 日内→「冷却中」不入库；上次同系统盈利且现价距 55 日高点 >1×ATR→「首仓建议降50%」。逐股失败降级照常入库 |
 | `_append_breakout_table` | `(lines, df) -> None` | 突破候选表格（含滤网/备注列，未评估行降级显示 —） |
 | `_build_hot_section` | `(today: str, sector_rank=None, market_state="") -> dict` | 超短热点区块：从 DB 读 limit_pool/hot_pool，池内个股跑 `scan_breakout_candidates(CHANNEL_SHORT)`（与主扫描同函数同参数），标注 name/source/sector，并按买入规则 8 条生成推荐分析（`_evaluate_buy_rules`：①板块Top5 ②板块涨停家数较上一交易日增加 ③前排 ④放量突破/涨停承接 ⑦市场状态 A/B 可离线判定，⑤⑥ 盘中确认，⑧ 催化自动判定见 13.9）；⑧催化分析为**可选联网**环节：两遍评估（离线初评排序 → 前 `HOT_CATALYST_MAX` 只做 `_analyze_catalysts_safe` → 终评重排），失败逐股降级人工核对，`HOT_CATALYST_ENABLED=false` 恢复纯离线；候选按满足条数排序，记录含 `rules_met`/`analysis`/`catalyst_basis`/`catalyst_titles`；热点池未构建时降级标注，不拖垮报告 |
@@ -544,6 +546,15 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 |------|------|--------|
 | `evaluate_trend_filters` | `(df, sector_rank_pct=None, system="S1-A") -> dict` | 纯函数：`weekly_trend`（收盘 > 20 周均线）/`sector_strength`（板块排名前 `TREND_SECTOR_TOP_PCT`=20%）/`volume_confirm`（当日成交额 ≥ 过去 `TREND_VOLUME_MEDIAN_DAYS`=20 日中位数）/`ma_bullish`（MA20>MA60，仅 S2 系列必需）+ `passed/required/all_passed`；数据不足项为 None 不计通过 |
 | `filters_brief` | `(filters: dict) -> str` | 紧凑文本（周线✓ 板块✗ 量能✓ 均线-），扫描报告滤网列用 |
+
+#### `daily_plan.py` — 盘前操作清单（明日操作计划，2026-08-06 新增）
+
+**职责**：把扫描候选与持仓监控汇总为可直接执行的清单，嵌入扫描报告「二、明日操作计划」节并写入扫描 JSON `daily_plan` 键（V5.0 盘前步骤 4-6 的自动化；清单是候选与参数，决策与下单由人执行）。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `build_daily_plan` | `(scan_json, monitor_result, equity=None, trade_log=None, db_path=None) -> dict` | 买入候选（滤网全过 + record=True，按突破幅度降序 ≤`DAILY_PLAN_MAX_CANDIDATES`=5，同股双系统去重保留 S2-A；每条含参考价/止损=close−2N/股数/风险率/账户映射/闸门预检结论）+ 持仓行动（监控警报逐条）+ 不交易条件（市场状态 + 冷却规则） |
+| `daily_plan_to_markdown` | `(plan) -> list[str]` | 三小节：买入候选表 / 持仓行动表 / 不交易条件 |
 
 #### `signal_tracker.py` — 信号追踪（可验证性）
 
@@ -693,7 +704,7 @@ CLI：`python backtest/run_batch.py --strategy S1-A --watchlist --start 2020-01-
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
-| `check_positions` | `(trade_log: TradeLog, db_path=None) -> dict` | `{"date","data_date","open_count","alerts","positions_ok","drawdown_state"}`；警报优先级 止损 > 退出 > 接近止损（<1N） > 移动止损建议（建议类，仅提示不改库：浮动R≥+1R 建议上移保本、≥+2R 建议卖 1/3 + 保护位上移至 +1R 位，V5.0 §7.4；止损已在成本上方时不再提示） |
+| `check_positions` | `(trade_log: TradeLog, db_path=None) -> dict` | `{"date","data_date","open_count","alerts","positions_ok","drawdown_state"}`；警报优先级 止损 > 无止损（止损价≤0，券商导入缺止损场景，监控保护失效提示） > 退出 > 接近止损（<1N） > 移动止损建议（建议类，仅提示不改库：浮动R≥+1R 建议上移保本、≥+2R 建议卖 1/3 + 保护位上移至 +1R 位，V5.0 §7.4；止损已在成本上方时不再提示） |
 | `derive_drawdown_state` | `(trade_log, db_path=None, floating_r=None) -> dict` | 按已平仓累计 R 曲线+浮动 R 推导 Normal/Caution/Defensive/Review（阈值 `config.DRAWDOWN_THRESHOLDS`）；月度轨道输出停事件/停开仓标记；env 显式设置冲突时以推导值为准并提示 |
 | `run_monitor` | `(trade_log=None, db_path=None, output_dir=None) -> dict` | 执行监控并写 `position_monitor_{date}.json` |
 | `monitor_to_markdown` | `(result: dict) -> list[str]` | 扫描报告嵌入区块 |
@@ -1113,7 +1124,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 318 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 334 passed |
 
 ### 10.4 模块联动点
 
@@ -1562,12 +1573,12 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（318 用例，全部离线）</summary>
+<summary>tests/（334 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 12 用例
 - `test_positions.py` — 8 用例
-- `test_monitor.py` — 27 用例（止损/退出通道/回撤推导/移动止损建议）
+- `test_monitor.py` — 30 用例（止损/退出通道/回撤推导/移动止损建议）
 - `test_compliance_gate.py` — 46 用例（口径统一/闸门/force 留痕/from-scan --execute 含 HOT-S/买入卡/禁买板块）
 - `test_signal_tracker.py` — 22 用例（入库去重/回放结算/统计/系统1过滤查询/扫描附注集成）
 - `test_strategy_params.py` — 19 用例（config 单一来源/枚举/簇映射）
@@ -1587,6 +1598,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_portfolio_heat.py` — 16 用例（热度上限/市场状态门禁/分层统计）
 - `test_run_batch.py` — 4 用例（汇总数学/异常不中断/文件输出/真实 cerebro 离线冒烟）
 - `test_signal_backtest_reconcile.py` — 1 用例（信号↔回测锁定止损口径对账）
+- `test_daily_plan.py` — 13 用例（候选过滤/参数口径/闸门预检/双系统去重/持仓行动/不交易条件/渲染）
 
 </details>
 
