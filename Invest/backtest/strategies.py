@@ -4,6 +4,8 @@ Backtrader 策略定义 — S1-A 快速系统 & S2-A 慢速系统
 S1-A: 20日通道突破入场，10日通道退出，ATR(20) 仓位管理
 S2-A: 55日通道突破入场，20日通道退出，ATR(20) 仓位管理
 加仓规则: 每涨 0.5N 加一单位；单根跳空超过 1N 不追（跳过的单位不补）
+止损口径: 每个单位入场时锁定固定止损（信号收盘 − 2N），不随 ATR 漂移，
+          与 signal_tracker 信号结算、实盘持仓监控口径一致
 
 策略参数统一来自 config（STRATEGY_PARAMS / ATR_STOP_MULT / ADD_SPACING_* 等），
 与投资体系 V5.0 §4.3 口径一致，勿在本文件硬编码数值。
@@ -60,15 +62,19 @@ def calc_trade_r_multiple(units: list[dict], exit_price: float) -> float | None:
     """
     按单位真实初始风险计算整笔交易的 R 倍数：
 
-    每单位 R = (卖出价 − 单位入场价) / 单位初始风险
+    每单位 R = (单位卖出价 − 单位入场价) / 单位初始风险
     （单位初始风险 = 单位入场价 − 单位初始止损价 = 下单时 ATR × atr_stop_mult），
     多单位分别计算后汇总求和；无有效单位时返回 None。
+    单位可自带 exit_price（止损分批成交时各自的实际退出价），缺省用整笔退出价。
     """
-    r_values = [
-        (exit_price - u["price"]) / u["risk"]
-        for u in units
-        if u.get("risk", 0) > 0
-    ]
+    r_values = []
+    for u in units:
+        if u.get("risk", 0) <= 0:
+            continue
+        ep = u.get("exit_price")
+        if ep is None:
+            ep = exit_price
+        r_values.append((ep - u["price"]) / u["risk"])
     if not r_values:
         return None
     return round(sum(r_values), 2)
@@ -115,7 +121,9 @@ class ATRIndicator(bt.Indicator):
             for i in range(1, period + 1):
                 h = self.data.high[-i]
                 l = self.data.low[-i]
-                pc = self.data.close[-i - 1] if len(self) > i else self.data.close[-i]
+                # 前收盘在序列起点不可用时回退当根收盘（len > i+1 才允许读 close[-i-1]，
+                # 否则越界读到脏值污染 SMA 种子）
+                pc = self.data.close[-i - 1] if len(self) > i + 1 else self.data.close[-i]
                 tr = max(h - l, abs(h - pc), abs(l - pc))
                 trs.append(tr)
             self.lines.atr[0] = sum(trs) / period
@@ -155,8 +163,10 @@ class BaseBreakoutStrategy(bt.Strategy):
         self.entry_price = 0.0
         self.units = 0
         self.last_add_price = 0.0
-        self.unit_positions = []       # 持仓单位明细 [{price, shares, risk}]，risk=单位初始风险(2N)
+        self.unit_positions = []       # 持仓单位明细 [{price, shares, risk, stop, exit_price?}]，risk=单位初始风险(2N)
         self._pending_unit_risk = 0.0  # 在途买入订单对应的单位初始风险
+        self._pending_unit_stop = 0.0  # 在途买入订单对应的单位锁定止损价
+        self._pending_stop_units = []  # 在途止损卖单对应的单位（成交后回填各自退出价）
         self._last_exit_price = None   # 最近一次卖出成交价（notify_trade 算 R 用）
         self.trade_results = []  # 记录每笔交易 R 倍数
 
@@ -170,15 +180,20 @@ class BaseBreakoutStrategy(bt.Strategy):
             return
         if order.status == order.Completed:
             if order.isbuy():
-                # 记录持仓单位（单位初始风险 = 下单时 ATR × atr_stop_mult = 入场价 − 初始止损价）
+                # 记录持仓单位（单位初始风险 = 下单时 ATR × atr_stop_mult = 入场价 − 初始止损价；
+                # stop 为下单时锁定的固定止损价，不随 ATR 漂移）
                 self.unit_positions.append({
                     "price": order.executed.price,
                     "shares": order.executed.size,
                     "risk": self._pending_unit_risk,
+                    "stop": self._pending_unit_stop,
                 })
                 self.log(f"买入 {order.executed.size} @ {order.executed.price:.2f}")
             else:
                 self._last_exit_price = order.executed.price
+                for u in self._pending_stop_units:
+                    u["exit_price"] = order.executed.price
+                self._pending_stop_units = []
                 self.log(f"卖出 {order.executed.size} @ {order.executed.price:.2f}")
         elif order.status in (order.Canceled, order.Margin, order.Rejected):
             self.log("订单取消/拒绝")
@@ -232,25 +247,30 @@ class BaseBreakoutStrategy(bt.Strategy):
                 size = self._calc_unit_size()
                 if size > 0:
                     self._pending_unit_risk = n * self.params.atr_stop_mult
+                    self._pending_unit_stop = close - self._pending_unit_risk  # 锁定止损，不再随 ATR 重算
                     self.order = self.buy(size=size)
                     self.entry_price = close
                     self.last_add_price = close
                     self.units = 1
                     self.log(f"突破入场 size={size} close={close:.2f} channel={self.entry_high[0]:.2f}")
         else:
-            # 退出：跌破 exit_period 日低点
+            # 退出：跌破 exit_period 日低点（全部单位一起退出）
             if close < self.exit_low[0] and self.exit_low[0] > 0:
                 self.order = self.close()
                 self.units = 0
                 self.log(f"通道退出 close={close:.2f} channel={self.exit_low[0]:.2f}")
                 return
 
-            # ATR 止损
-            stop_price = self.entry_price - n * self.params.atr_stop_mult
-            if close < stop_price:
-                self.order = self.close()
-                self.units = 0
-                self.log(f"ATR止损 close={close:.2f} stop={stop_price:.2f}")
+            # ATR 止损：每个单位用各自入场时锁定的固定止损价（与 signal_tracker/实盘监控口径一致）；
+            # 触及止损的单位合并为一单卖出，未触及的单位继续持有
+            stopped = [u for u in self.unit_positions if u.get("exit_price") is None and close < u["stop"]]
+            if stopped:
+                self._pending_stop_units = stopped
+                shares = sum(u["shares"] for u in stopped)
+                self.units -= len(stopped)
+                self.order = self.sell(size=shares)
+                stop_desc = "/".join(f"{u['stop']:.2f}" for u in stopped)
+                self.log(f"ATR止损 {len(stopped)} 个单位 close={close:.2f} stop={stop_desc}")
                 return
 
             # 金字塔加仓: 0.5N~1N 间距（跳空超 1N 不追，跳过的单位不补）
@@ -263,6 +283,7 @@ class BaseBreakoutStrategy(bt.Strategy):
                     size = self._calc_unit_size()
                     if size > 0:
                         self._pending_unit_risk = n * self.params.atr_stop_mult
+                        self._pending_unit_stop = close - self._pending_unit_risk  # 加仓单位同样锁定止损
                         self.order = self.buy(size=size)
                         self.last_add_price = close
                         self.units += 1
