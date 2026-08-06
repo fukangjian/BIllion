@@ -55,7 +55,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单等（334 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台等（356 用例） |
 
 ---
 
@@ -332,9 +332,11 @@ sequenceDiagram
 
 **依赖**：`config`, `pipeline.database`, `pipeline.market_scanner`, `pipeline.hot_pool`, `pipeline.signal_tracker`, `research.daily_report`, `review.positions`, `shared.data_fetcher.fetch_and_save_all_parallel`
 
-#### `server.py` — FastAPI 服务
+#### `server.py` — FastAPI 服务 + Web 控制台
 
-**职责**：HTTP 触发盘前流程、查询运行状态与最新输出、可选 APScheduler 定时调度。
+**职责**：HTTP 触发盘前流程、查询运行状态与最新输出、可选 APScheduler 定时调度；`GET /` 返回 Web 控制台页面（`web/console.html`，原生 HTML/JS 零新依赖），`/api/*` 端点为控制台提供数据与交易操作。交易写操作经 `_trade_lock` 串行，全部走 `review/trade_ops.py`（与 CLI 同一业务口径：合规闸门、force 留痕、买入卡、金字塔加仓、拆单卖出）；闸门拒绝返回 409 + 违规明细。
+
+**Web API 端点**（控制台用）：`GET /api/overview`（顶部状态）、`GET /api/plan`（明日操作计划）、`GET /api/positions`（持仓摘要+热度条）、`GET /api/sell-check/{symbol}`（卖点检查单）、`POST /api/trades/add` / `from-scan` / `add-position` / `sell` / `update-stop`（交易写操作）。
 
 **模块常量**：
 
@@ -783,9 +785,11 @@ CLI：`python backtest/run_batch.py --strategy S1-A --watchlist --start 2020-01-
 
 **规则清单**（严重程度）：追高接回（高，同代码当日先卖后买且买价 > 卖价；两笔都有时间字段时要求买在卖后，缺时间按日期+价格降级判定并注明）、闪电换仓（中，买入与当日他股卖出间隔 < `DISCIPLINE_SWITCH_MINUTES`=30 分钟，缺时间跳过）、禁买板块（高，代码前缀命中 `BANNED_BOARD_PREFIXES`）、无止损（中，止损价 ≤ 0）、非系统交易（低，是否系统内交易=False）。
 
-#### `trade_log.py` / `metrics.py` / `compliance_check.py` / `report_generator.py`
+#### `trade_log.py` / `metrics.py` / `compliance_check.py` / `report_generator.py` / `trade_ops.py`
 
 （同前版本。增量：`Trade` 新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""，向后兼容，券商导入与纪律审计用）与 `关联单号` / `单位序号`（默认 ""/1，金字塔加仓子单与分批平仓拆分子单指向来源交易编号，2026-08）。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`；`check_single_trade` 新增「禁买板块」高级违规（代码 zfill 后前缀命中 `BANNED_BOARD_PREFIXES`，建仓闸门默认拒绝）；`check_market_conditions` 新增组合总热度与市场状态门禁（建仓闸门专用，见 entry_gate 节）。`metrics.TradeStats` 新增 `总盈亏金额`（已平仓盈亏合计，元）；胜率改为金额符号口径（无止损的历史导入交易也可统计），R 系指标仍仅统计有止损交易；`stats_to_markdown` 增加「总盈亏金额」行。`report_generator` 新增 `signal_verification_section(days=90)` 与 `discipline_audit_section(trades)`：周报含「五、纪律审计」节（原五/六顺延为六/七），月报含「七、纪律审计」节（原七/八顺延为八/九），审计异常降级 `_纪律审计不可用_`。）
+
+**`trade_ops.py`（2026-08-06 新增）**：Web 控制台 API 与 CLI 共用的程序化交易操作层（返回 dict 不打印）：`get_overview` / `get_daily_plan`（读最新扫描 JSON）/ `get_positions_view`（持仓摘要+账户热度）/ `get_sell_check_lines` / `execute_add` / `execute_from_scan` / `execute_add_position` / `execute_sell`（全平/部分拆单）/ `execute_update_stop`。写操作与 cli 同口径（合规闸门、force 留痕、买入卡）；全部函数支持注入 `trade_log`/`db_path`（测试不碰真实数据）。
 
 #### `cli.py`
 
@@ -1124,7 +1128,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 334 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 356 passed |
 
 ### 10.4 模块联动点
 
@@ -1573,7 +1577,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（334 用例，全部离线）</summary>
+<summary>tests/（356 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 12 用例
@@ -1599,6 +1603,8 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_run_batch.py` — 4 用例（汇总数学/异常不中断/文件输出/真实 cerebro 离线冒烟）
 - `test_signal_backtest_reconcile.py` — 1 用例（信号↔回测锁定止损口径对账）
 - `test_daily_plan.py` — 13 用例（候选过滤/参数口径/闸门预检/双系统去重/持仓行动/不交易条件/渲染）
+- `test_trade_ops.py` — 12 用例（建仓/from-scan/卖出拆单/更新止损/查询，全 mock）
+- `test_web_api.py` — 10 用例（页面路由/查询端点/写端点 409 与 200 接线）
 
 </details>
 

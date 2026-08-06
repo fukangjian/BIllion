@@ -69,13 +69,16 @@ python research/run_daily_report.py   # 生成研究日报
 6. **信号结算**：历史扫描信号逐根回放结算（止损/通道退出/到期），当日新信号自动入库（携带市场状态与滤网通过数）
 7. 研究日报：公告（含防编造护栏）、宏观、板块、候选汇总
 
-### 方式二：FastAPI 服务
+### 方式二：FastAPI 服务 + Web 控制台
 
 ```powershell
 # 启动服务
 python server.py
 
-# 触发盘前流程
+# 浏览器打开 Web 控制台（一键盘前 / 计划建仓 / 持仓行动 / 加仓 / 卖出 / 卖点检查 / 报告查看）
+start http://127.0.0.1:8900/
+
+# 触发盘前流程（命令行方式）
 curl -X POST http://127.0.0.1:8900/pre-market
 
 # 启用定时调度（每天 08:30 自动盘前；每周五 15:45 自动周报、每月最后一天 16:00 自动月报）
@@ -84,16 +87,28 @@ $env:SCHEDULER_TIME = "08:30"
 python server.py
 ```
 
+Web 控制台（`web/console.html`，原生 HTML/JS 零新依赖）是 CLI 的可视化外壳：买入候选表格带「建仓」按钮（调扫描信号一键建仓）、持仓行动带「补/改止损」「卖出」按钮、快捷操作四页签（建仓/加仓/卖出/卖点检查）、报告在线查看。所有写操作与 CLI 同一口径——经 `review/trade_ops.py` 程序化层复用 `calc_position` / 合规闸门 / 买入卡 / 金字塔加仓 / 拆单卖出逻辑，高级违规默认拒绝（409 返回违规明细），force 需显式勾选并留痕。
+
 API 端点：
 
 | 端点 | 方法 | 功能 |
 |------|------|------|
+| `/` | GET | Web 控制台页面 |
 | `/pre-market` | POST | 完整盘前流程（管道 + 日报） |
 | `/pipeline` | POST | 仅运行数据管道 |
 | `/research` | POST | 仅生成研究日报 |
 | `/status` | GET | 运行状态与输出文件列表 |
 | `/latest-scan` | GET | 最新市场扫描内容（含持仓监控 JSON） |
 | `/latest-report` | GET | 最新日报内容 |
+| `/api/overview` | GET | 控制台顶部状态（市场状态/回撤/权益/信号计数） |
+| `/api/plan` | GET | 明日操作计划（扫描 JSON daily_plan） |
+| `/api/positions` | GET | 持仓摘要（现价/浮动R/盈亏/账户热度） |
+| `/api/sell-check/{symbol}` | GET | 卖点检查单 |
+| `/api/trades/add` | POST | 手工建仓（合规闸门） |
+| `/api/trades/from-scan` | POST | 扫描信号一键建仓 |
+| `/api/trades/add-position` | POST | 金字塔加仓（0.5N 触发判定 → 全链止损上移） |
+| `/api/trades/sell` | POST | 卖出登记（全平/部分拆单） |
+| `/api/trades/update-stop` | POST | 补设/更新止损价 |
 
 ## 输出目录
 

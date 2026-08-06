@@ -26,7 +26,8 @@ E:/Billion/                     # Obsidian vault 根
     ├── requirements.txt        # 唯一依赖清单（无 pyproject.toml / 无打包）
     ├── config.py               # 统一配置：路径、API 密钥、股票池、合规规则、策略参数
     ├── run_all.py              # 统一入口：盘前一键（取数→热点池构建→趋势池构建→扫描→持仓监控→信号结算→日报）
-    ├── server.py               # FastAPI 服务 + APScheduler 定时调度（端口 8900）
+    ├── server.py               # FastAPI 服务 + Web 控制台（web/console.html）+ APScheduler 定时调度（端口 8900）
+    ├── web/console.html        # Web 控制台单页（原生 HTML/JS，操作走 review/trade_ops）
     ├── position_calculator.py  # 仓位计算器（calc_position 纯函数，口径同 config）
     ├── shared/                 # 共享服务层
     │   ├── utils.py            # 代理绕过、重试、Markdown/frontmatter 工具
@@ -53,6 +54,7 @@ E:/Billion/                     # Obsidian vault 根
     ├── backtest/               # Backtrader 回测（S1-A / S2-A 策略，与实盘共用 config 策略参数）
     ├── review/                 # 交易复盘
     │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/import/sell-check/from-scan/add-position/sell
+    │   ├── trade_ops.py        # 程序化交易操作层（Web 控制台 API 与 CLI 共用业务口径，返回 dict）
     │   ├── trade_log.py        # Trade dataclass（含 关联单号/单位序号 可选字段）+ trades.json 存储
     │   ├── monitor.py          # 持仓监控：止损/退出通道警报、移动止损建议（+1R保本/+2R卖1/3）、回撤状态自动推导
     │   ├── entry_gate.py       # 入场合规闸门（单票/簇/组合总热度/市场状态门禁，高级违规拒绝，--force 留痕）
@@ -62,7 +64,7 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── import_broker.py    # 券商成交导入（MD 表/CSV → FIFO 配对落库，不过入场闸门）
     │   ├── discipline_audit.py # 纪律自动审计（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
     │   ├── metrics.py / compliance_check.py / report_generator.py
-    ├── tests/                  # pytest 单元测试（334 用例）
+    ├── tests/                  # pytest 单元测试（356 用例）
     ├── data/                   # 数据存储（market.db、trades.json、公告与 LLM 缓存）
     └── output/                 # 报告输出（日报、扫描、持仓监控 JSON、回测图等）
 ```
@@ -99,8 +101,9 @@ python pipeline/trend_pool.py          # 手动构建趋势动态池（强势板
 python research/run_daily_report.py    # 仅研究日报
 python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发  # 单票⑧催化判定（调试用）
 
-# —— API 服务（127.0.0.1:8900）——
-python server.py                       # 启动；POST /pre-market、/pipeline、/research，GET /status、/latest-scan、/latest-report
+# —— API 服务与 Web 控制台（127.0.0.1:8900）——
+python server.py                       # 启动后浏览器打开 http://127.0.0.1:8900/ 即 Web 控制台
+                                       # （一键盘前 / 明日操作计划建仓 / 持仓行动 / 加仓 / 卖出 / 卖点检查 / 报告查看）
 $env:ENABLE_SCHEDULER="true"           # 可选：每天 08:30（SCHEDULER_TIME）自动盘前
 
 # —— 交易执行链路 ——
@@ -158,7 +161,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **334 个用例**（指标 16 + 合规 12 + 持仓 8 + 监控 30 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 10 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1 + 盘前清单 13），已验证全部通过（`334 passed`，2026-08-06 复测）。
+- 框架：pytest，目录 `Invest/tests/`，共 **356 个用例**（指标 16 + 合规 12 + 持仓 8 + 监控 30 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 10 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1 + 盘前清单 13 + 交易操作层 12 + Web API 10），已验证全部通过（`356 passed`，2026-08-06 复测）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。部分用例由参数化/动态生成（如 `test_compliance_gate.py` 46 例、`test_strategy_params.py`），统计以 `pytest --collect-only` 为准。
