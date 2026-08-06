@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.database import get_connection, init_database, save_daily_quotes
 from pipeline.signal_tracker import (
+    consecutive_stop_outs,
+    last_signal_won,
     record_signals,
     settle_signals,
     signal_stats,
@@ -310,3 +312,158 @@ class TestFullFlow:
         rows_all = _fetch_signals(db)
         assert len(rows_all) == 2
         assert [r["status"] for r in rows_all] == ["closed", "open"]
+
+
+# ---------- S1-A 系统1过滤（V5.0 §4.3）：连续假突破冷却 / 上次盈利降仓 ----------
+
+def _insert_closed_v2(
+    db: Path,
+    symbol: str,
+    system: str,
+    exit_reason: str,
+    exit_date: str,
+    r_multiple: float = -1.0,
+    signal_date: str = "2026-07-01",
+):
+    """直接写入一条已关闭信号（指定代码/系统/退出原因）"""
+    with get_connection(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO signals
+            (signal_date, symbol, system, entry_price, stop_price, channel_period,
+             status, exit_date, exit_price, exit_reason, r_multiple, created_at)
+            VALUES (?, ?, ?, 100.0, 96.0, 20, 'closed', ?, ?, ?, ?, '2026-07-01 09:00:00')
+            """,
+            (signal_date, symbol, system, exit_date,
+             round(100.0 + r_multiple * 4, 2), exit_reason, r_multiple),
+        )
+
+
+class TestSystem1FilterQueries:
+    def test_consecutive_stop_outs_counted(self, tmp_path):
+        """连续 3 次止损退出 → 计数 3，最近一次退出日正确"""
+        db = _make_db(tmp_path)
+        for i, d in enumerate(["2026-07-28", "2026-07-30", "2026-08-01"]):
+            _insert_closed_v2(db, "600519", "S1-A", "止损", d, signal_date=f"2026-07-2{i}")
+        consec, last = consecutive_stop_outs("600519", "S1-A", db_path=db)
+        assert consec == 3
+        assert last == "2026-08-01"
+
+    def test_consecutive_interrupted_by_profit_exit(self, tmp_path):
+        """最近一次为通道退出（非止损）→ 连续止损计数中断为 0"""
+        db = _make_db(tmp_path)
+        _insert_closed_v2(db, "600519", "S1-A", "止损", "2026-07-28", signal_date="2026-07-20")
+        _insert_closed_v2(db, "600519", "S1-A", "通道退出", "2026-08-01",
+                          r_multiple=2.0, signal_date="2026-07-25")
+        consec, last = consecutive_stop_outs("600519", "S1-A", db_path=db)
+        assert consec == 0
+        assert last is None
+
+    def test_last_signal_won(self, tmp_path):
+        """无历史 → None；最近 R>0 → True；最近止损 → False"""
+        db = _make_db(tmp_path)
+        assert last_signal_won("600519", "S1-A", db_path=db) is None
+        _insert_closed_v2(db, "600519", "S1-A", "通道退出", "2026-08-01", r_multiple=1.5)
+        assert last_signal_won("600519", "S1-A", db_path=db) is True
+        _insert_closed_v2(db, "600519", "S1-A", "止损", "2026-08-03", signal_date="2026-08-02")
+        assert last_signal_won("600519", "S1-A", db_path=db) is False
+
+
+def _prepared_frame(high_early: float = 110.0, close_last: float = 100.0, days: int = 70):
+    """构造带通道/ATR 的准备帧：前期高点 110（55 日通道高），近期回落至 100 横盘"""
+    from pipeline.indicators import prepare_stock_indicators
+
+    dates = pd.date_range("2026-05-01", periods=days, freq="B").strftime("%Y-%m-%d")
+    n = days
+    df = pd.DataFrame({
+        "trade_date": dates,
+        "open": [close_last] * n,
+        "high": [high_early] * (n - 15) + [close_last + 1.0] * 15,
+        "low": [close_last - 1.0] * n,
+        "close": [close_last] * n,
+        "volume": [1e6] * n,
+        "amount": [1e8] * n,
+    })
+    return prepare_stock_indicators(df)
+
+
+def _breakout_row(symbol: str = "600519", close: float = 100.0, atr: float = 2.0) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "symbol": symbol, "trade_date": "2026-08-05", "close": close,
+        "channel_high": 99.0, "breakout_pct": 1.0, "atr_20": atr, "period": 20,
+    }])
+
+
+class TestEnrichBreakout:
+    def test_cooldown_blocks_recording(self, tmp_path):
+        """连续 3 次假突破且最近在冷却期内 → record=False，备注「冷却中」"""
+        from pipeline.market_scanner import _enrich_breakout
+
+        db = _make_db(tmp_path)
+        for i, d in enumerate(["2026-07-28", "2026-07-30", "2026-08-01"]):
+            _insert_closed_v2(db, "600519", "S1-A", "止损", d, signal_date=f"2026-07-2{i}")
+        out = _enrich_breakout(
+            _breakout_row(), {"600519": _prepared_frame()}, {},
+            {"600519": "半导体"}, "S1-A", "2026-08-05", db_path=db,
+        )
+        row = out.iloc[0]
+        assert not row["record"]
+        assert "冷却中" in row["note"]
+
+    def test_cooldown_expired_records_normally(self, tmp_path):
+        """连续止损但最近一次退出已超冷却期 → 照常入库"""
+        from pipeline.market_scanner import _enrich_breakout
+
+        db = _make_db(tmp_path)
+        for i, d in enumerate(["2026-06-01", "2026-06-03", "2026-06-05"]):
+            _insert_closed_v2(db, "600519", "S1-A", "止损", d, signal_date=f"2026-05-2{i}")
+        out = _enrich_breakout(
+            _breakout_row(), {"600519": _prepared_frame()}, {},
+            {"600519": "半导体"}, "S1-A", "2026-08-05", db_path=db,
+        )
+        row = out.iloc[0]
+        assert row["record"]
+        assert "冷却中" not in row["note"]
+
+    def test_last_won_far_from_55d_high_suggests_half_position(self, tmp_path):
+        """上次突破盈利且现价距 55 日高点 >1×ATR → 备注「首仓建议降50%」，照常入库"""
+        from pipeline.market_scanner import _enrich_breakout
+
+        db = _make_db(tmp_path)
+        _insert_closed_v2(db, "600519", "S1-A", "通道退出", "2026-08-01", r_multiple=2.0)
+        out = _enrich_breakout(
+            _breakout_row(close=100.0, atr=2.0), {"600519": _prepared_frame()}, {},
+            {"600519": "半导体"}, "S1-A", "2026-08-05", db_path=db,
+        )
+        row = out.iloc[0]
+        assert row["record"]
+        assert "首仓建议降50%" in row["note"]
+
+    def test_no_history_filters_note_only(self, tmp_path):
+        """无信号历史 → 照常入库；滤网未全通过（周线数据不足/板块未知）标注观察级"""
+        from pipeline.market_scanner import _enrich_breakout
+
+        db = _make_db(tmp_path)
+        out = _enrich_breakout(
+            _breakout_row(), {"600519": _prepared_frame()}, {},
+            {"600519": "半导体"}, "S1-A", "2026-08-05", db_path=db,
+        )
+        row = out.iloc[0]
+        assert row["record"]
+        assert "滤网未全通过" in row["note"]
+        assert row["filters_passed"] < row["filters_required"]
+
+    def test_s2a_skips_system1_checks(self, tmp_path):
+        """S2-A 信号不做系统1过滤（冷却/降仓仅适用 S1 系列）"""
+        from pipeline.market_scanner import _enrich_breakout
+
+        db = _make_db(tmp_path)
+        for i, d in enumerate(["2026-07-28", "2026-07-30", "2026-08-01"]):
+            _insert_closed_v2(db, "600519", "S2-A", "止损", d, signal_date=f"2026-07-2{i}")
+        out = _enrich_breakout(
+            _breakout_row(), {"600519": _prepared_frame()}, {},
+            {"600519": "半导体"}, "S2-A", "2026-08-05", db_path=db,
+        )
+        row = out.iloc[0]
+        assert row["record"]
+        assert "冷却中" not in row["note"]
