@@ -8,10 +8,10 @@
 
 | 模块 | 目录 | 功能 | 入口 |
 |------|------|------|------|
-| 数据管道 | `pipeline/` | 行情并行获取、市场扫描、突破候选、信号追踪、超短热点池 | `python pipeline/run_daily.py` |
+| 数据管道 | `pipeline/` | 行情并行获取、市场扫描（三重滤网）、突破候选、信号追踪、超短热点池、趋势动态池 | `python pipeline/run_daily.py` |
 | 研究助手 | `research/` | 公告全文分析、财报对比、产业链、每日日报 | `python research/run_daily_report.py` |
-| 交易复盘 | `review/` | 交易日志、合规闸门、持仓监控、券商导入、纪律审计、周/月报 | `python review/cli.py` |
-| 回测 | `backtest/` | S1-A / S2-A 策略验证（与实盘同口径参数） | `python backtest/run_backtest.py` |
+| 交易复盘 | `review/` | 交易日志、合规闸门（含总热度/市场状态）、持仓监控、金字塔加仓、分批卖出、券商导入、纪律审计、周/月报 | `python review/cli.py` |
+| 回测 | `backtest/` | S1-A / S2-A 策略验证（与实盘同口径参数）、批量回测汇总 | `python backtest/run_backtest.py` |
 | 仓位计算 | `position_calculator.py` | 风险预算法 + 已有持仓簇风险检查 | `python position_calculator.py` |
 | 统一入口 | `run_all.py` | 盘前一键：取数→热点池构建→扫描→持仓监控→信号结算→日报 | `python run_all.py` |
 | API 服务 | `server.py` | FastAPI 服务 + 定时调度 | `python server.py` |
@@ -49,12 +49,13 @@ $env:CUSTOM_LLM_MODEL = "your-model"
 ```powershell
 cd "e:\Billion\Invest"
 
-# 一键运行（取数 → 热点池构建 → 市场扫描 → 持仓监控 → 信号结算 → 研究日报）
+# 一键运行（取数 → 热点池构建 → 趋势池构建 → 市场扫描 → 持仓监控 → 信号结算 → 研究日报）
 python run_all.py
 
 # 分步运行
 python pipeline/run_daily.py          # 获取数据 + 市场扫描（含持仓监控与信号入库）
 python pipeline/hot_pool.py           # 手动构建超短热点池（run_all 已自动执行）
+python pipeline/trend_pool.py         # 手动构建趋势动态池（强势板块成分股，run_all 已自动执行）
 python research/run_daily_report.py   # 生成研究日报
 ```
 
@@ -62,10 +63,11 @@ python research/run_daily_report.py   # 生成研究日报
 
 1. 并行抓取行情（股票池 = `WATCHLIST` ∪ 当前持仓股）
 2. **超短热点池构建**：涨停/连板/炸板名单入 `limit_pool` 表 + 强板块领涨股，合并写 `hot_pool` 表并补抓池内日线（`--skip-fetch` 时跳过，失败降级不阻塞）
-3. 市场扫描：突破候选 + 市场状态 A/B/C/D + 板块强度 + 超短热点池区块
-4. **持仓监控**：逐持仓检查止损价与退出通道（S1-A=10 日低点 / S2-A=20 日低点），触发即警报；自动推导回撤状态
-5. **信号结算**：历史扫描信号逐根回放结算（止损/通道退出/到期），当日新信号自动入库
-6. 研究日报：公告（含防编造护栏）、宏观、板块、候选汇总
+3. **趋势动态池构建**：板块相对强度 Top 5 → 东财成分股（同花顺→东财板块名模糊匹配）→ 剔除创业板 → 写 `trend_pool` 表并补抓 120 交易日日线（失败降级同上）
+4. 市场扫描：突破候选（池 = `WATCHLIST` ∪ 趋势池）× **三重滤网**（周线 20 周均线 / 板块强度前 20% / 成交额≥20 日中位数，S2-A 加 MA20>MA60）+ 市场状态 A/B/C/D + 板块强度 + 超短热点池区块；S1-A 信号带系统1过滤附注（连续 3 次假突破冷却 20 日不入库 / 上次盈利且远离 55 日新高→首仓建议降 50%）
+5. **持仓监控**：逐持仓检查止损价与退出通道（S1-A=10 日低点 / S2-A=20 日低点），触发即警报；浮动R≥+1R/+2R 给移动止损建议；自动推导回撤状态
+6. **信号结算**：历史扫描信号逐根回放结算（止损/通道退出/到期），当日新信号自动入库（携带市场状态与滤网通过数）
+7. 研究日报：公告（含防编造护栏）、宏观、板块、候选汇总
 
 ### 方式二：FastAPI 服务
 
@@ -172,6 +174,9 @@ python pipeline/run_daily.py --skip-fetch
 # 手动构建超短热点池（run_all 盘前流程已自动执行）
 python pipeline/hot_pool.py
 
+# 手动构建趋势动态池：强势板块 Top5 成分股 → trend_pool 表 + 日线补抓
+python pipeline/trend_pool.py
+
 # 初始化数据库
 python pipeline/database.py
 ```
@@ -192,10 +197,10 @@ python pipeline/database.py
 - 跌破退出通道（S1=10 日 / S2=20 日低点）→ 按收盘价关闭
 - 满 20 个交易日 → 按收盘价到期关闭（HOT-S 超短信号按 `SIGNAL_MAX_HOLDING_BY_SYSTEM` 覆盖为 5 日）
 
-HOT-S 信号不匹配任何退出通道，只有「止损」与「到期（5 日）」两种退出；统计按系统分组，HOT-S 自动独立成组。
+HOT-S 信号不匹配任何退出通道，只有「止损」与「到期（5 日）」两种退出；统计按系统分组，并按**信号日市场状态**分层（验证 D 状态信号是否真差；老数据归入「未知」组），HOT-S 自动独立成组。
 
 ```powershell
-python pipeline/signal_tracker.py stats --days 90   # 各系统胜率/平均R/PF
+python pipeline/signal_tracker.py stats --days 90   # 各系统胜率/平均R/PF + 市场状态分层
 python pipeline/signal_tracker.py settle            # 手动触发结算
 ```
 
@@ -227,9 +232,13 @@ python position_calculator.py -s 600519 -e 1800 --stop 1700 -t 核心 --check-ex
 ```powershell
 python backtest/run_backtest.py --strategy S1-A --symbol 600519 --start 2020-01-01
 python backtest/run_backtest.py --strategy S2-A --symbol 000858 --start 2018-01-01
+
+# 批量回测（标的列表 × 策略，汇总整体胜率/PF/加权平均R/样本充足性，MD+JSON 双写）
+python backtest/run_batch.py --strategy S1-A --watchlist --start 2020-01-01
+python backtest/run_batch.py --strategy S2-A --symbols 600519,000858 --start 2018-01-01
 ```
 
-输出包含完整资金曲线（逐日权益折线）、回撤曲线、买卖标记点。策略参数（通道周期、ATR、2N 止损、0.5N~1N 加仓间距、最大 4 单位）与实盘扫描/监控共用 `config.STRATEGY_PARAMS`，回测口径即实盘口径。
+输出包含完整资金曲线（逐日权益折线）、回撤曲线、买卖标记点。策略参数（通道周期、ATR、2N 止损、0.5N~1N 加仓间距、最大 3 单位——V5.0 §5.5 三档）与实盘扫描/监控共用 `config.STRATEGY_PARAMS`，回测口径即实盘口径：每个单位入场时锁定固定止损（信号收盘 − 2N），不随 ATR 漂移；批量回测用于验证参数稳健性（V5.0：参数调整须 ≥50 笔样本支持）。组合级回测（跨标的资金分配）为后续扩展。
 
 ## 交易复盘
 
@@ -244,6 +253,15 @@ python review/cli.py from-scan 600519
 
 # 从扫描一键建仓：仓位计算 → 合规闸门 → 写库 → 生成买入卡（--system 支持 S1-A/S2-A/HOT-S）
 python review/cli.py from-scan 600519 --execute
+
+# 金字塔加仓（V5.0 §5.5 三档：现价≥上次入场+0.5N 触发 → 落库子单 → 全链止损上移至新入场价−2N）
+python review/cli.py add-position 600519                  # 按最新收盘判定
+python review/cli.py add-position 600519 --price 21.5     # 按实际成交价
+
+# 卖出登记：全平自动算 R；部分卖出拆单（原单减股数 + 已平仓子单关联原单）
+python review/cli.py sell 600519 --shares 1000 --price 108            # 全平
+python review/cli.py sell 600519 --shares 400 --price 108             # 部分卖出（默认原因「分批止盈」）
+python review/cli.py sell 600519 --id T20260802_xxx --shares 700 --price 104  # 指定单位卖出
 
 # 券商成交导入（Markdown 表/CSV → FIFO 配对落库；历史事实不过入场闸门，导入后自动合规汇总）
 python review/cli.py import --file 成交.md --year 2026 --dry-run   # 先演练
@@ -268,11 +286,13 @@ python review/cli.py monthly
 ### 策略-扫描-交易-复盘闭环
 
 ```
-market_scanner → 突破候选 → signal_tracker 入库 → 每日自动结算（胜率/平均R 可验证）
+trend_pool（强势板块成分股）→ market_scanner → 突破候选 × 三重滤网 → signal_tracker 入库
+                    ↓                                            ↓ 每日自动结算（按市场状态分层统计）
+           from-scan --execute → 仓位计算 → 合规闸门（单票/簇/总热度/市场状态）→ trades.json + 买入卡
                     ↓
-           from-scan --execute → 仓位计算 → 合规闸门 → trades.json + 买入卡
+           add-position（浮盈 0.5N 加仓 → 全链止损上移）
                     ↓
-           每日盘前 monitor → 止损/退出警报 → 人工执行 → update 平仓 → 周/月报
+           每日盘前 monitor → 止损/退出警报 + 移动止损建议 → 人工执行 → sell（全平/分批拆单）→ 周/月报
 ```
 
 ## 测试

@@ -39,19 +39,22 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | 配置 | `config.py` | 路径、API、股票池、合规规则、策略参数（`STRATEGY_PARAMS` 单一来源） |
 | 仓位计算 | `position_calculator.py` | `calc_position` 风险预算股数（口径同 config.RISK_LIMITS） |
 | 共享层 | `shared/` | 数据抓取、LLM 路由、工具函数 |
-| 数据管道 | `pipeline/` | SQLite 缓存、指标、市场扫描（MD + JSON）、超短热点池 |
+| 数据管道 | `pipeline/` | SQLite 缓存、指标、市场扫描（MD + JSON）、超短热点池、趋势动态池、三重滤网 |
 | **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
-| **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库、逐根回放结算、胜率/平均R 统计（持有天数按系统分：HOT-S=5） |
+| **趋势动态池** | `pipeline/trend_pool.py` | 强势板块 Top N → 东财成分股（名称模糊匹配）→ 剔除创业板 → 入池补抓日线（趋势候选来源） |
+| **三重滤网** | `pipeline/trend_filters.py` | 周线 20 周均线 / 板块强度前 20% / 成交额≥20 日中位数 /（S2-A）MA20>MA60，纯函数 |
+| **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库（含市场状态/滤网/系统1附注）、逐根回放结算、胜率/平均R 统计 + 市场状态分层（持有天数按系统分：HOT-S=5） |
 | 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链、热点候选⑧催化判定 |
 | 交易复盘 | `review/` | 交易日志、合规、周报月报（含纪律审计节） |
-| **持仓监控** | `review/monitor.py` | 止损/退出通道警报、回撤状态自动推导 |
-| **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查，高级违规拒绝，`--force` 留痕 |
+| **持仓监控** | `review/monitor.py` | 止损/退出通道警报、移动止损建议（+1R 保本 / +2R 兑现 1/3）、回撤状态自动推导 |
+| **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查（单票/簇/组合总热度/市场状态门禁），高级违规拒绝，`--force` 留痕 |
+| **金字塔加仓** | `review/pyramid.py` | 单位链聚合、0.5N 触发判定（与回测同函数）、加仓统一止损上移、三档风险 40/30/30 |
 | **买入卡** | `review/buy_card.py` | 建仓后自动生成买入卡（写 vault 交易日志/） |
 | 持仓视图 | `review/positions.py` | 开放持仓、风险敞口、未实现盈亏（market.db 收盘价） |
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
-| 回测 | `backtest/` | Backtrader 策略验证、权益曲线图（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、导入、纪律、卖点检查、统计口径、热点规则、催化分析（231 用例） |
+| 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测等（315 用例） |
 
 ---
 
@@ -483,16 +486,22 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 （同前版本：Donchian 通道、ATR、市场状态 A/B/C/D 判断等。）
 
+增量（2026-08）：板块相对强度 `calc_sector_relative_strength` 由比值法改为**差值法**（`sec_ret − bench_ret`，小数口径）——原比值法在基准 20 日涨幅为负或近 0 时符号失真；排序语义不变，扫描报告按百分点显示。
+
 #### `market_scanner.py`
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
-| `run_scan` | `(symbols: list[str] \| None = None, output_dir: Path \| None = None) -> Path` | Markdown 报告路径（同时写 JSON） |
+| `run_scan` | `(symbols: list[str] \| None = None, output_dir: Path \| None = None) -> Path` | Markdown 报告路径（同时写 JSON）。扫描池 = 传入 symbols ∪ 最新一期趋势池（`trend_pool` 表） |
 | `_load_limit_stats_from_db` | `(db_path=None) -> pd.DataFrame` | 最近 5 日 limit_stats |
 | `_run_position_monitor` | `() -> Optional[dict]` | 持仓监控（调 `review.monitor`，失败降级返回 None，不阻塞扫描） |
+| `_load_trend_pool_safe` | `() -> pd.DataFrame` | 最新一期趋势池（未构建/读取失败降级空表） |
+| `_sector_rank_pct_map` | `(sector_rank) -> dict[str, float]` | 板块名 → 强度排名百分位（rank/总数） |
+| `_enrich_breakout` | `(breakout, prepared, sector_pct, pool_sector, system, signal_date, db_path=None) -> pd.DataFrame` | 突破候选附加三重滤网结果（`filters_passed`/`filters_required`/`filter_brief`）与系统1过滤附注（`note`/`record`）：滤网未全通过→标注「仅观察/极小仓」；S1 系列连续 ≥`FALSE_BREAKOUT_MAX`(3) 次假突破且最近止损在 `FALSE_BREAKOUT_COOLDOWN_DAYS`(20) 日内→「冷却中」不入库；上次同系统盈利且现价距 55 日高点 >1×ATR→「首仓建议降50%」。逐股失败降级照常入库 |
+| `_append_breakout_table` | `(lines, df) -> None` | 突破候选表格（含滤网/备注列，未评估行降级显示 —） |
 | `_build_hot_section` | `(today: str, sector_rank=None, market_state="") -> dict` | 超短热点区块：从 DB 读 limit_pool/hot_pool，池内个股跑 `scan_breakout_candidates(CHANNEL_SHORT)`（与主扫描同函数同参数），标注 name/source/sector，并按买入规则 8 条生成推荐分析（`_evaluate_buy_rules`：①板块Top5 ②板块涨停家数较上一交易日增加 ③前排 ④放量突破/涨停承接 ⑦市场状态 A/B 可离线判定，⑤⑥ 盘中确认，⑧ 催化自动判定见 13.9）；⑧催化分析为**可选联网**环节：两遍评估（离线初评排序 → 前 `HOT_CATALYST_MAX` 只做 `_analyze_catalysts_safe` → 终评重排），失败逐股降级人工核对，`HOT_CATALYST_ENABLED=false` 恢复纯离线；候选按满足条数排序，记录含 `rules_met`/`analysis`/`catalyst_basis`/`catalyst_titles`；热点池未构建时降级标注，不拖垮报告 |
-| `_record_breakout_signals` | `(scan_data: dict) -> None` | 突破候选写入 signals 表（S1-A/S2-A + 热点池 hot_breakout 以 system=HOT-S，调 `signal_tracker.record_signals`） |
-| `_df_to_breakout_list` | `(df: pd.DataFrame) -> list[dict]` | 突破候选 JSON 结构 |
+| `_record_breakout_signals` | `(scan_data: dict) -> None` | 突破候选写入 signals 表（S1-A/S2-A + 热点池 hot_breakout 以 system=HOT-S，调 `signal_tracker.record_signals`）；冷却期候选（record=False）跳过，入库信号携带当日 market_state 与滤网通过数 |
+| `_df_to_breakout_list` | `(df: pd.DataFrame) -> list[dict]` | 突破候选 JSON 结构（含 filter_passed/filter_brief/note/record） |
 | `_df_to_sector_list` | `(df: pd.DataFrame) -> list[dict]` | 板块排名 JSON 结构 |
 | `_build_scan_json` | `(date, state_info, breakout_20, breakout_55, sector_rank, hot_section=None) -> dict` | 完整扫描 JSON |
 | `_build_sector_ranking` | `(benchmark_df) -> pd.DataFrame` | Top 板块排名 |
@@ -504,7 +513,8 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 {
   "date": "2026-07-30",
   "market_state": "D",
-  "breakout_s1a": [{"symbol", "close", "channel_high", "breakout_pct", "atr_20", "period"}],
+  "breakout_s1a": [{"symbol", "close", "channel_high", "breakout_pct", "atr_20", "period",
+                    "filter_passed", "filters_required", "filter_brief", "note", "record"}],
   "breakout_s2a": [...],
   "sector_ranking": [{"rank", "sector_name", "relative_strength", "period_return"}],
   "position_monitor": {"date", "data_date", "open_count", "alerts", "positions_ok", "drawdown_state"},
@@ -514,17 +524,40 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 持仓监控结果另写 `position_monitor_{date}.json`（机器消费）。热点池区块嵌入扫描 JSON：`lianban` 为连板股表（报告取 Top10），`hot_breakout` 为热点池突破候选（记录含 symbol/name/close/channel_high/breakout_pct/atr_20/period/source/sector/rules_met/analysis/catalyst_basis/catalyst_titles，入库 signals 表 system=HOT-S），热点池未构建时 `available=false` 并在 `note` 标注。
 
+#### `trend_pool.py` — 趋势动态池（S1-A/S2-A 候选来源）
+
+**职责**：每日盘前构建趋势扫描动态池：板块相对强度 Top `TREND_SCAN_TOP_SECTORS`(5) → 东财行业成分股（`fetch_sector_constituents`，同花顺板块名→东财名包含式模糊匹配）→ 剔除 `BANNED_BOARD_PREFIXES`（创业板 300/301）→ 截断 `TREND_POOL_MAX`(300) 写 `trend_pool` 表 → 并行补抓池内个股近 `TREND_HISTORY_DAYS`(120) 个交易日日线。单板块/单股失败降级跳过，不阻塞主流程。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `build_trend_pool` | `(trade_date=None, db_path=None, top_n=TREND_SCAN_TOP_SECTORS) -> pd.DataFrame` | 排名 → 成分股 → 合并去重写 trend_pool 表（全失败返回空 DataFrame） |
+| `sync_trend_pool_daily` | `(pool, db_path=None, max_workers=FETCH_MAX_WORKERS) -> int` | 并行补抓池内个股日线（复用 `fetch_stock_daily` + `save_daily_quotes`） |
+| `strong_sectors_ranked` | `(db_path=None) -> pd.DataFrame` | 板块强度完整排名（复用 `indicators.rank_sectors_by_strength`，离线） |
+| `_merge_trend_pool` | `(cons_df) -> pd.DataFrame` | 纯函数：剔除创业板前缀、按代码去重（多板块归属以「+」连接）、截断上限 |
+| `main` | `() -> None` | CLI：`python pipeline/trend_pool.py` |
+
+**已知限制**：东财成分股接口走 push2 行情推送，本机 IP 曾被持续风控重置（见 13.5）——构建失败时趋势池为空、扫描退回 WATCHLIST，接口恢复后自动生效。
+
+#### `trend_filters.py` — 三重滤网量化（V5.0 §4.2/§4.3）
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `evaluate_trend_filters` | `(df, sector_rank_pct=None, system="S1-A") -> dict` | 纯函数：`weekly_trend`（收盘 > 20 周均线）/`sector_strength`（板块排名前 `TREND_SECTOR_TOP_PCT`=20%）/`volume_confirm`（当日成交额 ≥ 过去 `TREND_VOLUME_MEDIAN_DAYS`=20 日中位数）/`ma_bullish`（MA20>MA60，仅 S2 系列必需）+ `passed/required/all_passed`；数据不足项为 None 不计通过 |
+| `filters_brief` | `(filters: dict) -> str` | 紧凑文本（周线✓ 板块✗ 量能✓ 均线-），扫描报告滤网列用 |
+
 #### `signal_tracker.py` — 信号追踪（可验证性）
 
 **职责**：扫描突破信号自动入库（SQLite `signals` 表），每日盘前逐根回放结算，产出各系统胜率/平均R/PF——回答"S1-A 信号最近到底灵不灵"。
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
-| `record_signals` | `(scan_data: dict, db_path=None) -> int` | 候选入库；同 (symbol, system) 有 open 信号则跳过（防连续突破日重复） |
+| `record_signals` | `(candidates, system, signal_date=None, db_path=None) -> int` | 候选入库；同 (symbol, system) 有 open 信号则跳过（防连续突破日重复）；候选可携带 `market_state`/`filter_passed`/`note` 附加列 |
 | `settle_signals` | `(db_path=None, settle_date=None) -> dict` | 结算 `signal_date < settle_date` 的 open 信号：逐根回放日线，先判止损（R=−1）再判退出通道，满持有天数到期关闭（默认 `SIGNAL_MAX_HOLDING_DAYS`=20，`SIGNAL_MAX_HOLDING_BY_SYSTEM` 按系统覆盖，HOT-S=5） |
+| `consecutive_stop_outs` | `(symbol, system, db_path=None) -> (int, str \| None)` | 最近连续「止损」退出次数与最近一次退出日（S1-A 系统1过滤：假突破计数，V5.0 §4.3） |
+| `last_signal_won` | `(symbol, system, db_path=None) -> bool \| None` | 最近一次同标的同系统已关闭信号 R>0（上次突破是否盈利）；无历史返回 None |
 | `_max_holding_days` | `(system: str) -> int` | 按系统查 `SIGNAL_MAX_HOLDING_BY_SYSTEM`，未列出系统沿用 `SIGNAL_MAX_HOLDING_DAYS` |
-| `signal_stats` | `(db_path=None, days=90, as_of=None) -> dict` | 近 N 天已关闭信号按系统分组：样本数/胜率/平均R/期望值/PF；<`SIGNAL_STATS_MIN_SAMPLE`(5) 标注「样本不足」 |
-| `signal_stats_to_markdown` | `(stats: dict) -> str` | 表格 + 自动解读（周报/月报/CLI 共用） |
+| `signal_stats` | `(db_path=None, days=90, as_of=None) -> dict` | 近 N 天已关闭信号按系统分组：样本数/胜率/平均R/期望值/PF；<`SIGNAL_STATS_MIN_SAMPLE`(5) 标注「样本不足」；`by_state` 按信号日市场状态分层（无状态归入「未知」） |
+| `signal_stats_to_markdown` | `(stats: dict) -> str` | 表格 + 市场状态分层表 + 自动解读（周报/月报/CLI 共用） |
 | `main` | `() -> None` | CLI：`settle [--date]` / `stats [--days 90]` |
 
 **结算口径**：入场价=信号日收盘价，止损=入场价−`ATR_STOP_MULT`×ATR(20)，退出通道 S1=10 日/S2=20 日低点（shift(1) 无未来函数，与 monitor、回测同口径）。HOT-S 超短信号不匹配任何退出通道（`_exit_channel_period` 返回 None），只有「止损」与「到期（5 日）」两种退出；`signal_stats` 按 system 分组，HOT-S 自动独立成组。
@@ -621,10 +654,12 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 
 `S1A_Strategy` / `S2A_Strategy` + `STRATEGY_MAP`。参数默认值全部引用 `config.STRATEGY_PARAMS` / `ATR_*` / `ADD_SPACING_*` / `MAX_UNITS` / `LOT_SIZE`，与实盘扫描/监控同口径。
 
+**止损口径（2026-08 统一）**：每个单位入场时锁定固定止损（信号收盘 − `ATR_STOP_MULT`×N），不随 ATR 漂移——与 signal_tracker 信号结算、实盘持仓监控一致；触及止损的单位合并卖出一单，未触及的继续持有（`calc_trade_r_multiple` 支持单位级 `exit_price`）。`ATRIndicator` 首值种子越界读取已修正（`len > i+1` 才允许读前收盘）。`MAX_UNITS`=3 对齐 V5.0 §5.5 三档。
+
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
-| `next_add_action` | `(last_add_price, current_price, atr, ...) -> dict` | 纯函数：加仓间距 [0.5N, 1N]；单根跳空 >1N 不追，跳过的单位不补（海龟原义） |
-| `calc_trade_r_multiple` | `(unit_positions, exit_price) -> float` | 纯函数：按单位真实风险（入场价−初始止损价）逐单位算 R 再汇总 |
+| `next_add_action` | `(close, last_add_price, n, spacing_min, spacing_max) -> (bool, float)` | 纯函数：加仓间距 [0.5N, 1N]；单根跳空 >1N 不追，基准推进、跳过的单位不补（海龟原义）；回测与 `review/pyramid.py` 实盘加仓共用 |
+| `calc_trade_r_multiple` | `(units, exit_price) -> float` | 纯函数：按单位真实风险（入场价−初始止损价）逐单位算 R 再汇总；单位可自带 `exit_price`（分批止损各自成交） |
 
 #### `run_backtest.py`
 
@@ -632,9 +667,19 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 |------|------|--------|
 | `fetch_data` | `(symbol, start, end) -> pd.DataFrame` | AkShare 直连 |
 | `load_data_from_db` | `(symbol, start, end) -> pd.DataFrame` | 优先本地 DB |
-| `run_backtest` | `(strategy_name, symbol, start, end, initial_cash, commission, printlog) -> dict` | 统计 dict |
+| `run_backtest` | `(strategy_name, symbol, start, end, initial_cash, commission, printlog, plot=True) -> dict` | 统计 dict（`plot=False` 跳过资金曲线，批量回测用；stats 含 `gross_profit`/`gross_loss`/`r_count` 汇总字段） |
 | `_plot_equity_curve` | `(equity_curve, markers, chart_path, strategy_name, symbol, start, end, initial_cash)` | PNG（**完整权益曲线 + 回撤 + 买卖点**） |
 | `_extract_stats` | `(strat, start_value, end_value, initial_cash) -> dict` | Sharpe/DD/胜率等 |
+
+#### `run_batch.py` — 批量回测（参数稳健性验证）
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `run_batch` | `(strategy, symbols, start, end=None, cash, commission, output_dir=None) -> dict` | 逐标的调 `run_backtest(plot=False)`，单标的失败记 error 继续；输出 `batch_{strategy}_{date}.md/.json` |
+| `aggregate_batch` | `(rows, strategy, start, end) -> dict` | 纯函数汇总：整体胜率/PF/按 R 样本数加权平均R/平均收益与回撤/`sample_sufficient`（总交易 ≥50，V5.0 参数调整门槛） |
+| `batch_to_markdown` | `(result) -> str` | 汇总表 + 逐标的明细 |
+
+CLI：`python backtest/run_batch.py --strategy S1-A --watchlist --start 2020-01-01`（或 `--symbols 600519,000858`）。组合级回测（跨标的资金分配、并发持仓）为后续扩展。
 
 **图表改进**：双面板（权益曲线 + 回撤曲线），标注买卖 scatter，`EquityCurveAnalyzer` / `TradeMarkerAnalyzer` 收集逐日权益与交易标记。
 
@@ -648,7 +693,7 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
-| `check_positions` | `(trade_log: TradeLog, db_path=None) -> dict` | `{"date","data_date","open_count","alerts","positions_ok","drawdown_state"}`；警报优先级 止损 > 退出 > 接近止损（<1N） |
+| `check_positions` | `(trade_log: TradeLog, db_path=None) -> dict` | `{"date","data_date","open_count","alerts","positions_ok","drawdown_state"}`；警报优先级 止损 > 退出 > 接近止损（<1N） > 移动止损建议（建议类，仅提示不改库：浮动R≥+1R 建议上移保本、≥+2R 建议卖 1/3 + 保护位上移至 +1R 位，V5.0 §7.4；止损已在成本上方时不再提示） |
 | `derive_drawdown_state` | `(trade_log, db_path=None, floating_r=None) -> dict` | 按已平仓累计 R 曲线+浮动 R 推导 Normal/Caution/Defensive/Review（阈值 `config.DRAWDOWN_THRESHOLDS`）；月度轨道输出停事件/停开仓标记；env 显式设置冲突时以推导值为准并提示 |
 | `run_monitor` | `(trade_log=None, db_path=None, output_dir=None) -> dict` | 执行监控并写 `position_monitor_{date}.json` |
 | `monitor_to_markdown` | `(result: dict) -> list[str]` | 扫描报告嵌入区块 |
@@ -662,10 +707,22 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
 | `derive_state_safe` | `(trade_log=None) -> str` | 回撤状态：优先 monitor 推导，失败降级 `config.DRAWDOWN_STATE` |
-| `check_entry` | `(trade_log, new_trade_dict, ...) -> list[Violation]` | 单笔 + 组合级簇检查（复用 `compliance_check`） |
+| `get_latest_market_state` | `(db_path=None) -> str \| None` | 最新市场状态（market_state 表）；无数据/失败返回 None（降级跳过市场状态检查） |
+| `check_entry` | `(trade, trade_log=None, account_equity, drawdown_state=None, market_state=None, db_path=None) -> (list[Violation], str)` | 单笔 + 组合级簇检查 + 组合总热度/市场状态门禁（`compliance_check.check_market_conditions`，market_state 可注入便于测试） |
 | `split_by_severity` / `format_violations` / `force_note` | — | 高级违规拒绝写入；`--force` 强制时备注留痕「⚠️ 强制建仓，违规：xxx」 |
 
-所有写 trades.json 的建仓路径（`add`、`from-scan --execute`）必须经此闸门。
+组合总热度门禁（V5.0 §5.6，`config.PORTFOLIO_HEAT_LIMITS`）：未平仓风险率合计 + 本笔风险率 > 当前市场状态上限（A 4% / B 3% / C 1.5% / D 0%）→ 高级违规；市场状态 D 禁新开趋势仓（入场系统含 S1/S2，高级），C 中级警告。仅建仓闸门生效，`run_compliance_check` 存量审计不适用。
+
+所有写 trades.json 的建仓路径（`add`、`from-scan --execute`、`add-position`）必须经此闸门。
+
+#### `pyramid.py` — 金字塔加仓（V5.0 §5.5 三档）
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `get_unit_chain` | `(open_trades, symbol) -> list[Trade]` | 该代码未平仓单位链（最新首仓 + 加仓单位，按单位序号升序） |
+| `check_add_trigger` | `(chain, latest_close, atr) -> dict` | 纯函数：现价 ≥ 上次入场 + 0.5N 触发（跳空 >1N 不追、基准推进，复用回测 `next_add_action` 同函数）；返回 可加仓/触发价/下一单位序号/统一止损价；满 `MAX_UNITS`(3) 不再加 |
+| `unified_stop_after_add` | `(new_unit_entry, atr) -> float` | 海龟统一止损：新入场价 − 2N（调用方只上不下） |
+| `add_unit_shares` | `(first_unit, per_share_risk) -> int` | 加仓股数 = 首仓实际风险金额 × (30/40) ÷ 每股风险，整手向下（三档 40/30/30 口径） |
 
 #### `buy_card.py` — 买入卡生成
 
@@ -717,19 +774,21 @@ CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--out
 
 #### `trade_log.py` / `metrics.py` / `compliance_check.py` / `report_generator.py`
 
-（同前版本。增量：`Trade` 新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""，向后兼容，券商导入与纪律审计用）。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`；`check_single_trade` 新增「禁买板块」高级违规（代码 zfill 后前缀命中 `BANNED_BOARD_PREFIXES`，建仓闸门默认拒绝）。`metrics.TradeStats` 新增 `总盈亏金额`（已平仓盈亏合计，元）；胜率改为金额符号口径（无止损的历史导入交易也可统计），R 系指标仍仅统计有止损交易；`stats_to_markdown` 增加「总盈亏金额」行。`report_generator` 新增 `signal_verification_section(days=90)` 与 `discipline_audit_section(trades)`：周报含「五、纪律审计」节（原五/六顺延为六/七），月报含「七、纪律审计」节（原七/八顺延为八/九），审计异常降级 `_纪律审计不可用_`。）
+（同前版本。增量：`Trade` 新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""，向后兼容，券商导入与纪律审计用）与 `关联单号` / `单位序号`（默认 ""/1，金字塔加仓子单与分批平仓拆分子单指向来源交易编号，2026-08）。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`；`check_single_trade` 新增「禁买板块」高级违规（代码 zfill 后前缀命中 `BANNED_BOARD_PREFIXES`，建仓闸门默认拒绝）；`check_market_conditions` 新增组合总热度与市场状态门禁（建仓闸门专用，见 entry_gate 节）。`metrics.TradeStats` 新增 `总盈亏金额`（已平仓盈亏合计，元）；胜率改为金额符号口径（无止损的历史导入交易也可统计），R 系指标仍仅统计有止损交易；`stats_to_markdown` 增加「总盈亏金额」行。`report_generator` 新增 `signal_verification_section(days=90)` 与 `discipline_audit_section(trades)`：周报含「五、纪律审计」节（原五/六顺延为六/七），月报含「七、纪律审计」节（原七/八顺延为八/九），审计异常降级 `_纪律审计不可用_`。）
 
 #### `cli.py`
 
-子命令：`add`, `update`, `list`, `show`, `stats`, `weekly`, `monthly`, `check`, `positions`, `import`, `sell-check`, **`from-scan`**
+子命令：`add`, `update`, `list`, `show`, `stats`, `weekly`, `monthly`, `check`, `positions`, `import`, `sell-check`, `add-position`, `sell`, **`from-scan`**
 
 - **`add`**：写入前自动过入场合规闸门（`entry_gate`）；`--system` 校验 `STRATEGY_CODES`；`--equity`/`--force`；`--time` 记录入场时间（HH:MM:SS，纪律审计用）；成功后自动生成买入卡
 - **`update`**：`--exit-time` 记录退出时间（HH:MM:SS）
+- **`add-position <代码>`**：金字塔加仓（V5.0 §5.5）：单位链触发判定（0.5N，复用 `pyramid.check_add_trigger`）→ 回撤状态非 Normal 拒绝 → 加仓股数（首仓风险 ×30/40）→ 合规闸门 → 落库子单（`关联单号`/`单位序号`）→ 全链未平仓单位止损统一上移（只上不下，旧止损备注留痕）；`--price` 按实际成交价，`--force/--equity` 可调
+- **`sell <代码>`**：卖出登记：`--shares` ≥ 持仓股数即全平（自动算 R，同 update 口径）；部分卖出拆单——原单减股数留痕，新增已平仓子单（`关联单号` 指向原单，R 独立计算），股数守恒；`--id` 指定单位、`--reason`（部分卖出默认「分批止盈」）；末尾打印 V5.0 §7.6 重新入场条件
 - **`positions`**：调 `print_portfolio_summary`（未实现盈亏/风险敞口/回撤状态）
 - **`stats`**：终端输出同时写 `STATS_OUTPUT_DIR/{date}_交易统计.md`
 - **`check`**：合规检查末尾追加纪律审计摘要（`discipline_audit`，审计失败仅警告）
 - **`import`**：券商成交导入（`--file` .md/.csv、`--year` 补全年份、`--symbol-map 名称=代码,...`、`--account`、`--dry-run`），解析 → FIFO 配对 → 落库（历史事实，不过入场闸门）→ 自动打印合规汇总
-- **`sell-check <代码>`**：卖点检查单（全程离线，异常降级不崩）：止损/退出通道警报（复用 `monitor._check_single_position`）、持有天数与 HOT-S 强制离场倒计时（`SIGNAL_MAX_HOLDING_BY_SYSTEM` 交易日口径，自然日近似）、是否在最新一期热点池、建议挂单价 = 最新收盘 × 0.99（日志教训：挂低 1% 防挂高未成交）；该代码无持仓时列出当前持仓
+- **`sell-check <代码>`**：卖点检查单（全程离线，异常降级不崩）：止损/退出通道警报与移动止损建议（复用 `monitor._check_single_position`）、持有天数与 HOT-S 强制离场倒计时（`SIGNAL_MAX_HOLDING_BY_SYSTEM` 交易日口径，自然日近似）、是否在最新一期热点池、建议挂单价 = 最新收盘 × 0.99（日志教训：挂低 1% 防挂高未成交）；该代码无持仓时列出当前持仓
 - **`from-scan`**：默认只打印建议（收盘价/ATR 止损/示例命令）；`--execute` 一键建仓：信号→止损=close−2×ATR→`calc_position`→合规闸门→写 Trade→买入卡；支持热点池突破候选（scan JSON `hot_pool.hot_breakout`，系统 HOT-S，默认账户 事件——cli 本地特判，`SYSTEM_DEFAULT_ACCOUNT` 未含该键）；同股双信号默认 S2-A（`--system S1-A/S2-A/HOT-S` 覆盖），`--account/--equity/--force` 可调
 
 内部辅助：`_load_scan_json(date)`, `_find_breakout_in_scan(scan_data, symbol)`（返回数据与系统 S1-A/S2-A/HOT-S）, `_default_account_for_system`, `_resolve_cluster`, `_apply_entry_gate`, `_execute_from_scan`, `build_sell_check_lines`（纯函数，可测）, `_symbol_in_hot_pool`（池空/读取失败返回 None 降级）
@@ -750,15 +809,19 @@ CREATE TABLE IF NOT EXISTS signals (
     symbol TEXT NOT NULL,           -- 股票代码
     system TEXT NOT NULL,           -- S1-A / S2-A
     entry_price REAL,               -- 入场价（信号日收盘价）
-    stop_price REAL,                -- 止损价（入场价 − 2×ATR）
+    stop_price REAL,                -- 止损价（入场价 − 2×ATR，锁定不漂移）
     channel_period INTEGER,         -- 退出通道周期（10 / 20）
     status TEXT NOT NULL DEFAULT 'open',  -- open / closed
     exit_date TEXT, exit_price REAL,
     exit_reason TEXT,               -- 止损 / 通道退出 / 到期
     r_multiple REAL,                -- 结算 R 倍数
+    market_state TEXT,              -- 信号日市场状态 A/B/C/D（2026-08 起，分层统计用）
+    filter_passed INTEGER,          -- 三重滤网通过数（2026-08 起）
+    note TEXT,                      -- 系统1过滤附注（冷却中/首仓降50% 等）
     created_at TEXT,
     PRIMARY KEY (signal_date, symbol, system)
 );
+-- 老库由 init_database() 内 _migrate_signals_columns 幂等 ALTER TABLE 补列
 ```
 
 **新增 `limit_pool` / `hot_pool` 表**（超短热点池，同 `init_database()` 幂等建表，均附 `trade_date` 索引）：
@@ -788,9 +851,21 @@ CREATE TABLE IF NOT EXISTS hot_pool (
 );
 ```
 
+**新增 `trend_pool` 表**（趋势动态池，2026-08，同幂等建表 + `trade_date` 索引）：
+
+```sql
+CREATE TABLE IF NOT EXISTS trend_pool (
+    trade_date    TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    name          TEXT,
+    source_sector TEXT,             -- 来源板块（多板块归属以「+」连接）
+    PRIMARY KEY (trade_date, symbol)
+);
+```
+
 ### 5.2 JSON 结构（`data/trades.json`）
 
-（同前版本。新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""），历史记录无该字段向后兼容，券商导入与 `add --time` / `update --exit-time` 写入。）
+（同前版本。新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""），历史记录无该字段向后兼容，券商导入与 `add --time` / `update --exit-time` 写入。2026-08 新增可选字段 `关联单号`（默认 ""，加仓子单/部分平仓拆分子单指向来源交易编号）与 `单位序号`（默认 1，金字塔单位序号），部分平仓采用拆单模型：原单减股数 + 新增已平仓子单，每条记录 R 口径独立。）
 
 ### 5.3 文件存储布局
 
@@ -1038,7 +1113,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 231 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 315 passed |
 
 ### 10.4 模块联动点
 
@@ -1242,6 +1317,19 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 5 | 配置项 | `HOT_CATALYST_ENABLED`（env，默认 true；false 恢复纯离线）、`HOT_CATALYST_MAX`=8（每日催化分析候选上限）、`CATALYST_ANNOUNCE_DAYS`=90 |
 | 6 | 测试 | `tests/test_catalyst_analyzer.py` 18 用例（parse_verdict/关键词筛选/无公告/无 Key/无正文护栏/LLM 成功与失败降级/规则⑧接入/集成），`test_hot_rules.py` 集成补 `_analyze_catalysts_safe` mock，全量 231 passed |
 | 7 | 降级验证 | 无 LLM Key 实跑：Top 8 候选全部抓到真实公告标题（东财/巨潮），⑧依据区块标注「未配置 LLM，需人工核对」；配置 `KIMI_API_KEY`（或 DEEPSEEK/CUSTOM）后自动升级为 LLM 判定 |
+
+### 13.10 趋势交易系统完整化（2026-08-06 ✅）
+
+**背景**：以《投资体系 V5.0》§4/§5/§6/§7 为业务依据，把趋势交易系统（S1-A/S2-A）从「信号→首仓→监控→平仓→复盘」主链路补齐为完整闭环。分五阶段实施（方案经用户审批）。
+
+| # | 方向 | 实现方式 |
+|---|------|----------|
+| 0 | 口径修正 | 回测单位止损入场时锁定（原每根 bar 用当前 ATR 重算会漂移），与信号结算/实盘监控一致；`ATRIndicator` 首值种子越界读取修正；板块相对强度改差值法（基准涨幅为负时比值法符号失真）；`MAX_UNITS` 4→3 对齐 V5.0 §5.5 三档 |
+| 1 | 信号层 | `pipeline/trend_pool.py`：板块强度 Top 5 → 东财成分股（名称模糊匹配）→ 剔除创业板 → `trend_pool` 表 → 补抓 120 交易日日线（push2 风控期降级仅 WATCHLIST）；`pipeline/trend_filters.py` 三重滤网纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）；扫描器候选附滤网通过数与系统1附注（连续3次假突破冷却20日不入库、上次盈利远离55日新高首仓降50%）；signals 表加 `market_state`/`filter_passed`/`note`（老库幂等迁移） |
+| 2 | 执行层 | `Trade` 加 `关联单号`/`单位序号`；`review/pyramid.py` 加仓纯函数（复用回测 `next_add_action`）；`cli add-position`（触发判定→回撤非 Normal 拒绝→闸门→落库→全链止损上移）；`cli sell` 分批卖出拆单（原单减股数+已平仓子单，R 独立、股数守恒）；monitor 移动止损建议（+1R 保本/+2R 卖 1/3，建议类警报最低优先级） |
+| 3 | 组合风控 | `PORTFOLIO_HEAT_LIMITS`（A4/B3/C1.5/D0）接入建仓闸门：总热度超限高级违规；D 状态禁新开趋势仓（高）、C 中级警告；存量审计不适用；`signal_stats` 增 `by_state` 市场状态分层，周/月报自动携带 |
+| 4 | 批量回测 | `backtest/run_batch.py`：标的×策略批量回测（单标的失败不中断），汇总整体胜率/PF/加权平均R/样本充足性（≥50 笔门槛），MD+JSON 双写；`run_backtest` 加 `plot` 开关与汇总字段；首跑 WATCHLIST×S1-A（2023 至今）122 笔胜率 27.9%/PF 0.76/平均R −0.25——无滤网大盘股池期望为负，印证滤网与动态池价值；组合级回测留作后续扩展 |
+| 5 | 测试 | 新增 8 个测试文件 + 既有文件扩充，全量 315 passed（CLI 级测试以 fixture 固定市场状态为 A，不依赖真实 market.db） |
 
 ---
 
@@ -1474,16 +1562,17 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（231 用例，全部离线）</summary>
+<summary>tests/（315 用例，全部离线）</summary>
 
-- `test_indicators.py` — 13 用例（含市场宽度取最新日回归）
+- `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 12 用例
 - `test_positions.py` — 8 用例
-- `test_monitor.py` — 23 用例（止损/退出通道/回撤推导）
+- `test_monitor.py` — 27 用例（止损/退出通道/回撤推导/移动止损建议）
 - `test_compliance_gate.py` — 46 用例（口径统一/闸门/force 留痕/from-scan --execute 含 HOT-S/买入卡/禁买板块）
-- `test_signal_tracker.py` — 14 用例（入库去重/回放结算/统计）
+- `test_signal_tracker.py` — 22 用例（入库去重/回放结算/统计/系统1过滤查询/扫描附注集成）
 - `test_strategy_params.py` — 19 用例（config 单一来源/枚举/簇映射）
 - `test_backtest.py` — 12 用例（加仓间距/单位 R/合成行情全流程）
+- `test_backtest_stop_fix.py` — 3 用例（止损锁定口径回归/单位级 exit_price）
 - `test_hot_pool.py` — 9 用例（fetch_limit_pools 字段映射与单池降级/_merge_pool 合并优先级与上限/两表读写幂等/HOT-S 五日到期/按系统分组）
 - `test_import_broker.py` — 14 用例（MD/CSV 解析/名称映射/FIFO 配对/未配对卖出/幂等/dry-run）
 - `test_discipline_audit.py` — 14 用例（5 条规则/时间缺失降级/Markdown 输出）
@@ -1491,6 +1580,13 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_metrics.py` — 3 用例（总盈亏金额/胜率金额口径/无止损交易）
 - `test_hot_rules.py` — 17 用例（量比/逐规则真值表/集成 mock 含 `_analyze_catalysts_safe`）
 - `test_catalyst_analyzer.py` — 18 用例（parse_verdict/关键词筛选/无公告/无 Key/无正文护栏/LLM 成功与失败降级/规则⑧接入/集成）
+- `test_trend_pool.py` — 7 用例（合并去重/剔除创业板/截断/构建入库/最新期读取）
+- `test_trend_filters.py` — 17 用例（四滤网真值/必需项计数/brief 文本）
+- `test_pyramid.py` — 13 用例（单位链/触发判定/跳空不追/统一止损/加仓股数）
+- `test_partial_exit.py` — 8 用例（全平 R/拆单/股数守恒/指定单位卖出/加仓全流程）
+- `test_portfolio_heat.py` — 16 用例（热度上限/市场状态门禁/分层统计）
+- `test_run_batch.py` — 4 用例（汇总数学/异常不中断/文件输出/真实 cerebro 离线冒烟）
+- `test_signal_backtest_reconcile.py` — 1 用例（信号↔回测锁定止损口径对账）
 
 </details>
 

@@ -25,7 +25,7 @@ E:/Billion/                     # Obsidian vault 根
     ├── ARCHITECTURE.md         # 完整架构与设计文档（含函数索引、数据流图）
     ├── requirements.txt        # 唯一依赖清单（无 pyproject.toml / 无打包）
     ├── config.py               # 统一配置：路径、API 密钥、股票池、合规规则、策略参数
-    ├── run_all.py              # 统一入口：盘前一键（取数→热点池构建→扫描→持仓监控→信号结算→日报）
+    ├── run_all.py              # 统一入口：盘前一键（取数→热点池构建→趋势池构建→扫描→持仓监控→信号结算→日报）
     ├── server.py               # FastAPI 服务 + APScheduler 定时调度（端口 8900）
     ├── position_calculator.py  # 仓位计算器（calc_position 纯函数，口径同 config）
     ├── shared/                 # 共享服务层
@@ -34,11 +34,13 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── llm_client.py       # 多 LLM 路由（Kimi→DeepSeek→Custom）+ 24h 缓存
     │   └── prompts.py          # 提示词模板（纯字符串常量）
     ├── pipeline/               # 数据管道
-    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert，含 signals/limit_pool/hot_pool 表）
-    │   ├── indicators.py       # Donchian 通道、ATR、市场状态 A/B/C/D
-    │   ├── market_scanner.py   # 市场扫描 + 持仓监控区块 + 超短热点区块，同写 MD + JSON
+    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert，含 signals/limit_pool/hot_pool/trend_pool 表）
+    │   ├── indicators.py       # Donchian 通道、ATR、市场状态 A/B/C/D、板块相对强度（差值法）
+    │   ├── market_scanner.py   # 市场扫描（池=WATCHLIST∪趋势池，突破×三重滤网×系统1过滤）+ 持仓监控区块 + 超短热点区块，同写 MD + JSON
     │   ├── hot_pool.py         # 超短热点池：涨停/连板/炸板+强板块领涨股，构建与日线补抓
-    │   ├── signal_tracker.py   # 信号追踪：突破信号入库、每日结算（按系统分持有天数）、胜率/平均R 统计
+    │   ├── trend_pool.py       # 趋势动态池：强势板块 Top5 成分股（东财，名称模糊匹配）→ 剔除创业板 → 入池补抓
+    │   ├── trend_filters.py    # 三重滤网量化纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）
+    │   ├── signal_tracker.py   # 信号追踪：突破信号入库（含市场状态/滤网/附注）、每日结算、胜率/平均R + 市场状态分层统计
     │   └── run_daily.py        # CLI 入口
     ├── research/               # AI 研究助手
     │   ├── daily_report.py         # 每日研究日报
@@ -49,16 +51,17 @@ E:/Billion/                     # Obsidian vault 根
     │   └── catalyst_analyzer.py    # 买入规则⑧催化自动判定（公告链 + has_real_content 护栏 + LLM）
     ├── backtest/               # Backtrader 回测（S1-A / S2-A 策略，与实盘共用 config 策略参数）
     ├── review/                 # 交易复盘
-    │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/import/sell-check/from-scan
-    │   ├── trade_log.py        # Trade dataclass + trades.json 存储
-    │   ├── monitor.py          # 持仓监控：止损/退出通道警报、回撤状态自动推导
-    │   ├── entry_gate.py       # 入场合规闸门（高级违规拒绝，--force 留痕）
+    │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/import/sell-check/from-scan/add-position/sell
+    │   ├── trade_log.py        # Trade dataclass（含 关联单号/单位序号 可选字段）+ trades.json 存储
+    │   ├── monitor.py          # 持仓监控：止损/退出通道警报、移动止损建议（+1R保本/+2R卖1/3）、回撤状态自动推导
+    │   ├── entry_gate.py       # 入场合规闸门（单票/簇/组合总热度/市场状态门禁，高级违规拒绝，--force 留痕）
+    │   ├── pyramid.py          # 金字塔加仓纯函数（0.5N 触发判定复用回测同函数、统一止损上移、三档 40/30/30）
     │   ├── buy_card.py         # 建仓后自动生成买入卡（写入 vault 交易日志/）
     │   ├── positions.py        # 持仓视图、风险敞口、未实现盈亏（market.db 收盘价）
     │   ├── import_broker.py    # 券商成交导入（MD 表/CSV → FIFO 配对落库，不过入场闸门）
     │   ├── discipline_audit.py # 纪律自动审计（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
     │   ├── metrics.py / compliance_check.py / report_generator.py
-    ├── tests/                  # pytest 单元测试（231 用例）
+    ├── tests/                  # pytest 单元测试（315 用例）
     ├── data/                   # 数据存储（market.db、trades.json、公告与 LLM 缓存）
     └── output/                 # 报告输出（日报、扫描、持仓监控 JSON、回测图等）
 ```
@@ -87,10 +90,11 @@ cd "e:\Billion\Invest"
 pip install -r requirements.txt        # 安装依赖
 
 # —— 盘前工作流 ——
-python run_all.py                      # 一键：取数→热点池构建→扫描→持仓监控→信号结算→研究日报
+python run_all.py                      # 一键：取数→热点池构建→趋势池构建→扫描→持仓监控→信号结算→研究日报
 python run_all.py --skip-fetch         # 跳过取数（用已有数据库）
 python pipeline/run_daily.py           # 仅数据管道（取数 + 扫描，含持仓监控与信号入库）
 python pipeline/hot_pool.py            # 手动构建超短热点池（run_all 已自动执行）
+python pipeline/trend_pool.py          # 手动构建趋势动态池（强势板块成分股，run_all 已自动执行）
 python research/run_daily_report.py    # 仅研究日报
 python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发  # 单票⑧催化判定（调试用）
 
@@ -102,6 +106,8 @@ $env:ENABLE_SCHEDULER="true"           # 可选：每天 08:30（SCHEDULER_TIME�
 python review/cli.py from-scan 600519             # 只打印突破参数与建议（不落库）
 python review/cli.py from-scan 600519 --execute   # 一键建仓：仓位计算→合规闸门→写库→生成买入卡
 python review/cli.py add 600519 --account 核心 --system S1-A --entry 1800 --stop 1700 --risk 0.5 --shares 100
+python review/cli.py add-position 600519          # 金字塔加仓（0.5N 触发判定→落库子单→全链止损上移，--price 按实际成交价）
+python review/cli.py sell 600519 --shares 400 --price 108  # 卖出登记：部分卖出拆单；股数≥持仓即全平（自动算 R）
 python review/cli.py positions                    # 持仓摘要（未实现盈亏/风险敞口/回撤状态）
 python review/cli.py check                        # 手动合规检查（末尾附纪律审计摘要）
 python review/cli.py import --file 成交.md --year 2026 --dry-run   # 券商成交导入（先演练，--symbol-map 补名称映射）
@@ -109,11 +115,12 @@ python review/cli.py sell-check 600519            # 卖点检查单（卖出前�
 python position_calculator.py -s 600519 -e 1800 --stop 1700 -t 核心 --equity 1000000
 
 # —— 信号验证与复盘 ——
-python pipeline/signal_tracker.py stats --days 90  # 信号胜率/平均R/PF
+python pipeline/signal_tracker.py stats --days 90  # 信号胜率/平均R/PF + 市场状态分层
 python pipeline/signal_tracker.py settle           # 手动结算信号（盘前流程已自动执行）
 python review/cli.py weekly / monthly              # 周报/月报（含信号验证节）写入 vault【10】实盘记录/
 python review/cli.py stats                         # 终端统计 + 写【10】实盘记录/统计/
 python backtest/run_backtest.py --strategy S1-A --symbol 600519 --start 2020-01-01
+python backtest/run_batch.py --strategy S1-A --watchlist --start 2020-01-01  # 批量回测汇总（稳健性验证）
 
 # —— 测试 ——
 python -m pytest tests/ -v
@@ -139,7 +146,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 - **注释与文档使用中文**。部分业务数据结构直接使用中文键名/字段名（如 `review/trade_log.py` 的 `Trade` dataclass 字段为中文），保持一致，不要擅自英文化。
 - **模块独立可运行**：每个脚本都有 `if __name__ == "__main__"` CLI 入口，可单独调试；脚本/测试文件顶部用 `sys.path.insert(0, str(ROOT))` 定位项目根后再 `from config import ...`。
 - **优雅降级**：无 LLM Key、网络失败、数据源不可用时必须仍能输出原始数据或 fallback 模板，并在报告中标注；单只股票抓取失败不阻塞其他标的；持仓监控/信号追踪失败不得拖垮扫描与日报主流程。
-- **入场合规闸门**：所有写入 trades.json 的建仓路径（`add`、`from-scan --execute`）必须经 `review/entry_gate.py` 检查；新增建仓入口时同样接入，高级违规默认拒绝、`--force` 强制须在备注留痕。
+- **入场合规闸门**：所有写入 trades.json 的建仓路径（`add`、`from-scan --execute`、`add-position`）必须经 `review/entry_gate.py` 检查（单票/簇/组合总热度/市场状态门禁）；新增建仓入口时同样接入，高级违规默认拒绝、`--force` 强制须在备注留痕。
 - **公告防编造护栏**：未取得公告正文时禁止调用 LLM 分析（`announcement_fetcher.has_real_content` 判定），只列标题+链接并标注；LLM 输出不得出现无正文来源的精确数字。热点候选⑧催化判定（`research/catalyst_analyzer.py`）同样走 `has_real_content` 护栏。
 - **Obsidian 原生输出**：报告输出 Markdown + YAML frontmatter（`shared/utils.py` 的 `obsidian_frontmatter` / `write_markdown` / `df_to_markdown_table`），支持 wikilink 与标签检索。
 - **结构化双写**：机器可消费的结果（如市场扫描、持仓监控）同时输出 `.md`（人读）与 `.json`（`review/cli.py from-scan` 等程序化消费）。
@@ -150,7 +157,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **231 个用例**（指标 13 + 合规 12 + 持仓 8 + 监控 23 + 入场合规闸门 46 + 信号追踪 14 + 策略参数 19 + 回测 12 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18），已验证全部通过（`231 passed`，2026-08 复测）。
+- 框架：pytest，目录 `Invest/tests/`，共 **315 个用例**（指标 16 + 合规 12 + 持仓 8 + 监控 27 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 7 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1），已验证全部通过（`315 passed`，2026-08-06 复测）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。部分用例由参数化/动态生成（如 `test_compliance_gate.py` 46 例、`test_strategy_params.py`），统计以 `pytest --collect-only` 为准。
