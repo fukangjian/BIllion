@@ -18,6 +18,8 @@ from config import (
     CHANNEL_LONG,
     CHANNEL_SHORT,
     DEFAULT_INDEX_SYMBOL,
+    FALSE_BREAKOUT_COOLDOWN_DAYS,
+    FALSE_BREAKOUT_MAX,
     HOT_CATALYST_ENABLED,
     HOT_CATALYST_MAX,
     HOT_SIGNAL_SYSTEM,
@@ -33,13 +35,16 @@ from pipeline.database import (
     load_hot_pool,
     load_limit_pool,
     load_sector_quotes,
+    load_trend_pool,
     save_market_state,
 )
 from pipeline.indicators import (
     judge_market_state,
+    prepare_stock_indicators,
     rank_sectors_by_strength,
     scan_breakout_candidates,
 )
+from pipeline.trend_filters import evaluate_trend_filters, filters_brief
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +72,117 @@ def _run_position_monitor(output_dir: Path) -> dict | None:
         return None
 
 
+def _load_trend_pool_safe() -> pd.DataFrame:
+    """读取最新一期趋势池（未构建或读取失败时降级空表，扫描仅覆盖传入股票池）"""
+    try:
+        return load_trend_pool()
+    except Exception as e:
+        logger.warning("趋势池读取失败（趋势扫描仅覆盖传入股票池）: %s", e)
+        return pd.DataFrame()
+
+
+def _sector_rank_pct_map(sector_rank: pd.DataFrame) -> dict[str, float]:
+    """板块名 → 强度排名百分位（rank/总数，供三重滤网「板块共振」判定）"""
+    if sector_rank is None or sector_rank.empty:
+        return {}
+    total = len(sector_rank)
+    return {str(r["sector_name"]): float(r["rank"]) / total for _, r in sector_rank.iterrows()}
+
+
+def _enrich_breakout(
+    breakout: pd.DataFrame,
+    prepared: dict[str, pd.DataFrame],
+    sector_pct: dict[str, float],
+    pool_sector: dict[str, str],
+    system: str,
+    signal_date: str,
+    db_path=None,
+) -> pd.DataFrame:
+    """
+    突破候选附加三重滤网结果与系统1过滤附注（V5.0 §4.2/§4.3；逐股降级，单股失败不影响其他）：
+    - filters_passed/filters_required/filter_brief：滤网通过数与明细（pipeline/trend_filters）
+    - note：「滤网未全通过，仅观察/极小仓」「冷却中」「首仓建议降50%」等附注
+    - record：是否入库 signals 表（冷却期候选不入库，对应连续假突破移出可交易池 20 日）
+    """
+    if breakout.empty:
+        return breakout
+
+    from pipeline.signal_tracker import consecutive_stop_outs, last_signal_won
+
+    high_55_col = f"high_{CHANNEL_LONG}"
+    rows = []
+    for _, r in breakout.iterrows():
+        row = r.to_dict()
+        sym = row["symbol"]
+        try:
+            sector = pool_sector.get(sym, "")
+            pct = sector_pct.get(sector.split("+")[0]) if sector else None
+            filters = evaluate_trend_filters(prepared.get(sym), pct, system)
+            notes: list[str] = []
+            record = True
+            if not filters["all_passed"]:
+                notes.append("滤网未全通过，仅观察/极小仓")
+
+            if "S1" in system:
+                consec, last_exit = consecutive_stop_outs(sym, system, db_path=db_path)
+                cooled = (
+                    consec >= FALSE_BREAKOUT_MAX
+                    and last_exit
+                    and 0 <= (
+                        datetime.strptime(signal_date, "%Y-%m-%d")
+                        - datetime.strptime(last_exit, "%Y-%m-%d")
+                    ).days <= FALSE_BREAKOUT_COOLDOWN_DAYS
+                )
+                if cooled:
+                    notes.append(f"冷却中（连续假突破×{consec}，{FALSE_BREAKOUT_COOLDOWN_DAYS}日内不入库）")
+                    record = False
+                elif last_signal_won(sym, system, db_path=db_path):
+                    # 上次突破盈利且离 55 日新高较远（>1×ATR）：首仓建议降 50%（V5.0 §4.3 系统1过滤）
+                    s_df = prepared.get(sym)
+                    high_55 = None
+                    if s_df is not None and high_55_col in s_df.columns:
+                        v = s_df.iloc[-1][high_55_col]
+                        high_55 = float(v) if pd.notna(v) else None
+                    atr = float(row.get("atr_20") or 0)
+                    if high_55 and atr > 0 and (high_55 - float(row["close"])) > atr:
+                        notes.append("上次突破盈利且远离55日新高，首仓建议降50%")
+
+            row["filters_passed"] = filters["passed"]
+            row["filters_required"] = filters["required"]
+            row["filter_brief"] = filters_brief(filters)
+            row["note"] = "；".join(notes)
+            row["record"] = record
+        except Exception as e:
+            logger.warning("滤网评估失败 %s（降级为未评估，照常入库）: %s", sym, e)
+            row["note"] = row.get("note", "")
+            row["record"] = True
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def run_scan(
     symbols: list[str] | None = None,
     output_dir: Path | None = None,
 ) -> Path:
-    """执行完整市场扫描，生成 Markdown 报告"""
+    """执行完整市场扫描，生成 Markdown 报告（扫描池 = 传入 symbols ∪ 最新一期趋势池）"""
     init_database()
-    symbols = symbols or WATCHLIST
+    symbols = list(symbols or WATCHLIST)
     output_dir = output_dir or MARKET_SCAN_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
     today = datetime.now().strftime("%Y-%m-%d")
     report_path = output_dir / f"market_scan_{today}.md"
+
+    # 趋势动态池并入扫描池（成分股来自强势板块；池外个股板块滤网降级为无法判定）
+    trend_pool_df = _load_trend_pool_safe()
+    pool_sector: dict[str, str] = {}
+    if not trend_pool_df.empty:
+        for _, pr in trend_pool_df.iterrows():
+            pool_sector[str(pr["symbol"])] = str(pr.get("source_sector", "") or "")
+        extra = [s for s in pool_sector if s not in symbols]
+        if extra:
+            logger.info("趋势池并入扫描: +%d 只（总 %d 只）", len(extra), len(symbols) + len(extra))
+            symbols.extend(extra)
 
     symbols_data = {}
     for sym in symbols:
@@ -91,9 +195,15 @@ def run_scan(
         hs300_df = load_daily_quotes(symbol="000300")
 
     limit_stats = _load_limit_stats_from_db()
-    breakout_20 = scan_breakout_candidates(symbols_data, CHANNEL_SHORT)
-    breakout_55 = scan_breakout_candidates(symbols_data, CHANNEL_LONG)
+    prepared = {sym: prepare_stock_indicators(df) for sym, df in symbols_data.items()}
+    breakout_20 = scan_breakout_candidates(prepared, CHANNEL_SHORT)
+    breakout_55 = scan_breakout_candidates(prepared, CHANNEL_LONG)
     sector_rank = _build_sector_ranking(hs300_df)
+
+    # 三重滤网 + 系统1过滤附注（S1-A 冷却/降仓提示；滤网未全通过标注观察级）
+    sector_pct = _sector_rank_pct_map(sector_rank)
+    breakout_20 = _enrich_breakout(breakout_20, prepared, sector_pct, pool_sector, "S1-A", today)
+    breakout_55 = _enrich_breakout(breakout_55, prepared, sector_pct, pool_sector, "S2-A", today)
 
     state_info = judge_market_state(
         hs300_df,
@@ -134,14 +244,32 @@ def run_scan(
 
 
 def _record_breakout_signals(scan_json: dict, signal_date: str) -> None:
-    """突破候选写入 signals 表（信号验证）；失败降级不阻塞扫描"""
+    """突破候选写入 signals 表（信号验证）；失败降级不阻塞扫描。
+
+    冷却期候选（record=False）不入库；入库信号携带当日市场状态与滤网通过数，
+    供信号分层统计与复盘（V5.0 §4.2/§6）。
+    """
     try:
         from pipeline.signal_tracker import record_signals
 
-        n1 = record_signals(scan_json.get("breakout_s1a", []), system="S1-A", signal_date=signal_date)
-        n2 = record_signals(scan_json.get("breakout_s2a", []), system="S2-A", signal_date=signal_date)
+        state = scan_json.get("market_state")
+
+        def _eligible(key: str) -> list[dict]:
+            cands = []
+            for c in scan_json.get(key, []):
+                if not c.get("record", True):
+                    continue
+                c["market_state"] = state
+                cands.append(c)
+            return cands
+
+        n1 = record_signals(_eligible("breakout_s1a"), system="S1-A", signal_date=signal_date)
+        n2 = record_signals(_eligible("breakout_s2a"), system="S2-A", signal_date=signal_date)
         n3 = record_signals(
-            scan_json.get("hot_pool", {}).get("hot_breakout", []),
+            [
+                {**c, "market_state": state}
+                for c in scan_json.get("hot_pool", {}).get("hot_breakout", [])
+            ],
             system=HOT_SIGNAL_SYSTEM,
             signal_date=signal_date,
         )
@@ -152,19 +280,26 @@ def _record_breakout_signals(scan_json: dict, signal_date: str) -> None:
 
 
 def _df_to_breakout_list(df: pd.DataFrame) -> list[dict]:
-    """将突破候选 DataFrame 转为 JSON 可序列化列表"""
+    """将突破候选 DataFrame 转为 JSON 可序列化列表（含三重滤网与系统1附注）"""
     if df.empty:
         return []
     records = []
     for _, r in df.iterrows():
-        records.append({
+        rec = {
             "symbol": r["symbol"],
             "close": round(float(r["close"]), 2),
             "channel_high": round(float(r["channel_high"]), 2),
             "breakout_pct": round(float(r["breakout_pct"]), 2),
             "atr_20": round(float(r.get("atr_20", 0) or 0), 2),
             "period": int(r.get("period", 0)),
-        })
+        }
+        if "filters_passed" in r and pd.notna(r.get("filters_passed")):
+            rec["filter_passed"] = int(r["filters_passed"])
+            rec["filters_required"] = int(r.get("filters_required", 0) or 0)
+            rec["filter_brief"] = str(r.get("filter_brief", ""))
+            rec["note"] = str(r.get("note", ""))
+            rec["record"] = bool(r.get("record", True))
+        records.append(rec)
     return records
 
 
@@ -487,6 +622,23 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
     return result
 
 
+def _append_breakout_table(lines: list, df: pd.DataFrame) -> None:
+    """突破候选表格（含三重滤网通过数与系统1附注；未评估的行降级显示 —）"""
+    lines.append("| 代码 | 收盘价 | 通道高点 | 突破幅度% | ATR(20) | 滤网 | 备注 |")
+    lines.append("|------|--------|----------|-----------|---------|------|------|")
+    for _, r in df.iterrows():
+        fp = r.get("filters_passed")
+        if pd.notna(fp):
+            brief = f"{int(fp)}/{int(r.get('filters_required', 0) or 0)} {r.get('filter_brief', '')}"
+        else:
+            brief = "—"
+        note = r.get("note", "") or "—"
+        lines.append(
+            f"| {r['symbol']} | {r['close']:.2f} | {r['channel_high']:.2f} "
+            f"| {r['breakout_pct']:.2f} | {r.get('atr_20', 0):.2f} | {brief} | {note} |"
+        )
+
+
 def _format_report(
     date: str,
     state_info: dict,
@@ -550,26 +702,14 @@ def _format_report(
     if breakout_20.empty:
         lines.append("_暂无突破候选_")
     else:
-        lines.append("| 代码 | 收盘价 | 通道高点 | 突破幅度% | ATR(20) |")
-        lines.append("|------|--------|----------|-----------|---------|")
-        for _, r in breakout_20.iterrows():
-            lines.append(
-                f"| {r['symbol']} | {r['close']:.2f} | {r['channel_high']:.2f} "
-                f"| {r['breakout_pct']:.2f} | {r.get('atr_20', 0):.2f} |"
-            )
+        _append_breakout_table(lines, breakout_20)
 
     lines.extend(["", "---", "", "## 三、55日通道突破候选 (S2-A)", ""])
 
     if breakout_55.empty:
         lines.append("_暂无突破候选_")
     else:
-        lines.append("| 代码 | 收盘价 | 通道高点 | 突破幅度% | ATR(20) |")
-        lines.append("|------|--------|----------|-----------|---------|")
-        for _, r in breakout_55.iterrows():
-            lines.append(
-                f"| {r['symbol']} | {r['close']:.2f} | {r['channel_high']:.2f} "
-                f"| {r['breakout_pct']:.2f} | {r.get('atr_20', 0):.2f} |"
-            )
+        _append_breakout_table(lines, breakout_55)
 
     lines.extend(["", "---", "", "## 四、板块相对强度排名 (Top 15)", ""])
 
@@ -659,6 +799,8 @@ def _format_report(
         "3. 入场前请结合板块强度和市场状态调整仓位",
         "4. 使用 `position_calculator.py` 计算具体股数",
         "5. 超短热点池为 1-5 天交易候选来源（详见 vault《超短操作手册》），非买入指令",
+        "6. **滤网列**：三重滤网通过数（周线趋势 / 板块强度前20% / 量能确认，S2-A 另加 MA20>MA60）；"
+        "未全通过者按体系只可观察或极小仓测试。备注列含「冷却中」「首仓建议降50%」等系统1过滤附注（V5.0 §4.3）",
         "",
         "---",
         "_本报告由量化系统自动生成，仅供参考，不构成投资建议_",

@@ -253,6 +253,55 @@ def fetch_sector_daily(
     return pd.DataFrame()
 
 
+def fetch_sector_constituents(sector_name: str) -> pd.DataFrame:
+    """
+    行业板块成分股（趋势动态池原料），东财接口。
+
+    板块强度排名的板块名为同花顺口径，东财行业名存在差异（如 白酒→酿酒行业），
+    先按原名直查，失败/为空时用东财行业列表做包含式模糊匹配后重试；
+    仍失败返回空 DataFrame（调用方降级跳过该板块）。
+    返回列: symbol / name（6 位代码 + 名称）。
+    """
+
+    def _query(name: str) -> pd.DataFrame:
+        raw = retry_fetch(ak.stock_board_industry_cons_em, symbol=name)
+        return raw if raw is not None else pd.DataFrame()
+
+    try:
+        raw = _query(sector_name)
+        if raw.empty:
+            # 名称对齐：同花顺板块名 → 东财行业名（包含式模糊匹配）
+            em_names = retry_fetch(ak.stock_board_industry_name_em)
+            col = next((c for c in em_names.columns if "名称" in str(c)), em_names.columns[0])
+            candidates = [
+                n for n in em_names[col].astype(str)
+                if sector_name in n or n in sector_name
+            ]
+            for cand in candidates[:2]:
+                raw = _query(cand)
+                if not raw.empty:
+                    logger.info("板块 %s 按东财行业名 %s 匹配成功", sector_name, cand)
+                    break
+    except Exception as e:
+        logger.warning("板块成分股 %s 获取失败: %s", sector_name, e)
+        return pd.DataFrame(columns=["symbol", "name"])
+
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=["symbol", "name"])
+
+    code_col = next((c for c in raw.columns if "代码" in str(c)), None)
+    name_col = next((c for c in raw.columns if "名称" in str(c)), None)
+    if code_col is None:
+        logger.warning("板块成分股 %s 返回缺少代码列（实际列: %s）", sector_name, list(raw.columns))
+        return pd.DataFrame(columns=["symbol", "name"])
+
+    out = pd.DataFrame({
+        "symbol": raw[code_col].astype(str).str.extract(r"(\d{6})", expand=False),
+        "name": raw[name_col].astype(str) if name_col else "",
+    })
+    return out.dropna(subset=["symbol"]).reset_index(drop=True)
+
+
 def fetch_limit_stats(trade_date: Optional[str] = None) -> pd.DataFrame:
     """获取涨跌停及市场宽度统计"""
     if trade_date is None:

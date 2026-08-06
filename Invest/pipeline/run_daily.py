@@ -78,6 +78,21 @@ def main():
         logger.info("仅获取模式，退出")
         return
 
+    # 趋势池构建 + 日线补抓（强势板块成分股，趋势扫描候选来源；失败降级不阻塞扫描）
+    if not args.skip_fetch:
+        try:
+            from pipeline.trend_pool import build_trend_pool, sync_trend_pool_daily
+
+            tpool = build_trend_pool()
+            if tpool.empty:
+                logger.warning("趋势池为空（数据源降级），趋势扫描仅覆盖传入股票池")
+            else:
+                logger.info("趋势池构建完成: %d 只", len(tpool))
+                rows = sync_trend_pool_daily(tpool)
+                logger.info("趋势池日线补抓完成: %d 行", rows)
+        except Exception as e:
+            logger.warning("趋势池构建失败（已降级，不影响扫描）: %s", e)
+
     logger.info("开始市场扫描...")
     try:
         report_path = run_scan(

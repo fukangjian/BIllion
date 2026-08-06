@@ -140,6 +140,19 @@ HOT_POOL_MAX = 120          # 热点池总量上限（控制日线补抓量）
 HOT_HISTORY_DAYS = 90       # 热点池日线补抓长度（交易日目标，超短不需要长历史）
 HOT_SIGNAL_SYSTEM = "HOT-S"  # 超短热点信号系统标识（signals 表 system 列）
 
+# --- 趋势扫描动态池（pipeline/trend_pool.py，强势板块成分股，趋势候选来源；V5.0 §4.2 板块共振） ---
+TREND_SCAN_TOP_SECTORS = 5   # 相对强度前 N 的板块：取成分股入趋势池
+TREND_POOL_MAX = 300         # 趋势池总量上限（控制日线补抓量）
+TREND_HISTORY_DAYS = 120     # 趋势池日线补抓长度（交易日目标，覆盖 55 日通道 + 20 周均线）
+
+# --- 三重滤网（pipeline/trend_filters.py，V5.0 §4.2/§4.3 可量化部分） ---
+TREND_SECTOR_TOP_PCT = 0.20    # 板块相对强度排名前 20% 视为「板块共振」
+TREND_VOLUME_MEDIAN_DAYS = 20  # 量能确认：当日成交额 ≥ 过去 N 日成交额中位数（S1-A 入场条件②）
+
+# --- S1-A 系统1过滤（V5.0 §4.3，基于 signals 表历史结算记录） ---
+FALSE_BREAKOUT_MAX = 3           # 连续 N 次同标的假突破（止损退出）触发冷却
+FALSE_BREAKOUT_COOLDOWN_DAYS = 20  # 冷却自然日数（期内同标的同系统信号不再入库）
+
 # --- 候选催化分析（research/catalyst_analyzer.py，买入规则⑧事件/政策/业绩/技术突破/转型） ---
 HOT_CATALYST_ENABLED = os.getenv("HOT_CATALYST_ENABLED", "true").lower() == "true"  # 扫描时对热点候选做催化分析（联网，失败降级人工核对）
 HOT_CATALYST_MAX = 8         # 每日催化分析候选上限（按规则满足条数排序取前 N，控制耗时与 LLM 调用量）

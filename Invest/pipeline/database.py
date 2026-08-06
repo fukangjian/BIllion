@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS signals (
     exit_price      REAL,
     exit_reason     TEXT,
     r_multiple      REAL,
+    market_state    TEXT,
+    filter_passed   INTEGER,
+    note            TEXT,
     created_at      TEXT,
     PRIMARY KEY (signal_date, symbol, system)
 );
@@ -131,6 +134,14 @@ CREATE TABLE IF NOT EXISTS hot_pool (
     PRIMARY KEY (trade_date, symbol)
 );
 
+CREATE TABLE IF NOT EXISTS trend_pool (
+    trade_date    TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    name          TEXT,
+    source_sector TEXT,
+    PRIMARY KEY (trade_date, symbol)
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily_quotes(symbol);
 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_quotes(trade_date);
 CREATE INDEX IF NOT EXISTS idx_sector_date ON sector_quotes(trade_date);
@@ -138,7 +149,16 @@ CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_limit_pool_date ON limit_pool(trade_date);
 CREATE INDEX IF NOT EXISTS idx_hot_pool_date ON hot_pool(trade_date);
+CREATE INDEX IF NOT EXISTS idx_trend_pool_date ON trend_pool(trade_date);
 """
+
+
+def _migrate_signals_columns(conn: sqlite3.Connection) -> None:
+    """老库 signals 表补列（幂等）：market_state / filter_passed / note（2026-08 信号分层与滤网标注）"""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(signals)")}
+    for col, ddl in (("market_state", "TEXT"), ("filter_passed", "INTEGER"), ("note", "TEXT")):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {ddl}")
 
 
 def ensure_data_dir() -> None:
@@ -163,9 +183,10 @@ def get_connection(db_path: Optional[Path] = None):
 
 
 def init_database(db_path: Optional[Path] = None) -> None:
-    """初始化数据库表结构"""
+    """初始化数据库表结构（含老库列迁移）"""
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
+        _migrate_signals_columns(conn)
     logger.info("数据库初始化完成: %s", db_path or DB_PATH)
 
 
@@ -242,6 +263,13 @@ def save_hot_pool(df: pd.DataFrame, db_path: Optional[Path] = None) -> int:
         return 0
     with get_connection(db_path) as conn:
         return _replace_rows(conn, "hot_pool", df)
+
+
+def save_trend_pool(df: pd.DataFrame, db_path: Optional[Path] = None) -> int:
+    if df.empty:
+        return 0
+    with get_connection(db_path) as conn:
+        return _replace_rows(conn, "trend_pool", df)
 
 
 def save_dragon_tiger(df: pd.DataFrame, db_path: Optional[Path] = None) -> int:
@@ -341,6 +369,23 @@ def load_hot_pool(
         sql += " AND trade_date = ?"
         params.append(trade_date)
     sql += " ORDER BY trade_date DESC, lbc DESC, change_pct DESC"
+
+    with get_connection(db_path) as conn:
+        return pd.read_sql_query(sql, conn, params=params)
+
+
+def load_trend_pool(
+    trade_date: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """读取趋势池；trade_date 为 None 时取最新一期"""
+    if trade_date:
+        sql = "SELECT * FROM trend_pool WHERE trade_date = ? ORDER BY symbol"
+        params: list = [trade_date]
+    else:
+        sql = ("SELECT * FROM trend_pool "
+               "WHERE trade_date = (SELECT MAX(trade_date) FROM trend_pool) ORDER BY symbol")
+        params = []
 
     with get_connection(db_path) as conn:
         return pd.read_sql_query(sql, conn, params=params)

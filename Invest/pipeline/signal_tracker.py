@@ -55,6 +55,57 @@ def _max_holding_days(system: str) -> int:
     return SIGNAL_MAX_HOLDING_BY_SYSTEM.get(system, SIGNAL_MAX_HOLDING_DAYS)
 
 
+def consecutive_stop_outs(
+    symbol: str,
+    system: str,
+    db_path: Optional[Path] = None,
+) -> tuple[int, Optional[str]]:
+    """
+    最近连续止损次数与最近一次止损退出日（S1-A 系统1过滤：假突破计数，V5.0 §4.3）。
+    按 exit_date 倒序取同标的同系统已关闭信号，连续 exit_reason="止损" 的个数；
+    遇到非止损退出即中断。无历史返回 (0, None)。
+    """
+    init_database(db_path)
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "SELECT exit_reason, exit_date FROM signals "
+            "WHERE symbol = ? AND system = ? AND status = 'closed' "
+            "ORDER BY exit_date DESC LIMIT 10",
+            (symbol, system),
+        )
+        rows = cur.fetchall()
+
+    count = 0
+    last_date: Optional[str] = None
+    for reason, exit_date in rows:
+        if reason != "止损":
+            break
+        count += 1
+        if last_date is None:
+            last_date = exit_date
+    return count, last_date
+
+
+def last_signal_won(
+    symbol: str,
+    system: str,
+    db_path: Optional[Path] = None,
+) -> Optional[bool]:
+    """最近一次同标的同系统已关闭信号 R>0（系统1过滤：上次突破是否盈利）；无历史返回 None"""
+    init_database(db_path)
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "SELECT r_multiple FROM signals "
+            "WHERE symbol = ? AND system = ? AND status = 'closed' AND r_multiple IS NOT NULL "
+            "ORDER BY exit_date DESC LIMIT 1",
+            (symbol, system),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return float(row[0]) > 0
+
+
 def record_signals(
     candidates: list[dict],
     system: str,
@@ -95,8 +146,8 @@ def record_signals(
                 """
                 INSERT OR IGNORE INTO signals
                 (signal_date, symbol, system, entry_price, stop_price, channel_period,
-                 status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
+                 status, market_state, filter_passed, note, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
                 """,
                 (
                     signal_date,
@@ -105,6 +156,9 @@ def record_signals(
                     entry,
                     stop,
                     int(item.get("period", 0) or 0),
+                    item.get("market_state"),
+                    item.get("filter_passed"),
+                    item.get("note"),
                     created_at,
                 ),
             )
