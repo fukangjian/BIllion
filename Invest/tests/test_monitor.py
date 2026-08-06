@@ -340,3 +340,42 @@ class TestDeriveDrawdownState:
         log = _make_log(tmp_path, _loss_series(2, 12))
         dd = derive_drawdown_state(log)
         assert dd["conflict"] is False
+
+
+# ---------- 移动止损建议（V5.0 §7.4 具体化：+1R 保本 / +2R 兑现 1/3 + 保护位上移） ----------
+
+class TestTrailingStopAdvice:
+    def test_r1_suggests_breakeven(self, tmp_path):
+        """浮动R ≥ +1R 且止损仍低于成本 → 建议止损上移至成本价"""
+        log = _make_log(tmp_path, [_open_trade(入场价=100.0, 止损价=96.0)])
+        db = _make_db(tmp_path, {"600519": _quote_rows(last_close=105.0)})  # 浮动R=+1.25
+        result = check_positions(log, db_path=db)
+        assert len(result["alerts"]) == 1
+        assert result["alerts"][0]["类型"] == "移动止损建议"
+        assert "保本" in result["alerts"][0]["建议动作"]
+
+    def test_r2_suggests_take_profit_and_raise(self, tmp_path):
+        """浮动R ≥ +2R → 建议卖出 1/3，保护位上移至 +1R 位（入场价 + 每股风险）"""
+        log = _make_log(tmp_path, [_open_trade(入场价=100.0, 止损价=96.0)])
+        db = _make_db(tmp_path, {"600519": _quote_rows(last_close=109.0)})  # 浮动R=+2.25
+        result = check_positions(log, db_path=db)
+        assert len(result["alerts"]) == 1
+        a = result["alerts"][0]
+        assert a["类型"] == "移动止损建议"
+        assert "卖出 1/3" in a["建议动作"]
+        assert "104.00" in a["建议动作"]  # +1R 位 = 100 + 4
+
+    def test_stop_above_entry_no_advice(self, tmp_path):
+        """止损已在成本上方（加仓后统一上移过）→ 不再给移动止损建议"""
+        log = _make_log(tmp_path, [_open_trade(入场价=100.0, 止损价=101.0)])
+        db = _make_db(tmp_path, {"600519": _quote_rows(last_close=105.0)})
+        result = check_positions(log, db_path=db)
+        assert result["alerts"] == []
+        assert len(result["positions_ok"]) == 1
+
+    def test_hard_alert_not_overridden(self, tmp_path):
+        """跌破止损时硬警报优先，不给移动止损建议"""
+        log = _make_log(tmp_path, [_open_trade(入场价=100.0, 止损价=96.0)])
+        db = _make_db(tmp_path, {"600519": _quote_rows(last_close=95.0)})
+        result = check_positions(log, db_path=db)
+        assert result["alerts"][0]["类型"] == "止损"
