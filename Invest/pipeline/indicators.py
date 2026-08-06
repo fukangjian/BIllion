@@ -89,7 +89,9 @@ def calc_sector_relative_strength(
         on="trade_date",
         how="inner",
     )
-    merged["relative_strength"] = merged["sec_ret"] / merged["bench_ret"].replace(0, np.nan)
+    # 差值法（小数口径：0.03 = 板块跑赢基准 3 个百分点）：
+    # 原比值法 sec_ret / bench_ret 在基准涨幅为负或近 0 时符号失真，差值法语义稳定
+    merged["relative_strength"] = merged["sec_ret"] - merged["bench_ret"]
     return merged
 
 

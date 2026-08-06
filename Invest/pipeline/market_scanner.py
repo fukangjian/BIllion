@@ -576,11 +576,12 @@ def _format_report(
     if sector_rank.empty:
         lines.append("_暂无板块数据，请先运行数据获取_")
     else:
-        lines.append("| 排名 | 板块 | 相对强度 | 20日涨幅 |")
+        lines.append("| 排名 | 板块 | 相对强度(百分点) | 20日涨幅 |")
         lines.append("|------|------|----------|----------|")
         for _, r in sector_rank.head(15).iterrows():
             rs = r.get("relative_strength", 0)
-            rs_str = f"{rs:.2f}" if pd.notna(rs) else "N/A"
+            # 差值法口径：+5.0 = 板块 20 日涨幅跑赢基准 5 个百分点
+            rs_str = f"{rs*100:+.1f}" if pd.notna(rs) else "N/A"
             ret = r.get("period_return", 0)
             ret_str = f"{ret*100:.1f}%" if pd.notna(ret) else "N/A"
             lines.append(f"| {r['rank']} | {r['sector_name']} | {rs_str} | {ret_str} |")

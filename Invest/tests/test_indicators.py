@@ -114,6 +114,61 @@ class TestScanBreakoutCandidates:
         assert result.empty
 
 
+class TestSectorRelativeStrength:
+    """板块相对强度差值法口径：relative_strength = 板块20日涨幅 − 基准20日涨幅（小数）。
+
+    回归背景：原比值法 sec_ret / bench_ret 在基准涨幅为负或近 0 时符号失真
+    （如板块 +1% / 基准 −2% 会算出负值，把跑赢判成跑输）。
+    """
+
+    @staticmethod
+    def _make_series_df(start: float, step: float, n: int = 25) -> pd.DataFrame:
+        dates = pd.date_range("2026-01-01", periods=n, freq="B")
+        close = pd.Series(start + np.arange(n) * step, index=dates)
+        return pd.DataFrame({
+            "trade_date": dates.strftime("%Y-%m-%d"),
+            "close": close,
+            "change_pct": 0.0,
+        })
+
+    def test_difference_method_positive_benchmark(self):
+        """板块涨、基准也涨 → 差值 = 板块涨幅 − 基准涨幅（锁定差值语义）"""
+        from pipeline.indicators import calc_sector_relative_strength
+
+        sec = self._make_series_df(100.0, 5.0 / 24)    # 线性上行，斜率高于基准
+        bench = self._make_series_df(100.0, 2.0 / 24)
+        rs = calc_sector_relative_strength(sec, bench, period=20)
+        sec_ret = sec["close"].pct_change(20).iloc[-1]
+        bench_ret = bench["close"].pct_change(20).iloc[-1]
+        assert rs.iloc[-1]["relative_strength"] == pytest.approx(sec_ret - bench_ret)
+        assert rs.iloc[-1]["relative_strength"] > 0
+
+    def test_difference_method_negative_benchmark(self):
+        """板块小涨 / 基准下跌 → 差值 > 0（回归：原比值法 sec_ret/bench_ret 会失真为负值）"""
+        from pipeline.indicators import calc_sector_relative_strength
+
+        sec = self._make_series_df(100.0, 1.0 / 24)
+        bench = self._make_series_df(100.0, -2.0 / 24)
+        rs = calc_sector_relative_strength(sec, bench, period=20)
+        sec_ret = sec["close"].pct_change(20).iloc[-1]
+        bench_ret = bench["close"].pct_change(20).iloc[-1]
+        assert sec_ret > 0 > bench_ret  # 前提：板块涨、基准跌
+        assert rs.iloc[-1]["relative_strength"] == pytest.approx(sec_ret - bench_ret)
+        assert rs.iloc[-1]["relative_strength"] > 0
+
+    def test_rank_orders_by_difference(self):
+        """排名按差值降序：跑赢基准最多的板块排第一"""
+        from pipeline.indicators import rank_sectors_by_strength
+
+        bench = self._make_series_df(100.0, 0.0)  # 基准横盘
+        strong = self._make_series_df(100.0, 8.0 / 24)
+        weak = self._make_series_df(100.0, -4.0 / 24)
+        rank = rank_sectors_by_strength({"强板块": strong, "弱板块": weak}, bench, period=20)
+        assert rank.iloc[0]["sector_name"] == "强板块"
+        assert rank.iloc[0]["rank"] == 1
+        assert rank.iloc[1]["relative_strength"] < rank.iloc[0]["relative_strength"]
+
+
 class TestCalcMarketBreadth:
     """回归测试：calc_market_breadth 必须使用最新一天的宽度数据。
 
