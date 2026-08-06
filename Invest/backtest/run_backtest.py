@@ -121,6 +121,7 @@ def run_backtest(
     initial_cash: float = 1_000_000,
     commission: float = 0.0003,
     printlog: bool = False,
+    plot: bool = True,
 ) -> dict:
     end = end or datetime.now().strftime("%Y-%m-%d")
 
@@ -166,23 +167,26 @@ def run_backtest(
     equity_data = strat.analyzers.equity_curve.get_analysis()
     marker_data = strat.analyzers.trade_markers.get_analysis()
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    chart_path = OUTPUT_DIR / f"{strategy_name}_{symbol}_{start}_{end}.png"
-    try:
-        _plot_equity_curve(
-            equity_curve=equity_data.get("equity_curve", []),
-            markers=marker_data.get("markers", []),
-            chart_path=chart_path,
-            strategy_name=strategy_name,
-            symbol=symbol,
-            start=start,
-            end=end,
-            initial_cash=initial_cash,
-        )
-        stats["chart_path"] = str(chart_path)
-        logger.info("资金曲线已保存: %s", chart_path)
-    except Exception as e:
-        logger.warning("绘图失败: %s", e)
+    if plot:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        chart_path = OUTPUT_DIR / f"{strategy_name}_{symbol}_{start}_{end}.png"
+        try:
+            _plot_equity_curve(
+                equity_curve=equity_data.get("equity_curve", []),
+                markers=marker_data.get("markers", []),
+                chart_path=chart_path,
+                strategy_name=strategy_name,
+                symbol=symbol,
+                start=start,
+                end=end,
+                initial_cash=initial_cash,
+            )
+            stats["chart_path"] = str(chart_path)
+            logger.info("资金曲线已保存: %s", chart_path)
+        except Exception as e:
+            logger.warning("绘图失败: %s", e)
+            stats["chart_path"] = ""
+    else:
         stats["chart_path"] = ""
 
     return stats
@@ -326,7 +330,10 @@ def _extract_stats(strat, start_value: float, end_value: float, initial_cash: fl
         "win_rate": win_rate,
         "win_rate_pct": win_rate * 100,
         "profit_factor": profit_factor,
+        "gross_profit": gross_profit,   # 批量回测汇总 PF 用
+        "gross_loss": gross_loss,
         "avg_r": avg_r,
+        "r_count": len(r_multiples),    # 平均 R 的样本数（加权汇总用）
         "sharpe_ratio": sharpe,
     }
 
