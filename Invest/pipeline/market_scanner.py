@@ -81,6 +81,17 @@ def _load_trend_pool_safe() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _build_daily_plan_safe(scan_json: dict, monitor_result: dict | None) -> dict | None:
+    """盘前操作清单（pipeline/daily_plan），失败降级返回 None，不拖垮扫描"""
+    try:
+        from pipeline.daily_plan import build_daily_plan
+
+        return build_daily_plan(scan_json, monitor_result)
+    except Exception as e:
+        logger.warning("明日操作计划构建失败（已降级，报告不含该节）: %s", e)
+        return None
+
+
 def _sector_rank_pct_map(sector_rank: pd.DataFrame) -> dict[str, float]:
     """板块名 → 强度排名百分位（rank/总数，供三重滤网「板块共振」判定）"""
     if sector_rank is None or sector_rank.empty:
@@ -229,12 +240,16 @@ def run_scan(
     monitor_result = _run_position_monitor(output_dir)
     hot_section = _build_hot_section(today, sector_rank, state_info.get("state", ""))
 
-    md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols, monitor_result, hot_section)
+    scan_json = _build_scan_json(today, state_info, breakout_20, breakout_55, sector_rank, hot_section)
+    scan_json["position_monitor"] = monitor_result  # None 表示监控已降级
+    daily_plan = _build_daily_plan_safe(scan_json, monitor_result)
+    scan_json["daily_plan"] = daily_plan
+
+    md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols,
+                        monitor_result, hot_section, daily_plan)
     report_path.write_text(md, encoding="utf-8")
 
     json_path = output_dir / f"market_scan_{today}.json"
-    scan_json = _build_scan_json(today, state_info, breakout_20, breakout_55, sector_rank, hot_section)
-    scan_json["position_monitor"] = monitor_result  # None 表示监控已降级
     json_path.write_text(json.dumps(scan_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info("扫描报告已生成: %s", report_path)
@@ -648,6 +663,7 @@ def _format_report(
     symbols: list[str],
     monitor_result: dict | None = None,
     hot_section: dict | None = None,
+    daily_plan: dict | None = None,
 ) -> str:
     lines = [
         "# 每日市场扫描报告",
@@ -695,7 +711,22 @@ def _format_report(
         "",
         "---",
         "",
-        "## 二、20日通道突破候选 (S1-A)",
+    ])
+
+    # 明日操作计划（盘前操作清单）：渲染失败/构建失败均降级标注，不影响后续节
+    if daily_plan is None:
+        lines.extend(["## 二、明日操作计划", "", "_操作计划不可用（已降级跳过，详见日志）_", "", "---", ""])
+    else:
+        try:
+            from pipeline.daily_plan import daily_plan_to_markdown
+
+            lines.extend(daily_plan_to_markdown(daily_plan))
+            lines.extend(["---", ""])
+        except Exception as e:
+            lines.extend(["## 二、明日操作计划", "", f"_操作计划渲染失败（已降级）: {e}_", "", "---", ""])
+
+    lines.extend([
+        "## 三、20日通道突破候选 (S1-A)",
         "",
     ])
 
@@ -704,14 +735,14 @@ def _format_report(
     else:
         _append_breakout_table(lines, breakout_20)
 
-    lines.extend(["", "---", "", "## 三、55日通道突破候选 (S2-A)", ""])
+    lines.extend(["", "---", "", "## 四、55日通道突破候选 (S2-A)", ""])
 
     if breakout_55.empty:
         lines.append("_暂无突破候选_")
     else:
         _append_breakout_table(lines, breakout_55)
 
-    lines.extend(["", "---", "", "## 四、板块相对强度排名 (Top 15)", ""])
+    lines.extend(["", "---", "", "## 五、板块相对强度排名 (Top 15)", ""])
 
     if sector_rank.empty:
         lines.append("_暂无板块数据，请先运行数据获取_")
@@ -726,7 +757,7 @@ def _format_report(
             ret_str = f"{ret*100:.1f}%" if pd.notna(ret) else "N/A"
             lines.append(f"| {r['rank']} | {r['sector_name']} | {rs_str} | {ret_str} |")
 
-    lines.extend(["", "---", "", "## 五、超短热点池（1-5 天，HOT-S）", ""])
+    lines.extend(["", "---", "", "## 六、超短热点池（1-5 天，HOT-S）", ""])
 
     hot = hot_section or {}
     if not hot.get("available"):
@@ -792,7 +823,7 @@ def _format_report(
         "",
         "---",
         "",
-        "## 六、使用说明",
+        "## 七、使用说明",
         "",
         "1. 20日突破对应 **S1-A 快速系统**，10日通道退出",
         "2. 55日突破对应 **S2-A 慢速系统**，20日通道退出",
@@ -801,6 +832,8 @@ def _format_report(
         "5. 超短热点池为 1-5 天交易候选来源（详见 vault《超短操作手册》），非买入指令",
         "6. **滤网列**：三重滤网通过数（周线趋势 / 板块强度前20% / 量能确认，S2-A 另加 MA20>MA60）；"
         "未全通过者按体系只可观察或极小仓测试。备注列含「冷却中」「首仓建议降50%」等系统1过滤附注（V5.0 §4.3）",
+        "7. **明日操作计划**（第二节）：滤网全过候选自动带参考买入价/建议止损/建议股数/闸门预检结论，"
+        "持仓警报逐条转行动；清单是候选与参数，不是自动买入指令",
         "",
         "---",
         "_本报告由量化系统自动生成，仅供参考，不构成投资建议_",

@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 # 回撤状态严重度排序（数值越大越严重）
 _STATE_SEVERITY = {"Normal": 0, "Caution": 1, "Defensive": 2, "Review": 3}
 
-# 警报优先级：止损 > 退出 > 接近止损 > 移动止损建议（建议类，仅提示不改库）
-_ALERT_PRIORITY = {"止损": 0, "退出": 1, "接近止损": 2, "移动止损建议": 3}
+# 警报优先级：止损 > 无止损 > 退出 > 接近止损 > 移动止损建议（建议类，仅提示不改库）
+_ALERT_PRIORITY = {"止损": 0, "无止损": 1, "退出": 2, "接近止损": 3, "移动止损建议": 4}
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -78,6 +78,9 @@ def _check_single_position(trade: Trade, db_path: Optional[Path] = None) -> dict
     df = load_daily_quotes(symbol=sym, db_path=db_path)
     if df.empty:
         info["备注"] = "market.db 无该股行情，未检查"
+        if trade.止损价 <= 0:
+            info["类型"] = "无止损"
+            info["建议动作"] = "该持仓无止损价，监控保护失效：立即补设止损（update --stop）或卖出"
         return info
 
     df = df.sort_values("trade_date").reset_index(drop=True)
@@ -110,7 +113,11 @@ def _check_single_position(trade: Trade, db_path: Optional[Path] = None) -> dict
             info["通道下轨"] = channel_low
 
     # 警报判定（单持仓只报最高优先级一条）
-    if trade.止损价 > 0 and close <= trade.止损价:
+    if trade.止损价 <= 0:
+        # 无止损持仓（券商导入/手工补录缺止损）：止损/通道/R 监控全部失效，必须人工补位
+        info["类型"] = "无止损"
+        info["建议动作"] = "该持仓无止损价，监控保护失效：立即补设止损（update --stop）或卖出"
+    elif trade.止损价 > 0 and close <= trade.止损价:
         info["类型"] = "止损"
         info["建议动作"] = "收盘价已跌破止损价，按纪律立即退出"
     elif channel_low is not None and close < channel_low:

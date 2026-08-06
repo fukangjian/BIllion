@@ -153,6 +153,9 @@ TREND_VOLUME_MEDIAN_DAYS = 20  # 量能确认：当日成交额 ≥ 过去 N 日
 FALSE_BREAKOUT_MAX = 3           # 连续 N 次同标的假突破（止损退出）触发冷却
 FALSE_BREAKOUT_COOLDOWN_DAYS = 20  # 冷却自然日数（期内同标的同系统信号不再入库）
 
+# --- 盘前操作清单（pipeline/daily_plan.py，V5.0 盘前「只保留 3—5 只重点候选」） ---
+DAILY_PLAN_MAX_CANDIDATES = 5    # 明日操作计划买入候选上限（滤网全过者优先，按突破幅度排序）
+
 # --- 候选催化分析（research/catalyst_analyzer.py，买入规则⑧事件/政策/业绩/技术突破/转型） ---
 HOT_CATALYST_ENABLED = os.getenv("HOT_CATALYST_ENABLED", "true").lower() == "true"  # 扫描时对热点候选做催化分析（联网，失败降级人工核对）
 HOT_CATALYST_MAX = 8         # 每日催化分析候选上限（按规则满足条数排序取前 N，控制耗时与 LLM 调用量）
