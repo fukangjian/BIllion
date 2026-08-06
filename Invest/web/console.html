@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Invest 控制台</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f3f5f7; color: #1f2329; }
+  .topbar { background: #1a1d23; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+  .topbar h1 { font-size: 18px; font-weight: 600; letter-spacing: 1px; }
+  .topbar .sub { color: #8a919e; font-size: 12px; }
+  .topbar .spacer { flex: 1; }
+  .btn { border: none; border-radius: 6px; padding: 8px 18px; font-size: 13px; cursor: pointer; font-weight: 600; }
+  .btn-primary { background: #2f6bff; color: #fff; }
+  .btn-primary:disabled { background: #8a919e; cursor: wait; }
+  .btn-sm { padding: 4px 12px; font-size: 12px; border-radius: 5px; }
+  .btn-buy { background: #e8f3ec; color: #1a7f43; border: 1px solid #bfe3cd; }
+  .btn-sell { background: #fdeceb; color: #c0392b; border: 1px solid #f5c6c2; }
+  .btn-warn { background: #fff7e6; color: #b4690e; border: 1px solid #f0d9ab; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; }
+  .badge-A { background: #e8f3ec; color: #1a7f43; }
+  .badge-B { background: #e3edff; color: #2f6bff; }
+  .badge-C { background: #fff3d6; color: #b4690e; }
+  .badge-D { background: #fdeceb; color: #c0392b; }
+  .badge-Normal { background: #e8f3ec; color: #1a7f43; }
+  .badge-Caution, .badge-Defensive { background: #fff3d6; color: #b4690e; }
+  .badge-Review { background: #fdeceb; color: #c0392b; }
+  .badge-S2 { background: #e3edff; color: #2f6bff; }
+  .badge-S1 { background: #eef0f3; color: #4a5568; }
+  .badge-alert { background: #fdeceb; color: #c0392b; }
+  .container { max-width: 1360px; margin: 18px auto; padding: 0 20px 40px; }
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
+  .stat { background: #fff; border-radius: 10px; padding: 14px 18px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .stat .label { font-size: 12px; color: #8a919e; margin-bottom: 6px; }
+  .stat .value { font-size: 20px; font-weight: 700; }
+  .stat .extra { font-size: 12px; color: #8a919e; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+  .card { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom: 14px; }
+  .card-header { padding: 12px 18px; border-bottom: 1px solid #f0f1f3; display: flex; align-items: center; gap: 10px; }
+  .card-header h2 { font-size: 15px; font-weight: 600; }
+  .card-header .tag { font-size: 11px; color: #8a919e; }
+  .card-body { padding: 14px 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #8a919e; font-weight: 500; font-size: 12px; padding: 8px 10px; border-bottom: 1px solid #f0f1f3; }
+  td { padding: 9px 10px; border-bottom: 1px solid #f7f8f9; }
+  .num { font-variant-numeric: tabular-nums; }
+  .muted { color: #8a919e; }
+  .alert-box { display: flex; align-items: center; gap: 12px; background: #fdeceb; border: 1px solid #f5c6c2; border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; }
+  .alert-box .txt { flex: 1; font-size: 13px; }
+  .alert-box .txt b { color: #c0392b; }
+  .cond-list { font-size: 12.5px; color: #4a5568; line-height: 1.9; padding-left: 4px; }
+  .cond-list li { list-style: none; padding-left: 16px; position: relative; }
+  .cond-list li::before { content: "⛔"; position: absolute; left: 0; font-size: 10px; top: 3px; }
+  .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .form-row input, .form-row select { flex: 1; border: 1px solid #dfe3e8; border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+  .tab { padding: 5px 12px; font-size: 12px; border-radius: 6px; background: #f0f1f3; color: #4a5568; cursor: pointer; border: none; }
+  .tab.active { background: #1a1d23; color: #fff; }
+  .link-list a { display: block; padding: 8px 10px; border-radius: 6px; color: #2f6bff; text-decoration: none; font-size: 13px; cursor: pointer; }
+  .link-list a:hover { background: #f0f5ff; }
+  .risk-bar { background: #f0f1f3; border-radius: 4px; height: 8px; overflow: hidden; margin-top: 6px; }
+  .risk-fill { background: #2f6bff; height: 100%; }
+  #toast { position: fixed; top: 16px; right: 16px; z-index: 99; max-width: 460px; display: none; background: #1a1d23; color: #fff; border-radius: 8px; padding: 12px 16px; font-size: 13px; white-space: pre-wrap; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  #toast.err { background: #c0392b; }
+  #modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 98; }
+  #modal .box { background: #fff; max-width: 860px; max-height: 80vh; overflow: auto; margin: 6vh auto; border-radius: 10px; padding: 18px 22px; }
+  #modal pre { font-size: 12px; white-space: pre-wrap; line-height: 1.6; }
+  #modal .close { float: right; cursor: pointer; color: #8a919e; font-size: 18px; }
+  .force-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #b4690e; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Invest 控制台</h1>
+    <span class="sub" id="subtitle">盘前工作流</span>
+    <span class="spacer"></span>
+    <span class="badge" id="badge-market">市场状态 …</span>
+    <span class="badge" id="badge-dd">回撤 …</span>
+    <button class="btn btn-primary" id="btn-premarket">▶ 一键盘前</button>
+  </div>
+
+  <div class="container">
+    <div class="stat-row" id="stat-row"></div>
+    <div class="grid">
+      <div>
+        <div class="card">
+          <div class="card-header"><h2>📋 明日操作计划 — 买入候选</h2><span class="tag">滤网全过 · 止损/股数已按 calc_position 算好</span></div>
+          <div class="card-body" id="plan-buys"><span class="muted">加载中…</span></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>⚠️ 持仓行动</h2></div>
+          <div class="card-body" id="plan-actions"><span class="muted">加载中…</span></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>🚫 不交易条件</h2></div>
+          <div class="card-body"><ul class="cond-list" id="plan-notrade"></ul></div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-header"><h2>💼 持仓摘要</h2><span class="tag" id="pos-date"></span></div>
+          <div class="card-body" id="positions"><span class="muted">加载中…</span></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>⚡ 快捷操作</h2></div>
+          <div class="card-body">
+            <div class="tabs">
+              <button class="tab active" data-tab="add">建仓</button>
+              <button class="tab" data-tab="addpos">加仓</button>
+              <button class="tab" data-tab="sell">卖出</button>
+              <button class="tab" data-tab="sellcheck">卖点检查</button>
+            </div>
+            <div class="force-row"><input type="checkbox" id="force"> <label for="force">force：高级违规强制写入（备注留痕）</label></div>
+            <div id="form-area"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>📄 报告与复盘</h2></div>
+          <div class="card-body link-list">
+            <a onclick="showReport('scan')">今日市场扫描报告（含三重滤网明细）</a>
+            <a onclick="showReport('daily')">每日研究日报</a>
+            <a onclick="showReport('monitor')">持仓监控 JSON</a>
+            <a href="/latest-scan" target="_blank">/latest-scan（原始接口）</a>
+            <a href="/status" target="_blank">/status（运行状态）</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <div id="modal"><div class="box"><span class="close" onclick="closeModal()">✕</span><pre id="modal-text"></pre></div></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let OVERVIEW = {};
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = isErr ? "err" : "";
+  t.style.display = "block";
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.style.display = "none", 6000);
+}
+function closeModal() { $("modal").style.display = "none"; }
+function showModal(text) { $("modal-text").textContent = text; $("modal").style.display = "block"; }
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const detail = (data && data.detail && typeof data.detail === "object") ? data.detail : data;
+    const msg = (detail.high || []).join("\n") || detail.reason || data.detail || ("HTTP " + r.status);
+    const err = new Error(msg);
+    err.data = detail;
+    throw err;
+  }
+  return data;
+}
+function post(path, body) {
+  return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+}
+
+// ---------- 渲染 ----------
+
+function renderOverview(d) {
+  OVERVIEW = d;
+  const ms = d.market_state || "?";
+  const b = $("badge-market");
+  b.textContent = `市场状态 ${ms} · 建议仓位 ${d.suggested_pos || "-"}`;
+  b.className = "badge badge-" + ms;
+  const dd = $("badge-dd");
+  dd.textContent = `回撤 ${d.drawdown_state || "?"}`;
+  dd.className = "badge badge-" + (d.drawdown_state || "Normal");
+  $("subtitle").textContent = `数据日期 ${d.data_date || "-"}`;
+  const sig = d.signals || {};
+  $("stat-row").innerHTML = `
+    <div class="stat"><div class="label">市场状态</div><div class="value">${ms}</div><div class="extra">建议仓位 ${d.suggested_pos || "-"}</div></div>
+    <div class="stat"><div class="label">账户权益</div><div class="value num">¥${(d.equity || 0).toLocaleString()}</div><div class="extra">推导回撤 ${d.drawdown_pct ?? 0}%</div></div>
+    <div class="stat"><div class="label">当前持仓</div><div class="value num">${d.open_count ?? 0} 只</div><div class="extra">总风险敞口 ${d.total_risk_pct ?? 0}%</div></div>
+    <div class="stat"><div class="label">今日突破信号</div><div class="value num">${(sig["S1-A"] || 0) + (sig["S2-A"] || 0)}</div><div class="extra">S1-A ${sig["S1-A"] || 0} · S2-A ${sig["S2-A"] || 0} · 滤网全过 ${sig.filters_all_passed || 0}</div></div>`;
+}
+
+function renderPlan(d) {
+  if (!d.available) { $("plan-buys").innerHTML = `<span class="muted">${d.note || "无操作计划"}</span>`; $("plan-actions").innerHTML = ""; $("plan-notrade").innerHTML = ""; return; }
+  const buys = d.buy_candidates || [];
+  if (!buys.length) {
+    $("plan-buys").innerHTML = '<span class="muted">明日无滤网全过的突破候选——不交易也是操作。</span>';
+  } else {
+    const rows = buys.map(b => `
+      <tr>
+        <td><b>${b.symbol}</b> ${b.name || ""}</td>
+        <td><span class="badge badge-${b.system.startsWith("S2") ? "S2" : "S1"}">${b.system}</span></td>
+        <td class="num">${b.close.toFixed(2)}</td>
+        <td class="num">${b.stop.toFixed(2)}</td>
+        <td class="num">${b.shares}</td>
+        <td class="num">${b.risk_pct}%</td>
+        <td>${b.gate === "通过" ? "✅" : b.gate}</td>
+        <td><button class="btn btn-buy btn-sm" onclick="buyFromScan('${b.symbol}','${b.system}')">建仓</button></td>
+      </tr>`).join("");
+    $("plan-buys").innerHTML = `<table><thead><tr><th>代码/名称</th><th>系统</th><th class="num">参考价</th><th class="num">止损</th><th class="num">股数</th><th class="num">风险率</th><th>闸门预检</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  const acts = d.position_actions || [];
+  $("plan-actions").innerHTML = acts.length
+    ? acts.map(a => `
+      <div class="alert-box">
+        <div class="txt"><b>${a.股票名称 || ""} ${a.股票代码}（${a.交易编号}）— ${a.类型}</b><br>${a.行动}${a.现价 ? "。现价 " + a.现价 : ""}</div>
+        <button class="btn btn-warn btn-sm" onclick="updateStop('${a.交易编号}')">补/改止损</button>
+        <button class="btn btn-sell btn-sm" onclick="sellById('${a.交易编号}','${a.股票代码}')">卖出</button>
+      </div>`).join("")
+    : '<span class="muted">持仓无警报，按原计划持有。</span>';
+  $("plan-notrade").innerHTML = (d.no_trade_conditions || []).map(c => `<li>${c}</li>`).join("");
+}
+
+function renderPositions(d) {
+  $("pos-date").textContent = d.data_date ? `数据日期 ${d.data_date}` : "";
+  const rows = (d.positions || []).map(p => `
+    <tr>
+      <td><b>${p.股票代码}</b> ${p.股票名称 || ""}</td>
+      <td class="num">${p.现价 != null ? p.现价.toFixed(2) : "-"}</td>
+      <td class="num">${p.浮动R != null ? (p.浮动R >= 0 ? "+" : "") + p.浮动R.toFixed(2) : "-"}</td>
+      <td class="num">${p.未实现盈亏 != null ? (p.未实现盈亏 >= 0 ? "+" : "") + p.未实现盈亏.toLocaleString() : "-"}</td>
+      <td><button class="btn btn-sell btn-sm" onclick="sellById('${p.交易编号}','${p.股票代码}')">卖出</button></td>
+    </tr>`).join("");
+  const heat = d.total_risk_pct || 0, limit = d.heat_limit;
+  const pct = limit ? Math.min(heat / limit * 100, 100) : 0;
+  $("positions").innerHTML = (rows ? `<table><thead><tr><th>代码/名称</th><th class="num">现价</th><th class="num">浮动R</th><th class="num">盈亏</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<span class="muted">暂无持仓</span>')
+    + `<div class="muted" style="font-size:12px;margin-top:10px;">账户热度（未平仓风险合计）</div>
+       <div class="risk-bar"><div class="risk-fill" style="width:${pct}%"></div></div>
+       <div class="muted" style="font-size:11px;margin-top:4px;">${heat}% / ${d.market_state || "?"} 状态上限 ${limit ?? "-"}%</div>`;
+}
+
+// ---------- 操作 ----------
+
+async function buyFromScan(symbol, system) {
+  if (!confirm(`确认按扫描信号建仓 ${symbol}（${system}）？\n将自动过合规闸门。`)) return;
+  try {
+    const r = await post("/api/trades/from-scan", { symbol, system, force: $("force").checked });
+    toast(`✅ 建仓成功 ${r.交易编号}\n${symbol} ${r.system} 股数 ${r.calc?.股数 ?? ""}（买入卡已生成）${r.note ? "\n" + r.note : ""}`);
+    loadAll();
+  } catch (e) {
+    const v = (e.data && (e.data.high || []).join("\n")) || e.message;
+    toast(`⛔ 建仓被拒绝\n${v}`, true);
+  }
+}
+
+async function sellById(tradeId, symbol) {
+  const price = prompt(`卖出 ${symbol}（${tradeId}）\n输入卖出价：`);
+  if (price === null) return;
+  const shares = prompt("卖出股数（≥持仓股数即全平）：");
+  if (shares === null) return;
+  try {
+    const r = await post("/api/trades/sell", { symbol, id: tradeId, price: parseFloat(price), shares: parseInt(shares) });
+    toast(`✅ ${r.mode} 完成 ${r.交易编号}${r.R倍数 != null ? " R " + r.R倍数.toFixed(2) : ""}${r.子单 ? "\n子单 " + r.子单 : ""}`);
+    loadAll();
+  } catch (e) { toast(`⛔ 卖出失败：${e.message}`, true); }
+}
+
+async function updateStop(tradeId) {
+  const stop = prompt(`更新止损价（${tradeId}）：`);
+  if (stop === null) return;
+  try {
+    const r = await post("/api/trades/update-stop", { trade_id: tradeId, stop: parseFloat(stop) });
+    toast(`✅ 止损已更新 ${r.旧止损} → ${r.新止损}`);
+    loadAll();
+  } catch (e) { toast(`⛔ 失败：${e.message}`, true); }
+}
+
+const FORMS = {
+  add: `
+    <div class="form-row"><input id="f-symbol" placeholder="代码 600519"><select id="f-account"><option>产业</option><option>核心</option><option>事件</option><option>实验</option></select></div>
+    <div class="form-row"><input id="f-entry" type="number" placeholder="入场价"><input id="f-stop" type="number" placeholder="止损价"></div>
+    <div class="form-row"><select id="f-system"><option>S1-A</option><option>S2-A</option><option>STR-A</option><option>STR-B</option><option>STR-C</option><option>HOT-S</option></select><input id="f-risk" type="number" step="0.1" placeholder="风险率 %（如 0.5）"></div>
+    <div class="form-row"><input id="f-shares" type="number" placeholder="股数（100 整数倍）"><input id="f-name" placeholder="名称（可选）"></div>
+    <button class="btn btn-primary" style="width:100%" onclick="doAdd()">合规预检并建仓</button>
+    <div class="muted" style="font-size:11px;margin-top:8px;">自动过入场合规闸门（单票/簇/总热度/市场状态）</div>`,
+  addpos: `
+    <div class="form-row"><input id="f-symbol" placeholder="代码（需有未平仓首仓）"><input id="f-price" type="number" placeholder="成交价（默认最新收盘）"></div>
+    <button class="btn btn-primary" style="width:100%" onclick="doAddPos()">判定并加仓</button>
+    <div class="muted" style="font-size:11px;margin-top:8px;">0.5N 触发判定；成交后全链止损上移至新入场价−2N</div>`,
+  sell: `
+    <div class="form-row"><input id="f-symbol" placeholder="代码 600519"><input id="f-shares" type="number" placeholder="卖出股数"></div>
+    <div class="form-row"><input id="f-price" type="number" placeholder="卖出价"><input id="f-reason" placeholder="退出原因（可选）"></div>
+    <button class="btn btn-primary" style="width:100%" onclick="doSell()">登记卖出</button>
+    <div class="muted" style="font-size:11px;margin-top:8px;">股数 ≥ 持仓即全平（自动算 R）；部分卖出自动拆单</div>`,
+  sellcheck: `
+    <div class="form-row"><input id="f-symbol" placeholder="代码 600519"></div>
+    <button class="btn btn-primary" style="width:100%" onclick="doSellCheck()">生成卖点检查单</button>`,
+};
+
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  $("form-area").innerHTML = FORMS[t.dataset.tab];
+}));
+$("form-area").innerHTML = FORMS.add;
+
+async function doAdd() {
+  try {
+    const r = await post("/api/trades/add", {
+      symbol: $("f-symbol").value.trim(), account: $("f-account").value, system: $("f-system").value,
+      entry: parseFloat($("f-entry").value), stop: parseFloat($("f-stop").value),
+      risk: parseFloat($("f-risk").value), shares: parseInt($("f-shares").value),
+      name: $("f-name").value.trim(), force: $("force").checked,
+    });
+    toast(`✅ 建仓成功 ${r.交易编号}${r.note ? "\n" + r.note : ""}`);
+    loadAll();
+  } catch (e) {
+    const v = (e.data && (e.data.high || []).join("\n")) || e.message;
+    toast(`⛔ 建仓被拒绝\n${v}`, true);
+  }
+}
+async function doAddPos() {
+  try {
+    const body = { symbol: $("f-symbol").value.trim(), force: $("force").checked };
+    if ($("f-price").value) body.price = parseFloat($("f-price").value);
+    const r = await post("/api/trades/add-position", body);
+    toast(`✅ 加仓成功 ${r.交易编号}（单位${r.单位序号}，${r.股数}股）\n统一止损 ${r.统一止损价}，上移 ${r.止损上移.length} 笔`);
+    loadAll();
+  } catch (e) { toast(`⛔ 加仓未果：${e.data?.reason || e.message}`, true); }
+}
+async function doSell() {
+  try {
+    const r = await post("/api/trades/sell", {
+      symbol: $("f-symbol").value.trim(), shares: parseInt($("f-shares").value),
+      price: parseFloat($("f-price").value), reason: $("f-reason").value.trim(),
+    });
+    toast(`✅ ${r.mode} 完成 ${r.交易编号}${r.R倍数 != null ? " R " + r.R倍数.toFixed(2) : ""}${r.子单 ? "\n子单 " + r.子单 : ""}`);
+    loadAll();
+  } catch (e) { toast(`⛔ 卖出失败：${e.data?.reason || e.message}`, true); }
+}
+async function doSellCheck() {
+  try {
+    const r = await api("/api/sell-check/" + $("f-symbol").value.trim());
+    showModal(r.lines.join("\n"));
+  } catch (e) { toast(`⛔ 失败：${e.message}`, true); }
+}
+
+async function showReport(kind) {
+  try {
+    if (kind === "scan") { const r = await api("/latest-scan"); showModal(r.content || "无内容"); }
+    else if (kind === "daily") { const r = await api("/latest-report"); showModal(r.content || "无内容"); }
+    else { const r = await api("/api/positions"); showModal(JSON.stringify(r, null, 2)); }
+  } catch (e) { toast(`⛔ 读取失败：${e.message}`, true); }
+}
+
+$("btn-premarket").addEventListener("click", async () => {
+  const btn = $("btn-premarket");
+  btn.disabled = true; btn.textContent = "⏳ 盘前流程运行中（约 1-3 分钟）…";
+  try {
+    const r = await post("/pre-market", {});
+    toast(`✅ 盘前流程完成\n扫描: ${r.result?.scan?.output || "-"}`);
+    loadAll();
+  } catch (e) { toast(`⛔ 盘前流程失败：${e.message}`, true); }
+  btn.disabled = false; btn.textContent = "▶ 一键盘前";
+});
+
+async function loadAll() {
+  try { renderOverview(await api("/api/overview")); } catch (e) { toast("概览加载失败: " + e.message, true); }
+  try { renderPlan(await api("/api/plan")); } catch (e) { toast("操作计划加载失败: " + e.message, true); }
+  try { renderPositions(await api("/api/positions")); } catch (e) { toast("持仓加载失败: " + e.message, true); }
+}
+loadAll();
+</script>
+</body>
+</html>

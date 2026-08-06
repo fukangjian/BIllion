@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
@@ -227,6 +227,15 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 def root():
+    """Web 控制台页面（API 索引见 /api）"""
+    page = _ROOT / "web" / "console.html"
+    if page.exists():
+        return FileResponse(str(page))
+    return {"service": "Invest API", "note": "web/console.html 不存在", "endpoints": "/api"}
+
+
+@app.get("/api")
+def api_index():
     return {
         "service": "Invest API",
         "endpoints": [
@@ -236,8 +245,138 @@ def root():
             "GET /status",
             "GET /latest-scan",
             "GET /latest-report",
+            "GET /api/overview",
+            "GET /api/plan",
+            "GET /api/positions",
+            "GET /api/sell-check/{symbol}",
+            "POST /api/trades/add",
+            "POST /api/trades/from-scan",
+            "POST /api/trades/add-position",
+            "POST /api/trades/sell",
+            "POST /api/trades/update-stop",
         ],
     }
+
+
+# ---------- Web 控制台 API（review/trade_ops，写操作串行加锁） ----------
+
+_trade_lock = threading.Lock()
+
+
+@app.get("/api/overview")
+def api_overview():
+    from review.trade_ops import get_overview
+
+    return get_overview()
+
+
+@app.get("/api/plan")
+def api_plan():
+    from review.trade_ops import get_daily_plan
+
+    return get_daily_plan()
+
+
+@app.get("/api/positions")
+def api_positions():
+    from review.trade_ops import get_positions_view
+
+    return get_positions_view()
+
+
+@app.get("/api/sell-check/{symbol}")
+def api_sell_check(symbol: str):
+    from review.trade_ops import get_sell_check_lines
+
+    return get_sell_check_lines(symbol)
+
+
+@app.post("/api/trades/add")
+async def api_trade_add(request: Request):
+    from review.trade_ops import execute_add
+
+    p = await request.json()
+    with _trade_lock:
+        result = execute_add(
+            symbol=str(p.get("symbol", "")),
+            account=str(p.get("account", "")),
+            system=str(p.get("system", "")),
+            entry=float(p.get("entry", 0)),
+            stop=float(p.get("stop", 0)),
+            risk=float(p.get("risk", 0)),
+            shares=int(p.get("shares", 0)),
+            name=str(p.get("name", "")),
+            force=bool(p.get("force", False)),
+        )
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@app.post("/api/trades/from-scan")
+async def api_trade_from_scan(request: Request):
+    from review.trade_ops import execute_from_scan
+
+    p = await request.json()
+    with _trade_lock:
+        result = execute_from_scan(
+            symbol=str(p.get("symbol", "")),
+            system=p.get("system") or None,
+            account=p.get("account") or None,
+            force=bool(p.get("force", False)),
+        )
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@app.post("/api/trades/add-position")
+async def api_trade_add_position(request: Request):
+    from review.trade_ops import execute_add_position
+
+    p = await request.json()
+    with _trade_lock:
+        result = execute_add_position(
+            symbol=str(p.get("symbol", "")),
+            price=float(p["price"]) if p.get("price") else None,
+            force=bool(p.get("force", False)),
+        )
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@app.post("/api/trades/sell")
+async def api_trade_sell(request: Request):
+    from review.trade_ops import execute_sell
+
+    p = await request.json()
+    with _trade_lock:
+        result = execute_sell(
+            symbol=str(p.get("symbol", "")),
+            shares=int(p.get("shares", 0)),
+            price=float(p.get("price", 0)),
+            trade_id=p.get("id") or None,
+            reason=str(p.get("reason", "")),
+        )
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@app.post("/api/trades/update-stop")
+async def api_trade_update_stop(request: Request):
+    from review.trade_ops import execute_update_stop
+
+    p = await request.json()
+    with _trade_lock:
+        result = execute_update_stop(
+            trade_id=str(p.get("trade_id", "")),
+            stop=float(p.get("stop", 0)),
+        )
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
 
 
 @app.post("/pre-market")
