@@ -16,6 +16,12 @@ import review.cli as cli
 from review.trade_log import TradeLog
 
 
+@pytest.fixture(autouse=True)
+def _pin_market_state(monkeypatch):
+    """固定市场状态为 A（建仓闸门的市场状态检查不依赖真实 market.db）"""
+    monkeypatch.setattr("review.entry_gate.get_latest_market_state", lambda db_path=None: "A")
+
+
 def _patch_log(tmp_path, monkeypatch, trades: list[dict]) -> Path:
     f = tmp_path / "trades.json"
     f.write_text(json.dumps(trades, ensure_ascii=False, indent=2), encoding="utf-8")

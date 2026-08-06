@@ -31,6 +31,12 @@ from config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_market_state(monkeypatch):
+    """固定市场状态为 A（建仓闸门的市场状态检查不依赖真实 market.db）"""
+    monkeypatch.setattr("review.entry_gate.get_latest_market_state", lambda db_path=None: "A")
+
+
 # ---------- 参数收敛：config 单一来源 ----------
 
 class TestStrategyParamsConfig:

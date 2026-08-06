@@ -37,6 +37,12 @@ def _patch_cli(tmp_path, monkeypatch):
     return log_file, card_dir
 
 
+@pytest.fixture(autouse=True)
+def _pin_market_state(monkeypatch):
+    """固定市场状态为 A（建仓闸门的市场状态检查不依赖真实 market.db）"""
+    monkeypatch.setattr("review.entry_gate.get_latest_market_state", lambda db_path=None: "A")
+
+
 def _add_args(**kw) -> SimpleNamespace:
     defaults = dict(
         symbol="600519", name="测试股", date="2026-07-29", account="核心",
