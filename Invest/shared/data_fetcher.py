@@ -18,7 +18,7 @@ import akshare as ak
 import pandas as pd
 
 from config import FETCH_MAX_WORKERS, SECTOR_FETCH_LIMIT, WATCHLIST
-from shared.utils import retry_fetch
+from shared.utils import bypass_proxy, retry_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -253,14 +253,98 @@ def fetch_sector_daily(
     return pd.DataFrame()
 
 
-def fetch_sector_constituents(sector_name: str) -> pd.DataFrame:
-    """
-    行业板块成分股（趋势动态池原料），东财接口。
+def _ths_request_headers() -> dict:
+    """同花顺 hexin-v 反爬 cookie（akshare 自带 ths.js + py_mini_racer 计算，与行业一览同机制）"""
+    import akshare
+    from py_mini_racer import MiniRacer
 
-    板块强度排名的板块名为同花顺口径，东财行业名存在差异（如 白酒→酿酒行业），
-    先按原名直查，失败/为空时用东财行业列表做包含式模糊匹配后重试；
-    仍失败返回空 DataFrame（调用方降级跳过该板块）。
-    返回列: symbol / name（6 位代码 + 名称）。
+    js = MiniRacer()
+    ths_js = Path(akshare.__file__).parent / "stock_feature" / "ths.js"
+    js.eval(ths_js.read_text(encoding="utf-8"))
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+        "Cookie": f"v={js.call('v')}",
+    }
+
+
+def _fetch_sector_constituents_ths(sector_name: str) -> pd.DataFrame:
+    """
+    同花顺行业成分股（直连 q.10jqka.com.cn；板块名与 sector_quotes 同为同花顺口径，无需映射）。
+    返回列: symbol / name；任何一步失败返回空 DataFrame（由调用方降级到东财）。
+    """
+    import re
+
+    import requests
+
+    try:
+        names = retry_fetch(ak.stock_board_industry_name_ths)
+        match = names[names["name"] == sector_name]
+        if match.empty:
+            cand = names[names["name"].astype(str).apply(
+                lambda n: sector_name in n or n in sector_name)]
+            if cand.empty:
+                logger.warning("同花顺行业名录无 %s（跳过）", sector_name)
+                return pd.DataFrame(columns=["symbol", "name"])
+            match = cand.head(1)
+        code = str(match.iloc[0]["code"])
+        headers = _ths_request_headers()
+
+        frames = []
+        with bypass_proxy():
+            # 第 1 页：详情页 HTML（含成分股表格与 page_info 总页数）
+            r = requests.get(f"https://q.10jqka.com.cn/thshy/detail/code/{code}/",
+                             headers=headers, timeout=10)
+            tables = pd.read_html(r.text)
+            if not tables:
+                return pd.DataFrame(columns=["symbol", "name"])
+            frames.append(tables[0])
+            m = re.search(r"page_info[^>]*>\s*\d+/(\d+)", r.text)
+            total_pages = min(int(m.group(1)), 15) if m else 1  # 15 页≈300 只，对齐 TREND_POOL_MAX
+            for page in range(2, total_pages + 1):
+                url = (f"http://q.10jqka.com.cn/thshy/detail/code/{code}/"
+                       f"field/199112/order/desc/page/{page}/ajax/1/")
+                # 逐页容错：THS 偶发断连/cookie 中途失效（401），重试前重建 cookie
+                for attempt in range(2):
+                    if attempt > 0:
+                        time.sleep(1)
+                        try:
+                            headers = _ths_request_headers()
+                        except Exception:
+                            pass
+                    try:
+                        rp = requests.get(url, headers=headers, timeout=10)
+                        if rp.status_code == 200:
+                            tp = pd.read_html(rp.text)
+                            if tp and not tp[0].empty:
+                                frames.append(tp[0])
+                            break
+                        logger.warning("同花顺成分 %s 第 %d 页 HTTP %s", sector_name, page, rp.status_code)
+                    except Exception as e:
+                        logger.warning("同花顺成分 %s 第 %d 页失败（尝试 %d/2）: %s",
+                                       sector_name, page, attempt + 1, e)
+                time.sleep(0.5)  # 页间限速，降低断连概率
+
+        if not frames:
+            return pd.DataFrame(columns=["symbol", "name"])
+        raw = pd.concat(frames, ignore_index=True)
+        out = pd.DataFrame({
+            "symbol": raw["代码"].astype(str).str.extract(r"(\d{6})", expand=False),
+            "name": raw["名称"].astype(str),
+        })
+        out = out.dropna(subset=["symbol"]).drop_duplicates("symbol").reset_index(drop=True)
+        logger.info("同花顺成分股 %s: %d 只", sector_name, len(out))
+        return out
+    except Exception as e:
+        logger.warning("同花顺成分股 %s 获取失败: %s", sector_name, e)
+        return pd.DataFrame(columns=["symbol", "name"])
+
+
+def _fetch_sector_constituents_em(sector_name: str) -> pd.DataFrame:
+    """
+    东财行业成分股（push2 接口，曾被 IP 风控时不可用；作为同花顺的备用源）。
+    板块名为同花顺口径，东财行业名存在差异（如 白酒→酿酒行业），
+    先按原名直查，失败/为空时用东财行业列表做包含式模糊匹配后重试。
     """
 
     def _query(name: str) -> pd.DataFrame:
@@ -283,7 +367,7 @@ def fetch_sector_constituents(sector_name: str) -> pd.DataFrame:
                     logger.info("板块 %s 按东财行业名 %s 匹配成功", sector_name, cand)
                     break
     except Exception as e:
-        logger.warning("板块成分股 %s 获取失败: %s", sector_name, e)
+        logger.warning("东财成分股 %s 获取失败: %s", sector_name, e)
         return pd.DataFrame(columns=["symbol", "name"])
 
     if raw is None or raw.empty:
@@ -292,7 +376,7 @@ def fetch_sector_constituents(sector_name: str) -> pd.DataFrame:
     code_col = next((c for c in raw.columns if "代码" in str(c)), None)
     name_col = next((c for c in raw.columns if "名称" in str(c)), None)
     if code_col is None:
-        logger.warning("板块成分股 %s 返回缺少代码列（实际列: %s）", sector_name, list(raw.columns))
+        logger.warning("东财成分股 %s 返回缺少代码列（实际列: %s）", sector_name, list(raw.columns))
         return pd.DataFrame(columns=["symbol", "name"])
 
     out = pd.DataFrame({
@@ -300,6 +384,19 @@ def fetch_sector_constituents(sector_name: str) -> pd.DataFrame:
         "name": raw[name_col].astype(str) if name_col else "",
     })
     return out.dropna(subset=["symbol"]).reset_index(drop=True)
+
+
+def fetch_sector_constituents(sector_name: str) -> pd.DataFrame:
+    """
+    行业板块成分股（趋势动态池原料），双源 fallback：
+    同花顺直连优先（板块名同口径无需映射），东财备用（push2，风控期不可用）。
+    仍失败返回空 DataFrame（调用方降级跳过该板块）。
+    返回列: symbol / name（6 位代码 + 名称）。
+    """
+    df = _fetch_sector_constituents_ths(sector_name)
+    if not df.empty:
+        return df
+    return _fetch_sector_constituents_em(sector_name)
 
 
 def fetch_limit_stats(trade_date: Optional[str] = None) -> pd.DataFrame:

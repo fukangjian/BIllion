@@ -38,7 +38,7 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── indicators.py       # Donchian 通道、ATR、市场状态 A/B/C/D、板块相对强度（差值法）
     │   ├── market_scanner.py   # 市场扫描（池=WATCHLIST∪趋势池，突破×三重滤网×系统1过滤）+ 持仓监控区块 + 超短热点区块，同写 MD + JSON
     │   ├── hot_pool.py         # 超短热点池：涨停/连板/炸板+强板块领涨股，构建与日线补抓
-    │   ├── trend_pool.py       # 趋势动态池：强势板块 Top5 成分股（东财，名称模糊匹配）→ 剔除创业板 → 入池补抓
+    │   ├── trend_pool.py       # 趋势动态池：强势板块 Top5 成分股（双源：同花顺直连优先/东财备用）→ 剔除创业板 → 入池补抓
     │   ├── trend_filters.py    # 三重滤网量化纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）
     │   ├── signal_tracker.py   # 信号追踪：突破信号入库（含市场状态/滤网/附注）、每日结算、胜率/平均R + 市场状态分层统计
     │   └── run_daily.py        # CLI 入口
@@ -61,7 +61,7 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── import_broker.py    # 券商成交导入（MD 表/CSV → FIFO 配对落库，不过入场闸门）
     │   ├── discipline_audit.py # 纪律自动审计（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
     │   ├── metrics.py / compliance_check.py / report_generator.py
-    ├── tests/                  # pytest 单元测试（315 用例）
+    ├── tests/                  # pytest 单元测试（318 用例）
     ├── data/                   # 数据存储（market.db、trades.json、公告与 LLM 缓存）
     └── output/                 # 报告输出（日报、扫描、持仓监控 JSON、回测图等）
 ```
@@ -157,7 +157,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **315 个用例**（指标 16 + 合规 12 + 持仓 8 + 监控 27 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 7 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1），已验证全部通过（`315 passed`，2026-08-06 复测）。
+- 框架：pytest，目录 `Invest/tests/`，共 **318 个用例**（指标 16 + 合规 12 + 持仓 8 + 监控 27 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 10 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1），已验证全部通过（`318 passed`，2026-08-06 复测）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。部分用例由参数化/动态生成（如 `test_compliance_gate.py` 46 例、`test_strategy_params.py`），统计以 `pytest --collect-only` 为准。

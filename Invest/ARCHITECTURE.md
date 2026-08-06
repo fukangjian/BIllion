@@ -54,7 +54,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测等（315 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测等（318 用例） |
 
 ---
 
@@ -526,7 +526,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 #### `trend_pool.py` — 趋势动态池（S1-A/S2-A 候选来源）
 
-**职责**：每日盘前构建趋势扫描动态池：板块相对强度 Top `TREND_SCAN_TOP_SECTORS`(5) → 东财行业成分股（`fetch_sector_constituents`，同花顺板块名→东财名包含式模糊匹配）→ 剔除 `BANNED_BOARD_PREFIXES`（创业板 300/301）→ 截断 `TREND_POOL_MAX`(300) 写 `trend_pool` 表 → 并行补抓池内个股近 `TREND_HISTORY_DAYS`(120) 个交易日日线。单板块/单股失败降级跳过，不阻塞主流程。
+**职责**：每日盘前构建趋势扫描动态池：板块相对强度 Top `TREND_SCAN_TOP_SECTORS`(5) → 行业成分股（**双源**：同花顺直连优先——板块名与 sector_quotes 同口径无需映射，东财备用——名称包含式模糊匹配）→ 剔除 `BANNED_BOARD_PREFIXES`（创业板 300/301）→ 截断 `TREND_POOL_MAX`(300) 写 `trend_pool` 表 → 并行补抓池内个股近 `TREND_HISTORY_DAYS`(120) 个交易日日线。单板块/单股失败降级跳过，不阻塞主流程。
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
@@ -536,7 +536,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `_merge_trend_pool` | `(cons_df) -> pd.DataFrame` | 纯函数：剔除创业板前缀、按代码去重（多板块归属以「+」连接）、截断上限 |
 | `main` | `() -> None` | CLI：`python pipeline/trend_pool.py` |
 
-**已知限制**：东财成分股接口走 push2 行情推送，本机 IP 曾被持续风控重置（见 13.5）——构建失败时趋势池为空、扫描退回 WATCHLIST，接口恢复后自动生效。
+**已知限制**：同花顺成分分页 ajax 在第 9 页起触发硬反爬（chameleon 挑战，换 cookie/降速均无效），单板块最多取前 8 页（≈160 只，按当日涨幅排序，趋势候选足够）；东财成分接口走 push2 行情推送（本机 IP 曾被风控，见 13.5）作备用源。双源全失败时趋势池为空、扫描退回 WATCHLIST。
 
 #### `trend_filters.py` — 三重滤网量化（V5.0 §4.2/§4.3）
 
@@ -1113,7 +1113,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 315 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 318 passed |
 
 ### 10.4 模块联动点
 
@@ -1325,7 +1325,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | # | 方向 | 实现方式 |
 |---|------|----------|
 | 0 | 口径修正 | 回测单位止损入场时锁定（原每根 bar 用当前 ATR 重算会漂移），与信号结算/实盘监控一致；`ATRIndicator` 首值种子越界读取修正；板块相对强度改差值法（基准涨幅为负时比值法符号失真）；`MAX_UNITS` 4→3 对齐 V5.0 §5.5 三档 |
-| 1 | 信号层 | `pipeline/trend_pool.py`：板块强度 Top 5 → 东财成分股（名称模糊匹配）→ 剔除创业板 → `trend_pool` 表 → 补抓 120 交易日日线（push2 风控期降级仅 WATCHLIST）；`pipeline/trend_filters.py` 三重滤网纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）；扫描器候选附滤网通过数与系统1附注（连续3次假突破冷却20日不入库、上次盈利远离55日新高首仓降50%）；signals 表加 `market_state`/`filter_passed`/`note`（老库幂等迁移） |
+| 1 | 信号层 | `pipeline/trend_pool.py`：板块强度 Top 5 → 行业成分股（双源：同花顺直连优先、东财备用，深页反爬单板块限前 8 页）→ 剔除创业板 → `trend_pool` 表 → 补抓 120 交易日日线；`pipeline/trend_filters.py` 三重滤网纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）；扫描器候选附滤网通过数与系统1附注（连续3次假突破冷却20日不入库、上次盈利远离55日新高首仓降50%）；signals 表加 `market_state`/`filter_passed`/`note`（老库幂等迁移） |
 | 2 | 执行层 | `Trade` 加 `关联单号`/`单位序号`；`review/pyramid.py` 加仓纯函数（复用回测 `next_add_action`）；`cli add-position`（触发判定→回撤非 Normal 拒绝→闸门→落库→全链止损上移）；`cli sell` 分批卖出拆单（原单减股数+已平仓子单，R 独立、股数守恒）；monitor 移动止损建议（+1R 保本/+2R 卖 1/3，建议类警报最低优先级） |
 | 3 | 组合风控 | `PORTFOLIO_HEAT_LIMITS`（A4/B3/C1.5/D0）接入建仓闸门：总热度超限高级违规；D 状态禁新开趋势仓（高）、C 中级警告；存量审计不适用；`signal_stats` 增 `by_state` 市场状态分层，周/月报自动携带 |
 | 4 | 批量回测 | `backtest/run_batch.py`：标的×策略批量回测（单标的失败不中断），汇总整体胜率/PF/加权平均R/样本充足性（≥50 笔门槛），MD+JSON 双写；`run_backtest` 加 `plot` 开关与汇总字段；首跑 WATCHLIST×S1-A（2023 至今）122 笔胜率 27.9%/PF 0.76/平均R −0.25——无滤网大盘股池期望为负，印证滤网与动态池价值；组合级回测留作后续扩展 |
@@ -1562,7 +1562,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（315 用例，全部离线）</summary>
+<summary>tests/（318 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 12 用例
@@ -1580,7 +1580,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_metrics.py` — 3 用例（总盈亏金额/胜率金额口径/无止损交易）
 - `test_hot_rules.py` — 17 用例（量比/逐规则真值表/集成 mock 含 `_analyze_catalysts_safe`）
 - `test_catalyst_analyzer.py` — 18 用例（parse_verdict/关键词筛选/无公告/无 Key/无正文护栏/LLM 成功与失败降级/规则⑧接入/集成）
-- `test_trend_pool.py` — 7 用例（合并去重/剔除创业板/截断/构建入库/最新期读取）
+- `test_trend_pool.py` — 10 用例（合并去重/剔除创业板/截断/构建入库/最新期读取）
 - `test_trend_filters.py` — 17 用例（四滤网真值/必需项计数/brief 文本）
 - `test_pyramid.py` — 13 用例（单位链/触发判定/跳空不追/统一止损/加仓股数）
 - `test_partial_exit.py` — 8 用例（全平 R/拆单/股数守恒/指定单位卖出/加仓全流程）

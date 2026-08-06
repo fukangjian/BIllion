@@ -118,3 +118,42 @@ class TestBuildTrendPool:
         with get_connection(db) as conn:
             n = conn.execute("SELECT COUNT(*) FROM trend_pool").fetchone()[0]
         assert n == 0
+
+
+# ---------- 成分股双源 fallback（同花顺优先，东财备用） ----------
+
+class TestFetchSectorConstituentsFallback:
+    def test_ths_primary_used_when_available(self, monkeypatch):
+        """同花顺有数据时直接返回，不调东财"""
+        import shared.data_fetcher as df_mod
+
+        ths_df = pd.DataFrame({"symbol": ["600519"], "name": ["贵州茅台"]})
+        monkeypatch.setattr(df_mod, "_fetch_sector_constituents_ths", lambda name: ths_df)
+
+        def _em_should_not_run(name):  # pragma: no cover - 断言用
+            raise AssertionError("不应调用东财")
+
+        monkeypatch.setattr(df_mod, "_fetch_sector_constituents_em", _em_should_not_run)
+        out = df_mod.fetch_sector_constituents("白酒")
+        assert out["symbol"].tolist() == ["600519"]
+
+    def test_em_fallback_when_ths_empty(self, monkeypatch):
+        """同花顺为空 → 自动降级东财"""
+        import shared.data_fetcher as df_mod
+
+        monkeypatch.setattr(df_mod, "_fetch_sector_constituents_ths",
+                            lambda name: pd.DataFrame(columns=["symbol", "name"]))
+        monkeypatch.setattr(df_mod, "_fetch_sector_constituents_em",
+                            lambda name: pd.DataFrame({"symbol": ["000858"], "name": ["五粮液"]}))
+        out = df_mod.fetch_sector_constituents("白酒")
+        assert out["symbol"].tolist() == ["000858"]
+
+    def test_both_fail_returns_empty(self, monkeypatch):
+        """双源全失败 → 空表（调用方降级跳过该板块，不阻塞）"""
+        import shared.data_fetcher as df_mod
+
+        empty = pd.DataFrame(columns=["symbol", "name"])
+        monkeypatch.setattr(df_mod, "_fetch_sector_constituents_ths", lambda name: empty)
+        monkeypatch.setattr(df_mod, "_fetch_sector_constituents_em", lambda name: empty.copy())
+        out = df_mod.fetch_sector_constituents("不存在的板块")
+        assert out.empty
