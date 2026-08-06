@@ -24,7 +24,7 @@ from config import (
     STRATEGY_CODES,
     SYSTEM_DEFAULT_ACCOUNT,
 )
-from pipeline.database import load_hot_pool
+from pipeline.database import load_daily_quotes, load_hot_pool
 from position_calculator import calc_position, format_calc_text, lookup_cluster
 from review.buy_card import calc_dict_from_trade, generate_buy_card
 from review.compliance_check import run_compliance_check, report_to_markdown
@@ -433,6 +433,155 @@ def cmd_sell_check(args):
     for line in build_sell_check_lines(trade, position_info, in_hot_pool, close):
         print(line)
 
+
+def cmd_add_position(args):
+    """金字塔加仓（V5.0 §5.5 三档）：触发判定 → 仓位建议 → 合规闸门 → 落库 → 全链止损上移"""
+    import pandas as pd
+
+    from pipeline.indicators import calc_atr
+    from review.pyramid import add_unit_shares, check_add_trigger, get_unit_chain
+
+    symbol = args.symbol.zfill(6)[-6:]
+    log = TradeLog()
+    chain = get_unit_chain(log.list_all(open_only=True), symbol)
+    if not chain:
+        print(f"[ERROR] {symbol} 无未平仓单位链（需先建仓）")
+        return
+    root = chain[0]
+
+    df = load_daily_quotes(symbol=symbol)
+    if df.empty:
+        print(f"[ERROR] market.db 无 {symbol} 行情，无法判定加仓触发")
+        return
+    df = df.sort_values("trade_date").reset_index(drop=True)
+    latest_close = float(df.iloc[-1]["close"])
+    atr_series = calc_atr(df)
+    atr = float(atr_series.iloc[-1]) if not atr_series.empty and pd.notna(atr_series.iloc[-1]) else 0.0
+
+    price = args.price or latest_close  # 实际成交价可覆盖（默认最新收盘）
+    trig = check_add_trigger(chain, price, atr)
+    print(f"[加仓判定] 现价 {price:.2f} | ATR {atr:.2f} | 当前 {len(chain)} 单位 | {trig['原因']}")
+    if not trig["可加仓"]:
+        return
+
+    state = derive_state_safe(log)
+    if state != "Normal":
+        print(f"[拒绝] 回撤状态 {state}（非 Normal）禁止加仓（V5.0 §5.5：账户回撤降档禁止加仓）")
+        return
+
+    new_stop = trig["统一止损价"]
+    per_share_risk = price - new_stop
+    shares = add_unit_shares(root, per_share_risk)
+    if shares <= 0:
+        print(f"[拒绝] 建议股数不足一手（每股风险 {per_share_risk:.2f}），未加仓")
+        return
+
+    equity = args.equity or ACCOUNT_EQUITY
+    trade = Trade(
+        股票代码=symbol,
+        股票名称=args.name or root.股票名称,
+        账户类型=root.账户类型,
+        风险簇=root.风险簇,
+        入场系统=root.入场系统,
+        核心逻辑=f"金字塔加仓（首仓 {root.交易编号}，触发价 {trig['触发价']:.2f}）",
+        入场价=price,
+        止损价=new_stop,
+        风险率=round(per_share_risk * shares / equity * 100, 3),
+        股数=shares,
+        仓位金额=round(price * shares, 2),
+        是否系统内交易=True,
+        关联单号=root.交易编号,
+        单位序号=trig["下一单位序号"],
+        备注=f"加仓 N={atr:.2f}，统一止损 {new_stop:.2f}",
+    )
+    if not _apply_entry_gate(trade, log, equity, force=args.force, drawdown_state=state):
+        return
+    log.add(trade)
+    print(f"[OK] 加仓落库: {trade.交易编号}（单位{trade.单位序号}）@ {price:.2f} {shares}股，止损 {new_stop:.2f}")
+
+    # 海龟统一止损：全链未平仓单位止损上移（只上不下，旧止损写入备注留痕）
+    for t in chain:
+        if new_stop > t.止损价:
+            note = (t.备注 + f" [加仓后止损上移 {t.止损价:.2f}→{new_stop:.2f}]").strip()
+            log.update(t.交易编号, 止损价=new_stop, 备注=note)
+            print(f"[OK] {t.交易编号} 止损上移 → {new_stop:.2f}")
+
+
+def cmd_sell(args):
+    """卖出登记：全平直接闭环（自动算 R）；部分卖出拆单（原单减股数 + 新增已平仓子单）"""
+    from review.metrics import calc_r_multiple
+
+    symbol = args.symbol.zfill(6)[-6:]
+    log = TradeLog()
+
+    if args.id:
+        target = log.get(args.id)
+        if not target or target.is_closed:
+            print(f"[ERROR] {args.id} 不存在或已平仓")
+            return
+    else:
+        candidates = [t for t in log.get_by_symbol(symbol) if not t.is_closed]
+        if not candidates:
+            print(f"[提示] {symbol} 当前无持仓中交易")
+            return
+        target = max(candidates, key=lambda t: (t.日期 or "", t.创建时间 or ""))
+
+    exit_date = args.date or datetime.now().strftime("%Y-%m-%d")
+    reason = args.reason or ""
+    total = target.股数
+
+    if args.shares >= total:
+        # 全平：与 update 子命令同口径（退出价/日期 + 自动算 R）
+        log.update(target.交易编号, 实际退出价=args.price, 退出日期=exit_date,
+                   退出时间=args.time or "", 退出原因=reason)
+        r = calc_r_multiple(target.入场价, args.price, target.止损价)
+        if r is not None:
+            log.update(target.交易编号, R倍数=round(r, 2))
+            print(f"[OK] 全平: {target.交易编号} {target.股票代码} @ {args.price:.2f}（R {r:+.2f}）")
+        else:
+            print(f"[OK] 全平: {target.交易编号} {target.股票代码} @ {args.price:.2f}")
+    else:
+        # 部分卖出：原单减股数，新增已平仓拆分子单（每条记录 R 口径独立）
+        remain = total - args.shares
+        note = (target.备注 + f" [分批卖出 {args.shares}股 @ {args.price:.2f}，余 {remain}股]").strip()
+        log.update(target.交易编号, 股数=remain,
+                   仓位金额=round(target.入场价 * remain, 2), 备注=note)
+        child = Trade(
+            日期=target.日期,
+            入场时间=target.入场时间,
+            股票代码=target.股票代码,
+            股票名称=target.股票名称,
+            账户类型=target.账户类型,
+            风险簇=target.风险簇,
+            入场系统=target.入场系统,
+            核心逻辑=target.核心逻辑,
+            入场价=target.入场价,
+            止损价=target.止损价,
+            风险率=round(target.per_share_risk * args.shares
+                         / (args.equity or ACCOUNT_EQUITY) * 100, 3),
+            股数=args.shares,
+            仓位金额=round(target.入场价 * args.shares, 2),
+            实际退出价=args.price,
+            退出日期=exit_date,
+            退出时间=args.time or "",
+            退出原因=reason or "分批止盈",
+            是否系统内交易=target.是否系统内交易,
+            关联单号=target.交易编号,
+            单位序号=target.单位序号,
+            备注=f"分批卖出（来源 {target.交易编号}）",
+        )
+        r = calc_r_multiple(child.入场价, args.price, child.止损价)
+        if r is not None:
+            child.R倍数 = round(r, 2)
+        log.add(child)
+        r_text = f"（R {r:+.2f}）" if r is not None else ""
+        print(f"[OK] 部分卖出: {target.交易编号} 减 {args.shares}股（余 {remain}股）"
+              f"→ 子单 {child.交易编号} @ {args.price:.2f}{r_text}")
+
+    print("[提示] 重新入场条件（V5.0 §7.6）：新的 20/55 日突破 + 板块重新共振 + "
+          "失败原因已消失 + 新的止损与风险预算可计算；不因「刚卖掉」产生心理抵触")
+
+
 def _load_scan_json(date: str | None = None) -> dict | None:
     """加载指定日期的市场扫描 JSON"""
     scan_date = date or datetime.now().strftime("%Y-%m-%d")
@@ -714,6 +863,26 @@ def main():
     p_sell = sub.add_parser("sell-check", help="卖点检查单（止损/退出通道/持有天数/热点池/建议挂单价）")
     p_sell.add_argument("symbol", help="股票代码")
     p_sell.set_defaults(func=cmd_sell_check)
+
+    p_addpos = sub.add_parser("add-position", help="金字塔加仓（V5.0 §5.5：0.5N 触发判定 → 落库 → 全链止损上移）")
+    p_addpos.add_argument("symbol", help="股票代码")
+    p_addpos.add_argument("--price", type=float, default=None,
+                          help="实际成交价（默认 market.db 最新收盘价）")
+    p_addpos.add_argument("--name", default="", help="股票名称（默认沿首仓）")
+    p_addpos.add_argument("--equity", type=float, default=None, help="账户权益（默认 config.ACCOUNT_EQUITY）")
+    p_addpos.add_argument("--force", action="store_true", help="高级违规也强制写入（备注留痕）")
+    p_addpos.set_defaults(func=cmd_add_position)
+
+    p_sell_reg = sub.add_parser("sell", help="卖出登记（全平闭环 / 部分卖出拆单，R 自动结算）")
+    p_sell_reg.add_argument("symbol", help="股票代码")
+    p_sell_reg.add_argument("--shares", type=int, required=True, help="卖出股数（≥ 持仓股数即全平）")
+    p_sell_reg.add_argument("--price", type=float, required=True, help="卖出价")
+    p_sell_reg.add_argument("--id", default=None, help="指定交易编号（默认该代码最新一笔持仓）")
+    p_sell_reg.add_argument("--date", default=None, help="卖出日期 YYYY-MM-DD（默认今天）")
+    p_sell_reg.add_argument("--time", default="", help="卖出时间 HH:MM:SS（可选，纪律审计用）")
+    p_sell_reg.add_argument("--reason", default="", help="退出原因（部分卖出默认「分批止盈」）")
+    p_sell_reg.add_argument("--equity", type=float, default=None, help="账户权益（默认 config.ACCOUNT_EQUITY）")
+    p_sell_reg.set_defaults(func=cmd_sell)
 
     p_scan = sub.add_parser("from-scan", help="从扫描 JSON 读取突破数据（--execute 一键建仓落库）")
     p_scan.add_argument("symbol", help="股票代码")

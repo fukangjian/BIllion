@@ -39,6 +39,8 @@ class Trade:
     MFE: Optional[float] = None
     MAE: Optional[float] = None
     R倍数: Optional[float] = None
+    关联单号: str = ""   # 加仓子单/部分平仓拆分子单指向来源交易编号（金字塔与分批退出用）
+    单位序号: int = 1    # 金字塔单位序号：1=首仓，2/3=加仓单位（V5.0 §5.5 三档）
     备注: str = ""
     创建时间: str = field(default_factory=lambda: datetime.now().isoformat())
     更新时间: str = field(default_factory=lambda: datetime.now().isoformat())
