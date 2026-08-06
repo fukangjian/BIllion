@@ -346,14 +346,15 @@ def signal_stats(
     days: int = 90,
     as_of: Optional[str] = None,
 ) -> dict:
-    """近 N 天已关闭信号按系统分组统计（按 exit_date 落在窗口内筛选）+ open 信号数"""
+    """近 N 天已关闭信号按系统分组统计（按 exit_date 落在窗口内筛选）+ open 信号数
+    + 按信号日市场状态分层（by_state，验证不同市场状态下信号质量；老数据无状态归入「未知」）"""
     as_of = as_of or datetime.now().strftime("%Y-%m-%d")
     cutoff = (datetime.strptime(as_of, "%Y-%m-%d") - timedelta(days=days)).strftime("%Y-%m-%d")
 
     init_database(db_path)
     with get_connection(db_path) as conn:
         cur = conn.execute(
-            "SELECT system, r_multiple FROM signals "
+            "SELECT system, r_multiple, market_state FROM signals "
             "WHERE status = 'closed' AND exit_date >= ? AND r_multiple IS NOT NULL",
             (cutoff,),
         )
@@ -364,16 +365,23 @@ def signal_stats(
         open_by_system = dict(cur.fetchall())
 
     groups: dict[str, list[float]] = {}
-    for system, r in closed_rows:
+    state_groups: dict[str, dict[str, list[float]]] = {}
+    for system, r, mstate in closed_rows:
         groups.setdefault(system, []).append(float(r))
+        state_groups.setdefault(mstate or "未知", {}).setdefault(system, []).append(float(r))
 
     systems = {system: _group_stats(rs) for system, rs in sorted(groups.items())}
+    by_state = {
+        state: {system: _group_stats(rs) for system, rs in sorted(sys_map.items())}
+        for state, sys_map in sorted(state_groups.items())
+    }
     return {
         "as_of": as_of,
         "days": days,
         "open_count": sum(open_by_system.values()),
         "open_by_system": open_by_system,
         "systems": systems,
+        "by_state": by_state,
     }
 
 
@@ -392,6 +400,19 @@ def signal_stats_to_markdown(stats: dict) -> str:
                 f"| {system} | {s['closed']} | {s['win_rate']}% "
                 f"| {s['avg_r']:+.2f} | {s['expectancy']:+.2f} | {pf} | {s['note']} |"
             )
+
+    by_state = stats.get("by_state", {})
+    if by_state:
+        lines.extend(["", "**按市场状态分层（信号日状态；验证 D 状态信号是否真差）**：", ""])
+        lines.append("| 市场状态 | 系统 | 样本数 | 胜率 | 平均R | PF |")
+        lines.append("|----------|------|--------|------|-------|-----|")
+        for state, sys_map in by_state.items():
+            for system, s in sys_map.items():
+                pf = f"{s['profit_factor']:.2f}" if s["profit_factor"] != float("inf") else "∞"
+                lines.append(
+                    f"| {state} | {system} | {s['closed']} | {s['win_rate']}% "
+                    f"| {s['avg_r']:+.2f} | {pf} |"
+                )
 
     notes = []
     for system, s in systems.items():

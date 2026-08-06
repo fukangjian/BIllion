@@ -10,6 +10,7 @@ from config import (
     DRAWDOWN_STATE,
     FORBIDDEN_IN_DRAWDOWN,
     MAX_SINGLE_RISK_PCT,
+    PORTFOLIO_HEAT_LIMITS,
     POSITION_LIMITS,
     RISK_CLUSTER_LIMITS,
     RISK_LIMITS_DRAWDOWN,
@@ -209,6 +210,62 @@ def check_risk_cluster(
                 建议="减少该簇持仓或收紧止损",
             ))
 
+    return violations
+
+
+def check_market_conditions(
+    trade: Trade,
+    open_trades: list[Trade],
+    market_state: str | None,
+    account_equity: float = ACCOUNT_EQUITY,
+) -> list[Violation]:
+    """
+    组合总热度 + 市场状态门禁（V5.0 §5.6/§1.2，建仓闸门专用；纯函数）。
+
+    - 账户热度：未平仓风险率合计 + 本笔风险率 > PORTFOLIO_HEAT_LIMITS[市场状态] → 高级违规
+    - 市场状态 D：禁止新开趋势仓（入场系统含 S1/S2）→ 高级违规
+    - 市场状态 C：趋势仓中级警告（震荡市建议风险减半）
+    - market_state 为 None/未知：跳过（降级，不阻塞建仓）
+    """
+    violations = []
+    if not market_state:
+        return violations
+    limit = PORTFOLIO_HEAT_LIMITS.get(str(market_state).upper())
+    if limit is None:
+        return violations
+
+    total_heat = sum(t.风险率 for t in open_trades if t.风险率 > 0) + max(trade.风险率, 0)
+    if total_heat > limit:
+        violations.append(Violation(
+            交易编号="(组合)",
+            股票代码=trade.股票代码,
+            违规类型="账户热度超限",
+            严重程度="高",
+            描述=f"总热度 {total_heat:.2f}%（未平仓风险合计 + 本笔）超过 {market_state} 状态上限 {limit}%",
+            建议="降低本笔风险率，或先减仓释放热度",
+        ))
+
+    s = (trade.入场系统 or "").upper()
+    is_trend = "S1" in s or "S2" in s
+    state = str(market_state).upper()
+    if state == "D" and is_trend:
+        violations.append(Violation(
+            交易编号=trade.交易编号,
+            股票代码=trade.股票代码,
+            违规类型="市场状态禁止建仓",
+            严重程度="高",
+            描述="市场状态 D（系统性下跌）禁止新开趋势仓（V5.0 §1.2：D 状态总仓位 0%—30%）",
+            建议="等待市场状态修复；D 状态只保留核心仓和极小验证仓",
+        ))
+    elif state == "C" and is_trend:
+        violations.append(Violation(
+            交易编号=trade.交易编号,
+            股票代码=trade.股票代码,
+            违规类型="市场状态提示",
+            严重程度="中",
+            描述="市场状态 C（震荡轮动），趋势信号胜率偏低，建议风险减半",
+            建议="降低单笔风险率或等更好的市场状态",
+        ))
     return violations
 
 
