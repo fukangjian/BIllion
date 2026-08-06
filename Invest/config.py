@@ -58,7 +58,7 @@ ATR_PERIOD = 20            # N = ATR(20)，Wilder 平滑
 ATR_STOP_MULT = 2.0        # 初始止损 = 入场价 − 2N
 ADD_SPACING_MIN = 0.5      # 加仓最小间距 0.5N（每涨 0.5N 加一单位）
 ADD_SPACING_MAX = 1.0      # 加仓间距上限 1N（单根跳空超 1N 不追，跳过的单位不补）
-MAX_UNITS = 4              # 最大单位数（首仓 + 最多 3 次加仓）
+MAX_UNITS = 3              # 最大单位数（V5.0 §5.5 海龟三档：首仓 40% + 第2/3仓各 30%，即首仓 + 最多 2 次加仓）
 LOT_SIZE = 100             # A 股整手股数
 BACKTEST_RISK_PCT = 0.005  # 回测每单位风险比例 0.5%（实盘风险率由 RISK_LIMITS 账户限额决定）
 

@@ -46,7 +46,7 @@ class TestStrategyParamsConfig:
         assert ATR_STOP_MULT == 2.0
         assert ADD_SPACING_MIN == 0.5
         assert ADD_SPACING_MAX == 1.0
-        assert MAX_UNITS == 4
+        assert MAX_UNITS == 3  # V5.0 §5.5 海龟三档：首仓 40% + 第2/3仓各 30%
         assert LOT_SIZE == 100
 
     def test_channel_aliases_derived_from_strategy_params(self):
