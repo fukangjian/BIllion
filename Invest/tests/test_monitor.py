@@ -379,3 +379,38 @@ class TestTrailingStopAdvice:
         db = _make_db(tmp_path, {"600519": _quote_rows(last_close=95.0)})
         result = check_positions(log, db_path=db)
         assert result["alerts"][0]["类型"] == "止损"
+
+
+# ---------- 无止损持仓警报（券商导入/手工补录缺止损，监控保护失效必须警报） ----------
+
+class TestNoStopAlert:
+    def test_zero_stop_triggers_no_stop_alert(self, tmp_path):
+        """止损价 0 → 「无止损」警报，提示补设或卖出"""
+        log = _make_log(tmp_path, [_open_trade(止损价=0.0)])
+        db = _make_db(tmp_path, {"600519": _quote_rows()})
+        result = check_positions(log, db_path=db)
+        assert len(result["alerts"]) == 1
+        assert result["alerts"][0]["类型"] == "无止损"
+        assert "补设止损" in result["alerts"][0]["建议动作"]
+
+    def test_no_stop_alert_even_without_quotes(self, tmp_path):
+        """无行情时也报「无止损」（止损缺失与行情无关）"""
+        log = _make_log(tmp_path, [_open_trade(止损价=0.0)])
+        db = _make_db(tmp_path, {})  # 无该股行情
+        result = check_positions(log, db_path=db)
+        assert result["alerts"][0]["类型"] == "无止损"
+
+    def test_no_stop_priority_below_stop_loss(self, tmp_path):
+        """优先级：止损 > 无止损 > 退出（多持仓排序）"""
+        trades = [
+            _open_trade(交易编号="T_nostop", 股票代码="600519", 止损价=0.0),
+            _open_trade(交易编号="T_stop", 股票代码="000858", 入场价=100.0, 止损价=96.0),
+        ]
+        log = _make_log(tmp_path, trades)
+        db = _make_db(tmp_path, {
+            "600519": _quote_rows(),
+            "000858": _quote_rows(last_close=95.0),  # 跌破止损
+        })
+        result = check_positions(log, db_path=db)
+        types = [a["类型"] for a in result["alerts"]]
+        assert types == ["止损", "无止损"]
