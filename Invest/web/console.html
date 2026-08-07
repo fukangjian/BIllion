@@ -190,7 +190,7 @@ function renderPlan(d) {
   const verdictBadge = (b) => {
     if (!b.verdict) return '<span class="muted">-</span>';
     const cls = b.verdict === "真龙头" ? "alert" : b.verdict === "疑似龙头" ? "C" : b.verdict === "伪龙头" ? "D" : "S1";
-    const tip = (b.reasoning || "") + (b.risk ? "\n风险：" + b.risk : "");
+    const tip = (b.reason ? "归因：" + b.reason + "\n" : "") + (b.reasoning || "") + (b.risk ? "\n风险：" + b.risk : "");
     return `<span class="badge badge-${cls}" title="${tip.replace(/"/g, "'")}">${b.verdict}${b.confidence != null ? " " + b.confidence + "%" : ""}</span>`;
   };
   let html = "";

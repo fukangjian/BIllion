@@ -168,12 +168,17 @@ def _score_strength(rec: dict) -> tuple[int, str]:
 
 
 def _score_logic(rec: dict) -> tuple[int, str]:
-    """逻辑（20）：⑧催化 satisfied True → 20；None → 8（人工核对）；False → 0"""
+    """逻辑（20，证据分级）：⑧公告催化 True → 20（公告确认）；
+    否则有 THS 涨停归因（非空非「其他」）→ 12（市场归因存在，未经公告确认）；
+    ⑧未判定且无归因 → 8（待人工核对）；⑧判定不满足且无归因 → 0"""
     cat = rec.get("catalyst") or {}
     satisfied = cat.get("satisfied")
     if satisfied is True:
         ctype = cat.get("catalyst_type", "")
         return 20, f"事件催化确认（{ctype}）" if ctype else "事件催化确认"
+    reason = str(rec.get("reason", "") or "").strip()
+    if reason and reason not in ("其他", "未知", "-"):
+        return 12, f"涨停归因「{reason}」（市场归因，未经公告确认）"
     if satisfied is False:
         return 0, "无明确催化"
     return 8, "催化待人工核对"

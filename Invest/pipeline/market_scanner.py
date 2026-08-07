@@ -662,6 +662,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                             rec["turnover"] = to_float(lr.get("turnover"))
                             rec["seal_amount"] = to_float(lr.get("seal_amount"))
                             rec["zbc"] = to_int(lr.get("zbc"))
+                            rec["reason"] = str(lr.get("reason", "") or "")  # THS 涨停归因（逻辑维度证据）
                         sdf = symbols_data.get(rec["symbol"])
                         if sdf is not None and not sdf.empty:
                             last = sdf.sort_values("trade_date").iloc[-1]
@@ -922,14 +923,16 @@ def _format_report(
                         f"| {d.get('梯队', '-')} | {d.get('强度', '-')} | {d.get('逻辑', '-')} | {d.get('情绪', '-')} |"
                     )
                 reason_items = [
-                    (r.get("name") or r["symbol"], r.get("verdict", ""), r.get("reasoning", ""), r.get("risk", ""))
+                    (r.get("name") or r["symbol"], r.get("verdict", ""), r.get("reasoning", ""),
+                     r.get("risk", ""), str(r.get("reason", "") or ""))
                     for r in dragons[:5] if r.get("reasoning")
                 ]
                 if reason_items:
-                    lines.extend(["", "**系统判定理由（Kimi K3，引用数据）**：", ""])
-                    for nm, verdict, reasoning, risk in reason_items:
+                    lines.extend(["", "**系统判定理由（Kimi 推理，引用数据）**：", ""])
+                    for nm, verdict, reasoning, risk, reason in reason_items:
+                        reason_part = f"归因「{reason}」；" if reason else ""
                         risk_part = f"；风险：{risk}" if risk else ""
-                        lines.append(f"- {nm}（{verdict}）：{reasoning}{risk_part}")
+                        lines.append(f"- {nm}（{verdict}）：{reason_part}{reasoning}{risk_part}")
                 lines.extend([
                     "",
                     "> 龙头评分口径：身位（板块最高板 30 / 首板封板前 3 得 20 / 跟风 8）+ 梯队（板块涨停家数与层级）"

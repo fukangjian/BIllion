@@ -52,13 +52,15 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
         else:
             cat_text = "未判定（待人工核对）"
         titles = "、".join((c.get("catalyst_titles") or [])[:2])[:100]
+        reason = str(c.get("reason", "") or "").strip()
+        reason_text = f"；涨停归因：{reason}" if reason and reason not in ("其他", "未知", "-") else ""
         candidate_lines.append(
             f"- {c['symbol']} {c.get('name', '')}（{c.get('sector', '')}，{c.get('lbc', 0)} 连板）："
             f"五维 身位{dims.get('身位', '-')}/梯队{dims.get('梯队', '-')}/强度{dims.get('强度', '-')}"
             f"/逻辑{dims.get('逻辑', '-')}/情绪{dims.get('情绪', '-')}（总分 {c.get('dragon_score', '-') }）；"
             f"换手率 {c.get('turnover', '-') }%，封单 {round(float(c.get('seal_amount', 0) or 0) / 1e8, 2)} 亿，"
             f"首次封板 {c.get('fbt') or '-'}，炸板 {c.get('zbc', 0)} 次；"
-            f"评分依据：{notes}；⑧催化：{cat_text}{('；公告：' + titles) if titles else ''}"
+            f"评分依据：{notes}；⑧催化：{cat_text}{reason_text}{('；公告：' + titles) if titles else ''}"
         )
 
     return {

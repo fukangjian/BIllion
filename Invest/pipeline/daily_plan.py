@@ -165,7 +165,9 @@ def build_daily_plan(
         )
         gate = _gate_precheck(symbol, "HOT-S", account, close, stop, calc,
                               equity, state, trade_log, db_path)
-        note_parts = [p for p in (rec.get("analysis"), *calc.get("备注", [])) if p]
+        reason_text = str(rec.get("reason", "") or "").strip()
+        note_parts = [p for p in (f"归因：{reason_text}" if reason_text else "",
+                                  rec.get("analysis"), *calc.get("备注", [])) if p]
         dragon_buys.append({
             "symbol": symbol,
             "name": str(rec.get("name", "") or ""),
@@ -177,6 +179,7 @@ def build_daily_plan(
             "confidence": rec.get("confidence"),
             "reasoning": rec.get("reasoning", ""),
             "risk": rec.get("risk", ""),
+            "reason": reason_text,
             "lbc": rec.get("lbc", 0),
             "sector": rec.get("sector", ""),
             "close": round(close, 2),
