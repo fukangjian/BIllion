@@ -236,6 +236,17 @@ function renderPlan(d) {
           ${d.bid_checklist.map(i => `<li><b>${i.symbol} ${i.name}</b>：${i.text}</li>`).join("")}
         </ul></div>`;
     }
+    const cal = d.event_calendar || {};
+    const secEvents = cal.sector_events || [];
+    const symEventLines = dragons.flatMap(b => (b.events || []).map(e => ({ who: `${b.symbol} ${b.name}`, ...e })));
+    if (secEvents.length || symEventLines.length) {
+      html += `<div style="margin-top:10px;background:#f6f4ef;border:1px solid #e3ddc9;border-radius:8px;padding:10px 14px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px;">📅 未来 30 天关键事项（逻辑链前瞻）</div>
+        <ul style="font-size:12.5px;line-height:1.9;padding-left:18px;margin:0;">
+          ${secEvents.map(e => `<li><b>${e.sector}</b>｜${e.date}｜${e.type}：${e.title}<span class="muted">（${e.chain}）</span></li>`).join("")}
+          ${symEventLines.map(e => `<li><b>${e.who}</b>｜${e.date}｜${e.type}：${e.title}</li>`).join("")}
+        </ul></div>`;
+    }
   }
   if (trends.length) {
     const rows = trends.map(b => `

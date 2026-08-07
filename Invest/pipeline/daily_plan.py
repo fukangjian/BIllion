@@ -226,6 +226,11 @@ def build_daily_plan(
                      f"止损 {b['stop']:.2f}）；一字板 → 不追（看同板块龙二）；低开 → 不及预期，剔除"),
         })
 
+    # ---- 事件日历（未来 30 天关键事项，逻辑链前瞻） ----
+    calendar = (scan_json.get("hot_pool") or {}).get("event_calendar", {}) or {}
+    for b in dragon_buys:
+        b["events"] = (calendar.get("symbol_events") or {}).get(b["symbol"], [])
+
     return {
         "date": scan_json.get("date", ""),
         "market_state": market_state,
@@ -234,6 +239,7 @@ def build_daily_plan(
         "dragon_market_comment": (scan_json.get("hot_pool") or {}).get("dragon_market_comment", ""),
         "dragon_note": (scan_json.get("hot_pool") or {}).get("dragon_note", ""),
         "sector_focus": (scan_json.get("hot_pool") or {}).get("sector_focus", []),
+        "event_calendar": calendar,
         "dragon_buys": dragon_buys,
         "trend_buys": trend_buys,
         "bid_checklist": bid_checklist,
@@ -308,6 +314,23 @@ def daily_plan_to_markdown(plan: dict) -> list[str]:
             ])
             for item in bid:
                 lines.append(f"- **{item['symbol']} {item['name']}**：{item['text']}")
+            lines.append("")
+
+        # 未来 30 天关键事项（事件日历：候选个股 + 板块行业事件）
+        cal = plan.get("event_calendar") or {}
+        sym_events = cal.get("symbol_events") or {}
+        sec_events = cal.get("sector_events") or []
+        if sym_events or sec_events:
+            lines.extend(["#### 📅 未来 30 天关键事项（逻辑链前瞻）", ""])
+            if sec_events:
+                for e in sec_events:
+                    lines.append(
+                        f"- **{e.get('sector', '')}**｜{e.get('date', '')}｜{e.get('type', '')}："
+                        f"{e.get('title', '')}（传导：{e.get('chain', '')}；来源：{e.get('source', '')}）"
+                    )
+            for b in dragons:
+                for e in b.get("events", []):
+                    lines.append(f"- **{b['symbol']} {b.get('name', '')}**｜{e['date']}｜{e['type']}：{e['title']}")
             lines.append("")
 
         if trends:

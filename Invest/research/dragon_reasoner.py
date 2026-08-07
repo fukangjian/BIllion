@@ -30,7 +30,8 @@ VERDICTS = ("真龙头", "疑似龙头", "跟风", "伪龙头")
 VERDICT_PRIORITY = {"真龙头": 0, "疑似龙头": 1, "跟风": 2, "伪龙头": 3}
 
 
-def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str = "") -> dict:
+def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str = "",
+                            calendar: dict | None = None) -> dict:
     """把候选与上下文整理成 prompt 占位内容（只含事实，供 LLM 引用说理）"""
     emotion = ctx.get("emotion", {})
     sectors = ctx.get("sectors", {})
@@ -39,6 +40,15 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
         f"- {name}: 涨停 {s.get('count', 0)} 家 / 最高 {s.get('max_lbc', 0)} 板"
         for name, s in sector_sorted
     ] or ["- 无板块梯队数据"]
+
+    # 未来 30 天关键事项（事件日历：结构化事项 + 联网探查行业事件）
+    symbol_events = (calendar or {}).get("symbol_events", {})
+    sector_events = (calendar or {}).get("sector_events", [])
+    event_lines = [
+        f"- {e.get('sector', '')}｜{e.get('date', '')}｜{e.get('type', '')}｜{e.get('title', '')}"
+        f"（传导：{e.get('chain', '')}；来源：{e.get('source', '')}）"
+        for e in sector_events
+    ] or ["- 无（未启用联网探查或无可靠事项）"]
 
     candidate_lines = []
     for c in candidates:
@@ -54,13 +64,17 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
         titles = "、".join((c.get("catalyst_titles") or [])[:2])[:100]
         reason = str(c.get("reason", "") or "").strip()
         reason_text = f"；涨停归因：{reason}" if reason and reason not in ("其他", "未知", "-") else ""
+        sym_events = symbol_events.get(str(c.get("symbol", "")).zfill(6)[-6:], [])
+        events_text = ("；未来事项：" + "、".join(
+            f"{e['date']}{e['type']}" for e in sym_events[:3])) if sym_events else ""
         candidate_lines.append(
             f"- {c['symbol']} {c.get('name', '')}（{c.get('sector', '')}，{c.get('lbc', 0)} 连板）："
             f"五维 身位{dims.get('身位', '-')}/梯队{dims.get('梯队', '-')}/强度{dims.get('强度', '-')}"
             f"/逻辑{dims.get('逻辑', '-')}/情绪{dims.get('情绪', '-')}（总分 {c.get('dragon_score', '-') }）；"
             f"换手率 {c.get('turnover', '-') }%，封单 {round(float(c.get('seal_amount', 0) or 0) / 1e8, 2)} 亿，"
             f"首次封板 {c.get('fbt') or '-'}，炸板 {c.get('zbc', 0)} 次；"
-            f"评分依据：{notes}；⑧催化：{cat_text}{reason_text}{('；公告：' + titles) if titles else ''}"
+            f"评分依据：{notes}；⑧催化：{cat_text}{reason_text}{events_text}"
+            f"{('；公告：' + titles) if titles else ''}"
         )
 
     return {
@@ -69,6 +83,7 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
         "up_count": emotion.get("up_count", 0),
         "down_count": emotion.get("down_count", 0),
         "sector_lines": "\n".join(sector_lines),
+        "event_lines": "\n".join(event_lines),
         "candidate_lines": "\n".join(candidate_lines),
     }
 
@@ -142,10 +157,12 @@ def reason_dragons(
     candidates: list[dict],
     ctx: dict,
     market_state: str = "",
+    calendar: dict | None = None,
 ) -> dict | None:
     """
-    对龙头候选做 Kimi K3 深度推理（单次调用，走 llm_client 24h 缓存）。
-    返回 {"primary", "verdicts", "market_comment"}；
+    对龙头候选做 Kimi 深度推理（单次调用，走 llm_client 24h 缓存）。
+    calendar 为事件日历（个股结构化事项 + 板块联网探查事件），注入推理证据。
+    返回 {"primary", "verdicts", "sector_focus", "market_comment"}；
     未启用 / 无 Key / 调用失败 / 解析失败 → None（调用方降级按量化评分排序）。
     """
     if not DRAGON_REASON_ENABLED or not candidates:
@@ -155,7 +172,7 @@ def reason_dragons(
         return None
 
     cands = candidates[:DRAGON_REASON_MAX]
-    payload = build_reasoning_payload(cands, ctx, market_state)
+    payload = build_reasoning_payload(cands, ctx, market_state, calendar=calendar)
     prompt = DRAGON_REASONING.format(**payload)
     text = call_llm(
         prompt,

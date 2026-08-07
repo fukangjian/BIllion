@@ -363,6 +363,7 @@ def _build_scan_json(
             "dragon_market_comment": hot.get("dragon_market_comment", ""),
             "dragon_note": hot.get("dragon_note", ""),
             "sector_focus": hot.get("sector_focus", []),
+            "event_calendar": hot.get("event_calendar", {}),
             "note": hot.get("note", ""),
         },
     }
@@ -549,6 +550,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         "dragon_market_comment": "",
         "dragon_note": "",
         "sector_focus": [],
+        "event_calendar": {},
         "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
     }
     try:
@@ -678,7 +680,26 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                     try:
                         from research.dragon_reasoner import VERDICT_PRIORITY, reason_dragons
 
-                        reasoning = reason_dragons(result["dragon_candidates"], dragon_ctx, market_state)
+                        # 事件日历：候选个股结构化事项 + 板块未来 30 天关键事项（联网探查）
+                        calendar = {}
+                        try:
+                            from research.event_calendar import build_event_calendar
+
+                            cal_symbols = [r["symbol"] for r in result["dragon_candidates"]]
+                            cal_sectors = [
+                                n for n, s in sorted(
+                                    dragon_ctx.get("sectors", {}).items(),
+                                    key=lambda kv: -kv[1].get("count", 0),
+                                )[:6]
+                            ]
+                            calendar = build_event_calendar(cal_symbols, cal_sectors, today)
+                            result["event_calendar"] = calendar
+                        except Exception as e:
+                            logger.warning("事件日历构建失败（降级）: %s", e)
+                            result["event_calendar"] = {}
+
+                        reasoning = reason_dragons(result["dragon_candidates"], dragon_ctx,
+                                                   market_state, calendar=calendar)
                         if reasoning:
                             vmap = {v["symbol"]: v for v in reasoning["verdicts"]}
                             for rec in result["dragon_candidates"]:
