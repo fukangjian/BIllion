@@ -27,6 +27,7 @@ from config import (
     KIMI_BASE_URL,
     KIMI_MODEL,
     KIMI_MODEL_LONG,
+    KIMI_MODEL_REASONING,
     LLM_CACHE_DIR,
     LLM_CACHE_TTL,
     LLM_MAX_RETRIES,
@@ -69,6 +70,14 @@ def _model_for_task(provider: str, task_type: str) -> str:
     if task_type == "announcement":
         if provider == "kimi":
             return KIMI_MODEL_LONG
+        if provider == "deepseek":
+            return DEEPSEEK_MODEL_PRO
+        if provider == "custom":
+            return CUSTOM_LLM_MODEL or "gpt-4o-mini"
+    if task_type == "reasoning":
+        # 深度推理任务（龙头辨识等多维综合研判）：用旗舰推理模型
+        if provider == "kimi":
+            return KIMI_MODEL_REASONING  # 默认 kimi-k3
         if provider == "deepseek":
             return DEEPSEEK_MODEL_PRO
         if provider == "custom":

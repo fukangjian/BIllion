@@ -142,9 +142,16 @@ def build_daily_plan(
             "note": "；".join(note_parts),
         })
 
-    # ---- 龙头候选（主，超短 HOT-S）：热点池三维验证评分 S/A/B 级 ----
+    # ---- 龙头候选（主，超短 HOT-S）：热点池三维验证评分 S/A/B 级 + K3 系统判定 ----
+    try:
+        from research.dragon_reasoner import VERDICT_PRIORITY
+    except Exception:
+        VERDICT_PRIORITY = {"真龙头": 0, "疑似龙头": 1, "跟风": 2, "伪龙头": 3}
+    dragon_recs = list((scan_json.get("hot_pool") or {}).get("dragon_candidates", []))
+    dragon_recs.sort(key=lambda r: (VERDICT_PRIORITY.get(r.get("verdict", ""), 9),
+                                    -r.get("dragon_score", 0)))
     dragon_buys: list[dict] = []
-    for rec in (scan_json.get("hot_pool") or {}).get("dragon_candidates", []):
+    for rec in dragon_recs:
         symbol = str(rec.get("symbol", "")).zfill(6)[-6:]
         if not symbol or not rec.get("close"):
             continue
@@ -166,6 +173,10 @@ def build_daily_plan(
             "grade": rec.get("dragon_grade", ""),
             "score": rec.get("dragon_score", 0),
             "dims": rec.get("dragon_dims", {}),
+            "verdict": rec.get("verdict", ""),
+            "confidence": rec.get("confidence"),
+            "reasoning": rec.get("reasoning", ""),
+            "risk": rec.get("risk", ""),
             "lbc": rec.get("lbc", 0),
             "sector": rec.get("sector", ""),
             "close": round(close, 2),
@@ -206,6 +217,8 @@ def build_daily_plan(
         "date": scan_json.get("date", ""),
         "market_state": market_state,
         "drawdown_state": state,
+        "dragon_primary": (scan_json.get("hot_pool") or {}).get("dragon_primary", ""),
+        "dragon_market_comment": (scan_json.get("hot_pool") or {}).get("dragon_market_comment", ""),
         "dragon_buys": dragon_buys,
         "trend_buys": trend_buys,
         "position_actions": position_actions,
@@ -232,18 +245,34 @@ def daily_plan_to_markdown(plan: dict) -> list[str]:
         lines.append("_明日无滤网全过的突破候选、无达标龙头——不交易也是操作。_")
     else:
         if dragons:
+            primary = plan.get("dragon_primary")
+            if primary:
+                p_name = next((b.get("name", "") for b in dragons if b["symbol"] == primary), "")
+                comment = plan.get("dragon_market_comment", "")
+                lines.append(f"**🐉 本期系统认定龙头：{p_name}（{primary}）**"
+                             + (f" —— {comment}" if comment else ""))
+                lines.append("")
             lines.extend([
-                f"#### 🐉 龙头候选（超短 HOT-S，三维验证 S/A/B 级，{len(dragons)} 只）",
+                f"#### 🐉 龙头候选（超短 HOT-S，三维验证 + K3 系统判定，{len(dragons)} 只）",
                 "",
-                "| 代码 | 名称 | 等级 | 总分 | 板块·连板 | 参考买入价 | 建议止损 | 建议股数 | 风险率% | 闸门预检 |",
-                "|------|------|------|------|-----------|-----------|----------|----------|---------|----------|",
+                "| 代码 | 名称 | 等级 | 总分 | 系统判定 | 板块·连板 | 参考买入价 | 建议止损 | 建议股数 | 风险率% | 闸门预检 |",
+                "|------|------|------|------|----------|-----------|-----------|----------|----------|---------|----------|",
             ])
             for b in dragons:
+                verdict = b.get("verdict") or "-"
+                conf = b.get("confidence")
+                verdict_text = f"{verdict} {conf}%" if conf is not None else verdict
                 lines.append(
                     f"| {b['symbol']} | {b.get('name') or '-'} | **{b['grade']}** | {b['score']} "
-                    f"| {b.get('sector') or '-'}·{b.get('lbc', 0)}板 | {b['close']:.2f} "
+                    f"| {verdict_text} | {b.get('sector') or '-'}·{b.get('lbc', 0)}板 | {b['close']:.2f} "
                     f"| {b['stop']:.2f} | {b['shares']} | {b['risk_pct']} | {b['gate']} |"
                 )
+            reason_items = [(b.get("name") or b["symbol"], b.get("verdict", ""), b["reasoning"])
+                            for b in dragons[:5] if b.get("reasoning")]
+            if reason_items:
+                lines.extend(["", "**系统判定理由（Kimi K3）**：", ""])
+                for nm, verdict, reasoning in reason_items:
+                    lines.append(f"- {nm}（{verdict}）：{reasoning}")
             lines.append("")
         if trends:
             lines.extend([

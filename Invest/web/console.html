@@ -187,12 +187,26 @@ function renderPlan(d) {
   const dragons = d.dragon_buys || [];
   const trends = d.trend_buys || [];
   const gradeBadge = (g) => `<span class="badge badge-${g === "S" ? "alert" : g === "A" ? "C" : "B"}">${g}</span>`;
+  const verdictBadge = (b) => {
+    if (!b.verdict) return '<span class="muted">-</span>';
+    const cls = b.verdict === "真龙头" ? "alert" : b.verdict === "疑似龙头" ? "C" : b.verdict === "伪龙头" ? "D" : "S1";
+    const tip = (b.reasoning || "") + (b.risk ? "\n风险：" + b.risk : "");
+    return `<span class="badge badge-${cls}" title="${tip.replace(/"/g, "'")}">${b.verdict}${b.confidence != null ? " " + b.confidence + "%" : ""}</span>`;
+  };
   let html = "";
   if (dragons.length) {
+    if (d.dragon_primary) {
+      const p = dragons.find(x => x.symbol === d.dragon_primary);
+      html += `<div style="background:#fff7e6;border:1px solid #f0d9ab;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:13px;">
+        🐉 <b>本期系统认定龙头：${p ? p.name + "（" + p.symbol + "）" : d.dragon_primary}</b>
+        ${p && p.confidence != null ? `（置信度 ${p.confidence}%）` : ""}
+        ${d.dragon_market_comment ? `<br><span class="muted">${d.dragon_market_comment}</span>` : ""}</div>`;
+    }
     const rows = dragons.map(b => `
       <tr>
         <td><b>${b.symbol}</b> ${b.name || ""}</td>
         <td>${gradeBadge(b.grade)} <span class="muted">${b.score}</span></td>
+        <td>${verdictBadge(b)}</td>
         <td>${b.sector || "-"}·${b.lbc}板</td>
         <td class="num">${b.close.toFixed(2)}</td>
         <td class="num">${b.stop.toFixed(2)}</td>
@@ -201,8 +215,8 @@ function renderPlan(d) {
         <td>${b.gate === "通过" ? "✅" : b.gate}</td>
         <td><button class="btn btn-buy btn-sm" onclick="buyFromScan('${b.symbol}','HOT-S')">建仓</button></td>
       </tr>`).join("");
-    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px;">🐉 龙头候选（超短 HOT-S · 三维验证评分）</div>
-      <table><thead><tr><th>代码/名称</th><th>等级</th><th>板块·连板</th><th class="num">参考价</th><th class="num">止损</th><th class="num">股数</th><th class="num">风险率</th><th>闸门预检</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px;">🐉 龙头候选（超短 HOT-S · 三维验证 + K3 系统判定）</div>
+      <table><thead><tr><th>代码/名称</th><th>等级</th><th>系统判定</th><th>板块·连板</th><th class="num">参考价</th><th class="num">止损</th><th class="num">股数</th><th class="num">风险率</th><th>闸门预检</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   if (trends.length) {
     const rows = trends.map(b => `

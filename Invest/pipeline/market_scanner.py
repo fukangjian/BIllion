@@ -359,6 +359,9 @@ def _build_scan_json(
             "lianban": hot.get("lianban", []),
             "hot_breakout": hot.get("hot_breakout", []),
             "dragon_candidates": hot.get("dragon_candidates", []),
+            "dragon_primary": hot.get("dragon_primary", ""),
+            "dragon_market_comment": hot.get("dragon_market_comment", ""),
+            "dragon_note": hot.get("dragon_note", ""),
             "note": hot.get("note", ""),
         },
     }
@@ -541,6 +544,9 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         "broken": [],
         "hot_breakout": [],
         "dragon_candidates": [],
+        "dragon_primary": "",
+        "dragon_market_comment": "",
+        "dragon_note": "",
         "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
     }
     try:
@@ -662,6 +668,30 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                     dragon_ctx = build_dragon_context(today)
                     grade_hot_candidates(records, dragon_ctx)
                     result["dragon_candidates"] = dragon_top(records)
+
+                    # Kimi K3 深度推理（系统自主辨龙头；失败降级按量化评分排序并标注）
+                    try:
+                        from research.dragon_reasoner import VERDICT_PRIORITY, reason_dragons
+
+                        reasoning = reason_dragons(result["dragon_candidates"], dragon_ctx, market_state)
+                        if reasoning:
+                            vmap = {v["symbol"]: v for v in reasoning["verdicts"]}
+                            for rec in result["dragon_candidates"]:
+                                v = vmap.get(rec["symbol"])
+                                if v:
+                                    rec["verdict"] = v["verdict"]
+                                    rec["confidence"] = v["confidence"]
+                                    rec["reasoning"] = v["reasoning"]
+                                    rec["risk"] = v["risk"]
+                            result["dragon_candidates"].sort(
+                                key=lambda r: (VERDICT_PRIORITY.get(r.get("verdict", ""), 9),
+                                               -r.get("dragon_score", 0)))
+                            result["dragon_primary"] = reasoning.get("primary") or ""
+                            result["dragon_market_comment"] = reasoning.get("market_comment", "")
+                        elif result["dragon_candidates"]:
+                            result["dragon_note"] = "未经深度推理，按量化评分排序"
+                    except Exception as e:
+                        logger.warning("龙头深度推理失败（已降级按量化评分排序）: %s", e)
                 except Exception as e:
                     logger.warning("龙头评分失败（已降级，候选不含龙头字段）: %s", e)
                     result["dragon_candidates"] = []
@@ -847,29 +877,52 @@ def _format_report(
                 for nm, b in basis_items[:10]:
                     lines.append(f"- {nm}：{b}")
 
-            # 龙头候选子表（三维验证评分：身位/梯队/强度/逻辑/情绪，S/A/B 级）
+            # 龙头候选子表（三维验证评分：身位/梯队/强度/逻辑/情绪，S/A/B 级 + K3 系统判定）
             dragons = hot.get("dragon_candidates", [])
             if dragons:
                 lines.extend([
                     "",
-                    "### 🐉 龙头候选（三维验证评分，S≥80 / A 65-79 / B 50-64）",
+                    "### 🐉 龙头候选（三维验证评分 + Kimi K3 深度推理判定）",
                     "",
-                    "| 代码 | 名称 | 板块 | 连板 | 等级 | 总分 | 身位 | 梯队 | 强度 | 逻辑 | 情绪 |",
-                    "|------|------|------|------|------|------|------|------|------|------|------|",
+                ])
+                primary = hot.get("dragon_primary")
+                if primary:
+                    p_name = next((r.get("name", "") for r in dragons if r["symbol"] == primary), "")
+                    comment = hot.get("dragon_market_comment", "")
+                    lines.append(f"**本期系统认定龙头：{p_name}（{primary}）**"
+                                 + (f" —— {comment}" if comment else ""))
+                    lines.append("")
+                if hot.get("dragon_note"):
+                    lines.extend([f"_{hot['dragon_note']}_", ""])
+                lines.extend([
+                    "| 代码 | 名称 | 板块 | 连板 | 等级 | 总分 | 系统判定 | 身位 | 梯队 | 强度 | 逻辑 | 情绪 |",
+                    "|------|------|------|------|------|------|----------|------|------|------|------|------|",
                 ])
                 for r in dragons:
                     d = r.get("dragon_dims", {})
+                    verdict = r.get("verdict", "-")
+                    conf = r.get("confidence")
+                    verdict_text = f"{verdict} {conf}%" if conf is not None else verdict
                     lines.append(
                         f"| {r['symbol']} | {r.get('name', '')} | {r.get('sector', '')} "
                         f"| {r.get('lbc', 0)} | **{r.get('dragon_grade', '')}** "
-                        f"| {r.get('dragon_score', 0)} | {d.get('身位', '-')} | {d.get('梯队', '-')} "
-                        f"| {d.get('强度', '-')} | {d.get('逻辑', '-')} | {d.get('情绪', '-')} |"
+                        f"| {r.get('dragon_score', 0)} | {verdict_text} | {d.get('身位', '-')} "
+                        f"| {d.get('梯队', '-')} | {d.get('强度', '-')} | {d.get('逻辑', '-')} | {d.get('情绪', '-')} |"
                     )
+                reason_items = [
+                    (r.get("name") or r["symbol"], r.get("verdict", ""), r.get("reasoning", ""), r.get("risk", ""))
+                    for r in dragons[:5] if r.get("reasoning")
+                ]
+                if reason_items:
+                    lines.extend(["", "**系统判定理由（Kimi K3，引用数据）**：", ""])
+                    for nm, verdict, reasoning, risk in reason_items:
+                        risk_part = f"；风险：{risk}" if risk else ""
+                        lines.append(f"- {nm}（{verdict}）：{reasoning}{risk_part}")
                 lines.extend([
                     "",
                     "> 龙头评分口径：身位（板块最高板 30 / 首板封板前 3 得 20 / 跟风 8）+ 梯队（板块涨停家数与层级）"
                     "+ 强度（换手率/封单/炸板次数，一字板降档）+ 逻辑（⑧催化）+ 情绪（大盘涨停家数）；"
-                    "量化给数据，辨龙头的最终判断由人做（《如何识别真假龙头》§五）。",
+                    "系统判定由 Kimi K3 综合上述事实深度推理给出（无 Key 或调用失败时降级为纯量化评分排序并标注）。",
                 ])
             lines.extend([
                 "",

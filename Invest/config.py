@@ -290,6 +290,13 @@ LLM_PROVIDER_PRIORITY = ["kimi", "deepseek", "custom"]
 # Kimi 长文模型（公告等 task_type=announcement 时使用）
 KIMI_MODEL_LONG = os.getenv("KIMI_MODEL_LONG", "moonshot-v1-32k")
 
+# Kimi 深度推理模型（task_type=reasoning：龙头辨识等多维综合研判；kimi-k3 为 2026-07 旗舰推理模型）
+KIMI_MODEL_REASONING = os.getenv("KIMI_MODEL_REASONING", "kimi-k3")
+
+# --- 龙头深度推理（research/dragon_reasoner.py，系统自主辨龙头） ---
+DRAGON_REASON_ENABLED = os.getenv("DRAGON_REASON_ENABLED", "true").lower() == "true"  # false 时跳过 LLM 推理，按量化评分排序
+DRAGON_REASON_MAX = 8        # 每日深度推理候选上限（控制 LLM 调用量与耗时）
+
 # --- FastAPI 服务与定时调度 ---
 SCHEDULER_ENABLED = os.getenv("ENABLE_SCHEDULER", "").lower() == "true"
 SCHEDULER_TIME = os.getenv("SCHEDULER_TIME", "08:30")
