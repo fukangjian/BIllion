@@ -120,6 +120,10 @@ CREATE TABLE IF NOT EXISTS limit_pool (
     amount      REAL,
     lbc         INTEGER,
     sector      TEXT,
+    fbt         TEXT,
+    seal_amount REAL,
+    turnover    REAL,
+    zbc         INTEGER,
     PRIMARY KEY (trade_date, symbol, pool_type)
 );
 
@@ -161,6 +165,15 @@ def _migrate_signals_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {ddl}")
 
 
+def _migrate_limit_pool_columns(conn: sqlite3.Connection) -> None:
+    """老库 limit_pool 表补列（幂等）：fbt/seal_amount/turnover/zbc（2026-08 龙头评分数据）"""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(limit_pool)")}
+    for col, ddl in (("fbt", "TEXT"), ("seal_amount", "REAL"),
+                     ("turnover", "REAL"), ("zbc", "INTEGER")):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE limit_pool ADD COLUMN {col} {ddl}")
+
+
 def ensure_data_dir() -> None:
     """确保数据目录存在"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -187,6 +200,7 @@ def init_database(db_path: Optional[Path] = None) -> None:
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
         _migrate_signals_columns(conn)
+        _migrate_limit_pool_columns(conn)
     logger.info("数据库初始化完成: %s", db_path or DB_PATH)
 
 

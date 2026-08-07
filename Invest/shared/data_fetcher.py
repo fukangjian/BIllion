@@ -475,7 +475,8 @@ def fetch_limit_pools(trade_date: Optional[str] = None) -> pd.DataFrame:
     """
     获取涨停/炸板个股名单（超短热点原料；东财 push2ex 主机，与行情 push2 不同，风控互不影响）。
 
-    返回列: symbol / name / pool_type(up=涨停, broken=炸板) / change_pct / amount / lbc(连板数) / sector。
+    返回列: symbol / name / pool_type(up=涨停, broken=炸板) / change_pct / amount / lbc(连板数) / sector
+    / fbt(首次封板时间) / seal_amount(封板资金) / turnover(换手率) / zbc(炸板次数)。
     单个池失败降级跳过，不阻塞另一个池；全失败返回空 DataFrame。
     """
     if trade_date is None:
@@ -487,6 +488,7 @@ def fetch_limit_pools(trade_date: Optional[str] = None) -> pd.DataFrame:
     def _append(df: pd.DataFrame, pool_type: str) -> None:
         for _, row in df.iterrows():
             lbc_val = row.get("连板数", 1)
+            fbt_val = row.get("首次封板时间", "")
             records.append({
                 "symbol": str(row.get("代码", "")).zfill(6)[-6:],
                 "name": str(row.get("名称", "")),
@@ -495,6 +497,11 @@ def fetch_limit_pools(trade_date: Optional[str] = None) -> pd.DataFrame:
                 "amount": float(pd.to_numeric(row.get("成交额", 0), errors="coerce") or 0),
                 "lbc": int(lbc_val) if pool_type == "up" and pd.notna(lbc_val) else 0,
                 "sector": str(row.get("所属行业", "")),
+                # 龙头评分数据（2026-08 扩列）：首次封板时间/封板资金/换手率/炸板次数
+                "fbt": str(fbt_val) if pd.notna(fbt_val) else "",
+                "seal_amount": float(pd.to_numeric(row.get("封板资金", 0), errors="coerce") or 0),
+                "turnover": float(pd.to_numeric(row.get("换手率", 0), errors="coerce") or 0),
+                "zbc": int(pd.to_numeric(row.get("炸板次数", 0), errors="coerce") or 0),
             })
 
     try:
