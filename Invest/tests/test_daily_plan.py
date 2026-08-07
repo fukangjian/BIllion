@@ -60,8 +60,8 @@ class TestBuyCandidates:
             _scan_json(s1a=[_cand()]), _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
-        assert len(plan["buy_candidates"]) == 1
-        b = plan["buy_candidates"][0]
+        assert len(plan["trend_buys"]) == 1
+        b = plan["trend_buys"][0]
         assert b["symbol"] == "600519"
         assert b["system"] == "S1-A"
         assert b["stop"] == pytest.approx(96.0)       # 100 − 2×2
@@ -76,7 +76,7 @@ class TestBuyCandidates:
             _scan_json(s1a=[_cand(passed=2)]), _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
-        assert plan["buy_candidates"] == []
+        assert plan["trend_buys"] == []
 
     def test_cooldown_record_false_excluded(self, tmp_path):
         """冷却中（record=False）→ 不入清单"""
@@ -84,7 +84,7 @@ class TestBuyCandidates:
             _scan_json(s1a=[_cand(record=False, note="冷却中（连续假突破×3）")]), _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
-        assert plan["buy_candidates"] == []
+        assert plan["trend_buys"] == []
 
     def test_cap_and_order_by_breakout(self, tmp_path):
         """候选上限 5 只，按突破幅度降序保留"""
@@ -93,7 +93,7 @@ class TestBuyCandidates:
             _scan_json(s1a=cands), _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
-        buys = plan["buy_candidates"]
+        buys = plan["trend_buys"]
         assert len(buys) == 5
         assert [b["symbol"] for b in buys] == ["600006", "600005", "600004", "600003", "600002"]
 
@@ -103,9 +103,9 @@ class TestBuyCandidates:
             _scan_json(s1a=[_cand(symbol="300750")]), _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
-        assert len(plan["buy_candidates"]) == 1
-        assert "⛔" in plan["buy_candidates"][0]["gate"]
-        assert "禁买板块" in plan["buy_candidates"][0]["gate"]
+        assert len(plan["trend_buys"]) == 1
+        assert "⛔" in plan["trend_buys"][0]["gate"]
+        assert "禁买板块" in plan["trend_buys"][0]["gate"]
 
     def test_s2a_account_mapping(self, tmp_path):
         """S2-A 候选默认账户为核心"""
@@ -113,7 +113,7 @@ class TestBuyCandidates:
             _scan_json(s2a=[_cand(passed=4, required=4)]), _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
-        assert plan["buy_candidates"][0]["account"] == "核心"
+        assert plan["trend_buys"][0]["account"] == "核心"
 
     def test_same_symbol_dual_system_dedup_prefers_s2a(self, tmp_path):
         """同股同时出现 S1-A/S2-A 信号 → 去重保留 S2-A（与 from-scan 默认一致）"""
@@ -122,8 +122,59 @@ class TestBuyCandidates:
             _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
-        assert len(plan["buy_candidates"]) == 1
-        assert plan["buy_candidates"][0]["system"] == "S2-A"
+        assert len(plan["trend_buys"]) == 1
+        assert plan["trend_buys"][0]["system"] == "S2-A"
+
+
+def _dragon(symbol="601700", name="风范股份", grade="S", score=85, close=6.51, atr=0.26):
+    return {
+        "symbol": symbol, "name": name, "close": close, "channel_high": close * 0.9,
+        "breakout_pct": 10.0, "atr_20": atr, "period": 20, "source": "连板",
+        "sector": "电网设备", "lbc": 4, "dragon_grade": grade, "dragon_score": score,
+        "dragon_dims": {"身位": 30, "梯队": 20, "强度": 15, "逻辑": 20, "情绪": 10},
+        "analysis": "符合 4 条（①③④⑧）",
+    }
+
+
+class TestDragonBuys:
+    def test_dragon_candidates_included_with_params(self, tmp_path):
+        """龙头候选入清单：HOT-S / 事件账户 / 止损=收盘−2×ATR / 等级与五维携带"""
+        scan = _scan_json()
+        scan["hot_pool"] = {"dragon_candidates": [_dragon()]}
+        plan = build_daily_plan(
+            scan, _monitor(),
+            equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
+        )
+        assert len(plan["dragon_buys"]) == 1
+        b = plan["dragon_buys"][0]
+        assert b["system"] == "HOT-S"
+        assert b["account"] == "事件"
+        assert b["grade"] == "S" and b["score"] == 85
+        assert b["stop"] == pytest.approx(6.51 - 0.52)  # 6.51 − 2×0.26
+        assert b["dims"]["身位"] == 30
+
+    def test_no_dragon_only_trend(self, tmp_path):
+        """无龙头候选时 dragon_buys 为空、趋势组照常"""
+        plan = build_daily_plan(
+            _scan_json(s1a=[_cand()]), _monitor(),
+            equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
+        )
+        assert plan["dragon_buys"] == []
+        assert len(plan["trend_buys"]) == 1
+
+    def test_markdown_dragon_before_trend(self, tmp_path):
+        """报告龙头组在趋势组之前，两组标题并存"""
+        scan = _scan_json(s1a=[_cand()])
+        scan["hot_pool"] = {"dragon_candidates": [_dragon()]}
+        plan = build_daily_plan(
+            scan, _monitor(),
+            equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
+        )
+        md = "\n".join(daily_plan_to_markdown(plan))
+        i_dragon = md.index("🐉 龙头候选")
+        i_trend = md.index("📈 趋势候选")
+        assert i_dragon < i_trend
+        assert "HOT-S" in md
 
 
 class TestPositionActions:
