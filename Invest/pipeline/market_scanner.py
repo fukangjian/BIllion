@@ -358,6 +358,7 @@ def _build_scan_json(
             "broken_count": len(hot.get("broken", [])),
             "lianban": hot.get("lianban", []),
             "hot_breakout": hot.get("hot_breakout", []),
+            "dragon_candidates": hot.get("dragon_candidates", []),
             "note": hot.get("note", ""),
         },
     }
@@ -539,6 +540,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         "lianban": [],
         "broken": [],
         "hot_breakout": [],
+        "dragon_candidates": [],
         "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
     }
     try:
@@ -628,6 +630,41 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                 # 规则满足条数高的排前面，便于盘前快速筛选
                 records.sort(key=lambda x: (-x["rules_met"], -x["breakout_pct"]))
                 result["hot_breakout"] = records
+
+                # 龙头评分（《如何识别真假龙头》三维验证可量化部分）：
+                # 合并涨停池身位/强度字段 + 一字板判定 + ⑧催化，逐条打分，产出 dragon_candidates
+                try:
+                    from pipeline.dragon_head import (
+                        build_dragon_context,
+                        dragon_top,
+                        grade_hot_candidates,
+                    )
+
+                    limit_info = {}
+                    if not limit_today.empty:
+                        for _, lr in limit_today[limit_today["pool_type"] == "up"].iterrows():
+                            limit_info[str(lr["symbol"])] = lr
+                    for rec in records:
+                        lr = limit_info.get(rec["symbol"])
+                        if lr is not None:
+                            rec["lbc"] = int(lr.get("lbc", 0) or 0)
+                            rec["fbt"] = str(lr.get("fbt", "") or "")
+                            rec["turnover"] = float(lr.get("turnover", 0) or 0)
+                            rec["seal_amount"] = float(lr.get("seal_amount", 0) or 0)
+                            rec["zbc"] = int(lr.get("zbc", 0) or 0)
+                        sdf = symbols_data.get(rec["symbol"])
+                        if sdf is not None and not sdf.empty:
+                            last = sdf.sort_values("trade_date").iloc[-1]
+                            rec["one_word_board"] = bool(
+                                last["open"] == last["high"] == last["low"] == last["close"]
+                            )
+                        rec["catalyst"] = catalyst_map.get(rec["symbol"])
+                    dragon_ctx = build_dragon_context(today)
+                    grade_hot_candidates(records, dragon_ctx)
+                    result["dragon_candidates"] = dragon_top(records)
+                except Exception as e:
+                    logger.warning("龙头评分失败（已降级，候选不含龙头字段）: %s", e)
+                    result["dragon_candidates"] = []
 
         result["available"] = True
         result["note"] = ""
@@ -809,6 +846,31 @@ def _format_report(
                 lines.extend(["", "**候选⑧催化依据（公告事实 / LLM 判定）**：", ""])
                 for nm, b in basis_items[:10]:
                     lines.append(f"- {nm}：{b}")
+
+            # 龙头候选子表（三维验证评分：身位/梯队/强度/逻辑/情绪，S/A/B 级）
+            dragons = hot.get("dragon_candidates", [])
+            if dragons:
+                lines.extend([
+                    "",
+                    "### 🐉 龙头候选（三维验证评分，S≥80 / A 65-79 / B 50-64）",
+                    "",
+                    "| 代码 | 名称 | 板块 | 连板 | 等级 | 总分 | 身位 | 梯队 | 强度 | 逻辑 | 情绪 |",
+                    "|------|------|------|------|------|------|------|------|------|------|------|",
+                ])
+                for r in dragons:
+                    d = r.get("dragon_dims", {})
+                    lines.append(
+                        f"| {r['symbol']} | {r.get('name', '')} | {r.get('sector', '')} "
+                        f"| {r.get('lbc', 0)} | **{r.get('dragon_grade', '')}** "
+                        f"| {r.get('dragon_score', 0)} | {d.get('身位', '-')} | {d.get('梯队', '-')} "
+                        f"| {d.get('强度', '-')} | {d.get('逻辑', '-')} | {d.get('情绪', '-')} |"
+                    )
+                lines.extend([
+                    "",
+                    "> 龙头评分口径：身位（板块最高板 30 / 首板封板前 3 得 20 / 跟风 8）+ 梯队（板块涨停家数与层级）"
+                    "+ 强度（换手率/封单/炸板次数，一字板降档）+ 逻辑（⑧催化）+ 情绪（大盘涨停家数）；"
+                    "量化给数据，辨龙头的最终判断由人做（《如何识别真假龙头》§五）。",
+                ])
             lines.extend([
                 "",
                 "> **口径说明**：突破幅度% =（收盘价 − 20 日通道高点）/ 通道高点 ×100，即收盘越过前 20 日最高价的幅度；",
