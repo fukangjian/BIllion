@@ -206,6 +206,13 @@ function renderPlan(d) {
         ${p && p.confidence != null ? `（置信度 ${p.confidence}%）` : ""}
         ${d.dragon_market_comment ? `<br><span class="muted">${d.dragon_market_comment}</span>` : ""}</div>`;
     }
+    if (d.sector_focus && d.sector_focus.length) {
+      const chipColor = { "持续": "#1a7f43", "一日": "#b4690e", "退潮": "#8a919e" };
+      html += `<div style="margin-bottom:10px;font-size:12.5px;">🗺️ <b>明日板块聚焦</b>：` +
+        d.sector_focus.map(s =>
+          `<span class="badge" style="background:#f0f1f3;color:${chipColor[s.sustainability] || "#4a5568"}" title="${(s.reason || "").replace(/"/g, "'")}">${s.sector}·${s.sustainability}</span>`
+        ).join(" ") + `</div>`;
+    }
     const rows = dragons.map(b => `
       <tr>
         <td><b>${b.symbol}</b> ${b.name || ""}</td>
@@ -219,8 +226,16 @@ function renderPlan(d) {
         <td>${b.gate === "通过" ? "✅" : b.gate}</td>
         <td><button class="btn btn-buy btn-sm" onclick="buyFromScan('${b.symbol}','HOT-S')">建仓</button></td>
       </tr>`).join("");
-    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px;">🐉 龙头候选（超短 HOT-S · 三维验证 + K3 系统判定）</div>
+    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px;">🐉 龙头候选（超短 HOT-S · 三维验证 + Kimi 推理判定）</div>
       <table><thead><tr><th>代码/名称</th><th>等级</th><th>系统判定</th><th>板块·连板</th><th class="num">参考价</th><th class="num">止损</th><th class="num">股数</th><th class="num">风险率</th><th>闸门预检</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    if (d.bid_checklist && d.bid_checklist.length) {
+      html += `<div style="margin-top:10px;background:#f0f5ff;border:1px solid #cfe0ff;border-radius:8px;padding:10px 14px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px;">⏰ 9:25 竞价核对清单</div>
+        <div class="muted" style="font-size:11.5px;margin-bottom:6px;">竞价后只盯这几只，不看全市场；对照执行，不临场发挥</div>
+        <ul style="font-size:12.5px;line-height:1.9;padding-left:18px;margin:0;">
+          ${d.bid_checklist.map(i => `<li><b>${i.symbol} ${i.name}</b>：${i.text}</li>`).join("")}
+        </ul></div>`;
+    }
   }
   if (trends.length) {
     const rows = trends.map(b => `

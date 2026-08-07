@@ -71,10 +71,11 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
     }
 
 
-def _parse_verdicts(text: str | None, valid_symbols: set) -> dict | None:
+def _parse_verdicts(text: str | None, valid_symbols: set, ctx_sectors: set | None = None) -> dict | None:
     """
     解析 LLM JSON 输出（防编造护栏）：未知 symbol 丢弃、verdict 枚举校验、
-    confidence 截断 0-100、primary 必须在候选集内。解析失败返回 None。
+    confidence 截断 0-100、primary 必须在候选集内、sector_focus 板块名须在梯队上下文内
+    且可持续性枚举校验。解析失败返回 None。
     """
     if not text:
         return None
@@ -110,9 +111,27 @@ def _parse_verdicts(text: str | None, valid_symbols: set) -> dict | None:
     primary = str(data.get("primary", "")).zfill(6)[-6:]
     if primary not in valid_symbols:
         primary = ""
+
+    # 明日板块聚焦（架构A 顶层逻辑梳理）：板块名/持续性枚举护栏
+    sector_focus = []
+    valid_sectors = set(ctx_sectors or [])
+    for s in data.get("sector_focus") or []:
+        name = str(s.get("sector", ""))
+        if not name or (valid_sectors and name not in valid_sectors):
+            continue
+        sustainability = str(s.get("sustainability", ""))
+        if sustainability not in ("持续", "一日", "退潮"):
+            sustainability = "一日"
+        sector_focus.append({
+            "sector": name,
+            "sustainability": sustainability,
+            "reason": str(s.get("reason", ""))[:150],
+        })
+
     return {
         "primary": primary,
         "verdicts": verdicts,
+        "sector_focus": sector_focus,
         "market_comment": str(data.get("market_comment", ""))[:200],
     }
 
@@ -144,7 +163,7 @@ def reason_dragons(
         task_type="reasoning",
     )
     valid = {str(c["symbol"]).zfill(6)[-6:] for c in cands}
-    result = _parse_verdicts(text, valid)
+    result = _parse_verdicts(text, valid, ctx_sectors=set((ctx.get("sectors") or {}).keys()))
     if result is None:
         logger.warning("龙头推理结果解析失败（降级量化评分排序）")
     return result

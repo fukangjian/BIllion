@@ -362,6 +362,7 @@ def _build_scan_json(
             "dragon_primary": hot.get("dragon_primary", ""),
             "dragon_market_comment": hot.get("dragon_market_comment", ""),
             "dragon_note": hot.get("dragon_note", ""),
+            "sector_focus": hot.get("sector_focus", []),
             "note": hot.get("note", ""),
         },
     }
@@ -547,6 +548,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         "dragon_primary": "",
         "dragon_market_comment": "",
         "dragon_note": "",
+        "sector_focus": [],
         "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
     }
     try:
@@ -690,6 +692,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                                                -r.get("dragon_score", 0)))
                             result["dragon_primary"] = reasoning.get("primary") or ""
                             result["dragon_market_comment"] = reasoning.get("market_comment", "")
+                            result["sector_focus"] = reasoning.get("sector_focus", [])
                         elif result["dragon_candidates"]:
                             from config import DRAGON_REASON_ENABLED
                             from shared.llm_client import has_llm_api_key

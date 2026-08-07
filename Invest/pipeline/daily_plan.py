@@ -213,6 +213,16 @@ def build_daily_plan(
         "重大公告后计划建 >5% 仓位或「必须马上买」的感觉出现时：72 小时内只小仓试错（72 小时规则）",
     ])
 
+    # ---- 9:25 竞价核对清单（《如何识别真假龙头》第二板斧：前置观察池，竞价定去留） ----
+    bid_checklist = []
+    for b in dragon_buys:
+        bid_checklist.append({
+            "symbol": b["symbol"],
+            "name": b["name"],
+            "text": (f"高开 3%~5% 且竞价放量 → 超预期，按计划执行（买 {b['shares']} 股 @≤{b['close']:.2f}，"
+                     f"止损 {b['stop']:.2f}）；一字板 → 不追（看同板块龙二）；低开 → 不及预期，剔除"),
+        })
+
     return {
         "date": scan_json.get("date", ""),
         "market_state": market_state,
@@ -220,8 +230,10 @@ def build_daily_plan(
         "dragon_primary": (scan_json.get("hot_pool") or {}).get("dragon_primary", ""),
         "dragon_market_comment": (scan_json.get("hot_pool") or {}).get("dragon_market_comment", ""),
         "dragon_note": (scan_json.get("hot_pool") or {}).get("dragon_note", ""),
+        "sector_focus": (scan_json.get("hot_pool") or {}).get("sector_focus", []),
         "dragon_buys": dragon_buys,
         "trend_buys": trend_buys,
+        "bid_checklist": bid_checklist,
         "position_actions": position_actions,
         "no_trade_conditions": no_trade,
     }
@@ -271,10 +283,30 @@ def daily_plan_to_markdown(plan: dict) -> list[str]:
             reason_items = [(b.get("name") or b["symbol"], b.get("verdict", ""), b["reasoning"])
                             for b in dragons[:5] if b.get("reasoning")]
             if reason_items:
-                lines.extend(["", "**系统判定理由（Kimi K3）**：", ""])
+                lines.extend(["", "**系统判定理由（Kimi 推理模型）**：", ""])
                 for nm, verdict, reasoning in reason_items:
                     lines.append(f"- {nm}（{verdict}）：{reasoning}")
+            sector_focus = plan.get("sector_focus") or []
+            if sector_focus:
+                focus_text = "；".join(
+                    f"{s['sector']}（{s['sustainability']}）" for s in sector_focus
+                )
+                lines.extend(["", f"**明日板块聚焦**：{focus_text}"])
             lines.append("")
+
+        # 9:25 竞价核对清单（龙头候选专用，竞价定去留）
+        bid = plan.get("bid_checklist", [])
+        if bid:
+            lines.extend([
+                "#### ⏰ 9:25 竞价核对清单",
+                "",
+                "> 竞价后只盯这几只，不看全市场；对照执行，不临场发挥。",
+                "",
+            ])
+            for item in bid:
+                lines.append(f"- **{item['symbol']} {item['name']}**：{item['text']}")
+            lines.append("")
+
         if trends:
             lines.extend([
                 f"#### 📈 趋势候选（S1-A/S2-A 滤网全过，{len(trends)} 只）",
