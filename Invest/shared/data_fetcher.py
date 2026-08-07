@@ -58,68 +58,72 @@ def _sina_symbol(symbol: str) -> str:
     return f"sz{symbol}"
 
 
+def _fetch_ths_line(js_symbol: str, start_year: int, end_year: int) -> pd.DataFrame:
+    """
+    同花顺 d.10jqka v4/line 年度 K 线（01=前复权；分年抓取，单年失败跳过）。
+    返回原始 DataFrame：trade_date/open/high/low/close/volume/amount
+    """
+    import json
+
+    import requests
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+        "Referer": "http://stockpage.10jqka.com.cn/",
+    }
+    rows = []
+    with bypass_proxy():
+        for year in range(start_year, end_year + 1):
+            url = f"https://d.10jqka.com.cn/v4/line/{js_symbol}/01/{year}.js"
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                if r.status_code != 200 or "(" not in r.text:
+                    continue
+                payload = json.loads(r.text[r.text.index("(") + 1: r.text.rindex(")")])
+                for item in (payload.get("data") or "").split(";"):
+                    parts = item.split(",")
+                    if len(parts) < 7 or not parts[0].isdigit():
+                        continue
+                    rows.append({
+                        "trade_date": _normalize_date(parts[0]),
+                        "open": _safe_float(parts[1]),
+                        "high": _safe_float(parts[2]),
+                        "low": _safe_float(parts[3]),
+                        "close": _safe_float(parts[4]),
+                        "volume": _safe_float(parts[5]),
+                        "amount": _safe_float(parts[6]),
+                    })
+            except Exception as e:
+                logger.warning("同花顺日线 %s %d 年失败（跳过该年）: %s", js_symbol, year, e)
+            time.sleep(0.2)
+    return pd.DataFrame(rows)
+
+
 def fetch_stock_daily(
     symbol: str,
     start_date: str = "20200101",
     end_date: Optional[str] = None,
     adjust: str = "qfq",
 ) -> pd.DataFrame:
-    """获取个股日线行情，优先新浪源，东方财富备用"""
+    """
+    获取个股日线行情（同花顺 d.10jqka v4/line，01 前复权）。
+
+    2026-08-07 起替换原「新浪优先、东财备用」链路——新浪/东财在本机持续被风控重置，
+    重试超时拖慢全量抓取（热点池/趋势池数百只）。
+    """
     end_date = end_date or datetime.now().strftime("%Y%m%d")
     start_date = start_date.replace("-", "")
     end_date = end_date.replace("-", "")
 
-    try:
-        raw = retry_fetch(
-            ak.stock_zh_a_daily,
-            symbol=_sina_symbol(symbol),
-            start_date=start_date,
-            end_date=end_date,
-            adjust=adjust,
-        )
-        if raw is not None and not raw.empty:
-            return pd.DataFrame({
-                "symbol": symbol,
-                "trade_date": raw["date"].apply(_normalize_date),
-                "open": raw["open"].astype(float),
-                "high": raw["high"].astype(float),
-                "low": raw["low"].astype(float),
-                "close": raw["close"].astype(float),
-                "volume": raw["volume"].astype(float),
-                "amount": raw.get("amount", pd.Series([0] * len(raw))).astype(float),
-            })
-    except Exception as e:
-        logger.warning("新浪源获取 %s 失败，尝试东方财富: %s", symbol, e)
-
-    def _fetch_em():
-        return ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-            adjust=adjust,
-        )
-
-    try:
-        raw = retry_fetch(_fetch_em)
-    except Exception as e:
-        logger.error("东方财富源也失败: %s", e)
-        return pd.DataFrame()
-
-    if raw is None or raw.empty:
-        logger.warning("股票 %s 无数据", symbol)
-        return pd.DataFrame()
-
-    return pd.DataFrame({
-        "symbol": symbol,
-        "trade_date": raw["日期"].apply(_normalize_date),
-        "open": raw["开盘"].astype(float),
-        "high": raw["最高"].astype(float),
-        "low": raw["最低"].astype(float),
-        "close": raw["收盘"].astype(float),
-        "volume": raw["成交量"].astype(float),
-        "amount": raw["成交额"].astype(float),
-    })
+    df = _fetch_ths_line(f"hs_{symbol}", int(start_date[:4]), int(end_date[:4]))
+    if df.empty:
+        logger.warning("同花顺源 %s 无数据", symbol)
+        return df
+    df["symbol"] = symbol
+    s, e = _normalize_date(start_date), _normalize_date(end_date)
+    df = df[(df["trade_date"] >= s) & (df["trade_date"] <= e)]
+    return df[["symbol", "trade_date", "open", "high", "low", "close", "volume", "amount"]].reset_index(drop=True)
 
 
 def fetch_index_daily(
@@ -127,61 +131,25 @@ def fetch_index_daily(
     start_date: str = "20200101",
     end_date: Optional[str] = None,
 ) -> pd.DataFrame:
-    """获取指数日线（如沪深300）"""
+    """获取指数日线（同花顺 v4/line，如沪深300；2026-08 起替代新浪/东财链路）"""
     end_date = end_date or datetime.now().strftime("%Y%m%d")
     start_date = start_date.replace("-", "")
     end_date = end_date.replace("-", "")
 
-    prefix_map = {"000300": "sh000300", "000001": "sh000001", "399001": "sz399001", "399006": "sz399006"}
-    sina_symbol = prefix_map.get(symbol, f"sh{symbol}")
-
-    def _fetch_sina():
-        raw = ak.stock_zh_index_daily(symbol=sina_symbol)
-        if raw is None or raw.empty:
-            return raw
-        raw = raw.copy()
-        raw["date"] = pd.to_datetime(raw["date"])
-        start = pd.to_datetime(start_date)
-        end = pd.to_datetime(end_date)
-        return raw[(raw["date"] >= start) & (raw["date"] <= end)]
-
-    def _fetch_em():
-        return ak.index_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-    raw = None
-    try:
-        raw = retry_fetch(_fetch_sina)
-    except Exception as e:
-        logger.warning("新浪指数接口失败，尝试东方财富: %s", e)
-        try:
-            raw = retry_fetch(_fetch_em)
-        except Exception as e2:
-            logger.error("东方财富指数接口也失败: %s", e2)
-            return pd.DataFrame()
-
-    if raw is None or raw.empty:
+    # 同花顺指数代码映射（目前仅沪深300在用；未映射的代码降级空表）
+    ths_map = {"000300": "zs_1B0300"}
+    js_symbol = ths_map.get(symbol)
+    if not js_symbol:
+        logger.warning("指数 %s 无同花顺代码映射，返回空表", symbol)
         return pd.DataFrame()
 
-    if "日期" in raw.columns:
-        date_col, o, h, l, c, v, a = "日期", "开盘", "最高", "最低", "收盘", "成交量", "成交额"
-    else:
-        date_col, o, h, l, c, v, a = "date", "open", "high", "low", "close", "volume", "amount"
-
-    return pd.DataFrame({
-        "symbol": symbol,
-        "trade_date": raw[date_col].apply(_normalize_date),
-        "open": raw[o].astype(float),
-        "high": raw[h].astype(float),
-        "low": raw[l].astype(float),
-        "close": raw[c].astype(float),
-        "volume": raw[v].astype(float) if v in raw.columns else 0.0,
-        "amount": raw[a].astype(float) if a in raw.columns else 0.0,
-    })
+    df = _fetch_ths_line(js_symbol, int(start_date[:4]), int(end_date[:4]))
+    if df.empty:
+        return df
+    df["symbol"] = symbol
+    s, e = _normalize_date(start_date), _normalize_date(end_date)
+    df = df[(df["trade_date"] >= s) & (df["trade_date"] <= e)]
+    return df[["symbol", "trade_date", "open", "high", "low", "close", "volume", "amount"]].reset_index(drop=True)
 
 
 def fetch_sector_list() -> pd.DataFrame:
