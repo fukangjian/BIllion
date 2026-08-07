@@ -175,6 +175,25 @@ class TestDragonBuys:
         assert i_dragon < i_trend
         assert "HOT-S" in md
 
+    def test_verdict_priority_ordering(self, tmp_path):
+        """系统判定排序：真龙头排前（即使量化分低于疑似龙头）"""
+        d1 = _dragon(symbol="600001", name="高分疑似", grade="S", score=90)
+        d1["verdict"] = "疑似龙头"
+        d1["confidence"] = 60
+        d2 = _dragon(symbol="600002", name="低分真龙", grade="A", score=70)
+        d2["verdict"] = "真龙头"
+        d2["confidence"] = 80
+        scan = _scan_json()
+        scan["hot_pool"] = {"dragon_candidates": [d1, d2], "dragon_primary": "600002"}
+        plan = build_daily_plan(
+            scan, _monitor(),
+            equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
+        )
+        assert [b["symbol"] for b in plan["dragon_buys"]] == ["600002", "600001"]
+        assert plan["dragon_primary"] == "600002"
+        md = "\n".join(daily_plan_to_markdown(plan))
+        assert "本期系统认定龙头：低分真龙（600002）" in md
+
 
 class TestPositionActions:
     def test_alerts_become_actions(self, tmp_path):
