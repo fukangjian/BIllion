@@ -40,7 +40,7 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── market_scanner.py   # 市场扫描（池=WATCHLIST∪趋势池，突破×三重滤网×系统1过滤）+ 持仓监控区块 + 超短热点区块，同写 MD + JSON
     │   ├── hot_pool.py         # 超短热点池：涨停/连板/炸板+强板块领涨股，构建与日线补抓
     │   ├── dragon_head.py      # 龙头识别评分：身位/梯队/强度/逻辑/情绪五维（S/A/B/C 等级）
-    │   ├── trend_pool.py       # 趋势动态池：强势板块 Top5 成分股（双源：同花顺直连优先/东财备用）→ 剔除创业板 → 入池补抓
+    │   ├── trend_pool.py       # 趋势动态池：强势板块 Top5 成分股（双源：同花顺直连优先/东财备用）→ 入池补抓
     │   ├── trend_filters.py    # 三重滤网量化纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）
     │   ├── daily_plan.py       # 盘前操作清单：滤网全过候选带止损/股数/闸门预检 + 持仓行动 + 不交易条件
     │   ├── signal_tracker.py   # 信号追踪：突破信号入库（含市场状态/滤网/附注）、每日结算、胜率/平均R + 市场状态分层统计
@@ -51,7 +51,8 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── announcement_analyzer.py / announcement_fetcher.py  # 公告 fallback 链 + 防编造护栏 + PDF 提取
     │   ├── financial_comparison.py # 财报对比
     │   ├── industry_mapper.py      # 产业链映射
-    │   └── catalyst_analyzer.py    # 买入规则⑧催化自动判定（公告链 + has_real_content 护栏 + LLM）
+    │   ├── catalyst_analyzer.py    # 买入规则⑧催化自动判定（公告链 + has_real_content 护栏 + LLM）
+    │   └── dragon_reasoner.py    # 龙头深度推理（Kimi K3，task_type=reasoning，防编造护栏）
     ├── backtest/               # Backtrader 回测（S1-A / S2-A 策略，与实盘共用 config 策略参数）
     ├── review/                 # 交易复盘
     │   ├── cli.py              # 子命令：add/update/list/show/stats/weekly/monthly/check/positions/import/sell-check/from-scan/add-position/sell
@@ -65,7 +66,7 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── import_broker.py    # 券商成交导入（MD 表/CSV → FIFO 配对落库，不过入场闸门）
     │   ├── discipline_audit.py # 纪律自动审计（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
     │   ├── metrics.py / compliance_check.py / report_generator.py
-    ├── tests/                  # pytest 单元测试（372 用例）
+    ├── tests/                  # pytest 单元测试（384 用例）
     ├── data/                   # 数据存储（market.db、trades.json、公告与 LLM 缓存）
     └── output/                 # 报告输出（日报、扫描、持仓监控 JSON、回测图等）
 ```
@@ -147,7 +148,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 改动代码时请遵守以下既有约定（源自 `ARCHITECTURE.md` 与代码实践）：
 
-- **配置集中化**：所有路径、API、规则参数统一放 `config.py`，**禁止在业务代码中硬编码** vault 路径、密钥或规则数值。合规规则（风险上限、仓位上限、簇限制）映射「投资体系 V5.0」，限额已按 3.25 万小资金校准（2026-07），改动需与该体系对齐；`BANNED_BOARD_PREFIXES=("300","301")` 禁买创业板为建仓闸门高级违规。**策略参数单一来源**：通道周期、ATR、止损倍数、加仓间距等全部在 `STRATEGY_PARAMS` / `ATR_*` / `ADD_SPACING_*`，扫描、监控、信号追踪、回测、仓位计算共同引用，不得另起字面量。
+- **配置集中化**：所有路径、API、规则参数统一放 `config.py`，**禁止在业务代码中硬编码** vault 路径、密钥或规则数值。合规规则（风险上限、仓位上限、簇限制）映射「投资体系 V5.0」，限额已按 3.25 万小资金校准（2026-07），改动需与该体系对齐；`BANNED_BOARD_PREFIXES` 禁买板块前缀（2026-08-07 起默认空——创业板已放开；配置前缀即恢复建仓闸门高级违规与纪律审计）。**策略参数单一来源**：通道周期、ATR、止损倍数、加仓间距等全部在 `STRATEGY_PARAMS` / `ATR_*` / `ADD_SPACING_*`，扫描、监控、信号追踪、回测、仓位计算共同引用，不得另起字面量。
 - **注释与文档使用中文**。部分业务数据结构直接使用中文键名/字段名（如 `review/trade_log.py` 的 `Trade` dataclass 字段为中文），保持一致，不要擅自英文化。
 - **模块独立可运行**：每个脚本都有 `if __name__ == "__main__"` CLI 入口，可单独调试；脚本/测试文件顶部用 `sys.path.insert(0, str(ROOT))` 定位项目根后再 `from config import ...`。
 - **优雅降级**：无 LLM Key、网络失败、数据源不可用时必须仍能输出原始数据或 fallback 模板，并在报告中标注；单只股票抓取失败不阻塞其他标的；持仓监控/信号追踪失败不得拖垮扫描与日报主流程。
@@ -162,7 +163,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **372 个用例**（指标 16 + 合规 12 + 持仓 8 + 监控 30 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 10 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1 + 盘前清单 13 + 交易操作层 12 + Web API 10 + 龙头评分 13 + 计划双组 3），已验证全部通过（`372 passed`，2026-08-07 复测）。
+- 框架：pytest，目录 `Invest/tests/`，共 **384 个用例**（指标 16 + 合规 12 + 持仓 8 + 监控 30 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 10 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1 + 盘前清单 13 + 交易操作层 12 + Web API 10 + 龙头评分 13 + 计划双组 3+1 + K3 推理 10），已验证全部通过（`384 passed`，2026-08-07 复测）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。部分用例由参数化/动态生成（如 `test_compliance_gate.py` 46 例、`test_strategy_params.py`），统计以 `pytest --collect-only` 为准。
