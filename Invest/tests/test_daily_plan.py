@@ -272,3 +272,36 @@ class TestMarkdown:
         md = "\n".join(daily_plan_to_markdown(plan))
         assert "不交易也是操作" in md
         assert "按原计划持有" in md
+
+
+class TestBidChecklist:
+    def test_bid_checklist_built(self, tmp_path):
+        """9:25 竞价核对清单随龙头候选生成，含执行参数"""
+        scan = _scan_json()
+        scan["hot_pool"] = {"dragon_candidates": [_dragon()]}
+        plan = build_daily_plan(
+            scan, _monitor(),
+            equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
+        )
+        assert len(plan["bid_checklist"]) == 1
+        item = plan["bid_checklist"][0]
+        assert item["symbol"] == "601700"
+        assert "高开 3%~5%" in item["text"]
+        assert "一字板" in item["text"]
+        md = "\n".join(daily_plan_to_markdown(plan))
+        assert "9:25 竞价核对清单" in md
+
+    def test_sector_focus_passthrough(self, tmp_path):
+        """明日板块聚焦透传并渲染"""
+        scan = _scan_json()
+        scan["hot_pool"] = {
+            "dragon_candidates": [_dragon()],
+            "sector_focus": [{"sector": "电网设备", "sustainability": "持续", "reason": "6家涨停2级梯队"}],
+        }
+        plan = build_daily_plan(
+            scan, _monitor(),
+            equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
+        )
+        assert plan["sector_focus"][0]["sustainability"] == "持续"
+        md = "\n".join(daily_plan_to_markdown(plan))
+        assert "明日板块聚焦" in md and "电网设备（持续）" in md

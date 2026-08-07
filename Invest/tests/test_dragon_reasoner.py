@@ -153,3 +153,38 @@ class TestLlmClientK3Compat:
         monkeypatch.setattr(lc, "KIMI_MODEL", "model-b")
         lc.call_llm("同一提示词", task_type="summary")
         assert len(list(tmp_path.glob("*.json"))) == 2
+
+
+class TestSectorFocus:
+    def test_sector_focus_parsed_with_guards(self):
+        """sector_focus 解析：板块名须在梯队上下文内、持续性枚举校验"""
+        text = ('{"primary": "601700", "verdicts": [], '
+                '"sector_focus": ['
+                '{"sector": "电网设备", "sustainability": "持续", "reason": "6家涨停2级梯队"},'
+                '{"sector": "不存在板块", "sustainability": "持续", "reason": "x"},'
+                '{"sector": "半导体", "sustainability": "永久", "reason": "y"}'
+                '], "market_comment": ""}')
+        r = _parse_verdicts(text, {"601700"}, ctx_sectors={"电网设备", "半导体"})
+        assert len(r["sector_focus"]) == 2
+        assert r["sector_focus"][0]["sector"] == "电网设备"
+        assert r["sector_focus"][1]["sustainability"] == "一日"  # 非法值降级
+
+    def test_no_sector_focus_ok(self):
+        r = _parse_verdicts('{"primary": "", "verdicts": []}', {"601700"})
+        assert r["sector_focus"] == []
+
+
+class TestK26Temperature:
+    def test_k26_temperature_coerced(self, monkeypatch):
+        """kimi-k2.6 仅允许 temperature=1：自动上调"""
+        import shared.llm_client as lc
+
+        captured = {}
+        monkeypatch.setattr(lc, "_PROVIDER_KEYS", {"kimi": "sk-test", "deepseek": "", "custom": ""})
+        monkeypatch.setattr(lc, "KIMI_MODEL", "kimi-k2.6")
+        monkeypatch.setattr(lc, "_call_provider",
+                            lambda provider, prompt, system_prompt, temperature, max_tokens, model:
+                            captured.update(temperature=temperature, model=model) or "ok")
+        lc.call_llm("测试", temperature=0.2, use_cache=False, task_type="summary")
+        assert captured["temperature"] == 1.0
+        assert captured["model"] == "kimi-k2.6"
