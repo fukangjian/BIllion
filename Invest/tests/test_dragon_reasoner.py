@@ -188,3 +188,16 @@ class TestK26Temperature:
         lc.call_llm("测试", temperature=0.2, use_cache=False, task_type="summary")
         assert captured["temperature"] == 1.0
         assert captured["model"] == "kimi-k2.6"
+
+
+class TestPayloadReason:
+    def test_reason_in_payload(self):
+        """涨停归因进入推理输入（逻辑维度证据）"""
+        c = _cand()
+        c["reason"] = "电网+特高压"
+        p = build_reasoning_payload([c], _ctx(), "B")
+        assert "涨停归因：电网+特高压" in p["candidate_lines"]
+
+    def test_no_reason_no_line(self):
+        p = build_reasoning_payload([_cand()], _ctx(), "B")
+        assert "涨停归因" not in p["candidate_lines"]

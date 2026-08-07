@@ -177,3 +177,73 @@ class TestNanSafety:
         assert to_float(None) == 0.0
         assert to_int("4") == 4
         assert to_float("2.5") == 2.5
+
+
+class TestLogicEvidenceTiers:
+    """逻辑分证据分级（THS 涨停归因兜底）"""
+
+    def _score(self, **kw):
+        return score_dragon(_rec(**kw), _ctx({"电网设备": _sec()}))["dims"]["逻辑"]
+
+    def test_catalyst_true_20(self):
+        assert self._score() == 20
+
+    def test_reason_fallback_12(self):
+        """⑧不满足但有涨停归因 → 12（市场归因待验证）"""
+        assert self._score(catalyst={"satisfied": False}, reason="电网+特高压") == 12
+
+    def test_none_with_reason_12(self):
+        """⑧未判定但有归因 → 12"""
+        assert self._score(catalyst=None, reason="超跌反弹") == 12
+
+    def test_none_no_reason_8(self):
+        assert self._score(catalyst=None) == 8
+
+    def test_false_no_reason_0(self):
+        assert self._score(catalyst={"satisfied": False}) == 0
+
+    def test_reason_other_counts_as_none(self):
+        """归因为「其他」视为无理由"""
+        assert self._score(catalyst=None, reason="其他") == 8
+
+
+class TestLimitReasonsFetch:
+    def test_parse_ths_response(self, monkeypatch):
+        """THS 涨停归因接口解析（mock requests，不触网）"""
+        import shared.data_fetcher as df_mod
+
+        payload = {
+            "status_code": 0,
+            "data": {
+                "page": {"total": 2},
+                "info": [
+                    {"code": "600892", "name": "大晟文化", "reason_type": "短剧+游戏+摘帽",
+                     "open_num": 12, "turnover_rate": 25.99},
+                    {"code": "001267", "name": "汇绿生态", "reason_type": "生态园林+重组",
+                     "open_num": 0, "turnover_rate": 8.5},
+                ],
+            },
+        }
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return payload
+
+        monkeypatch.setattr("requests.get", lambda *a, **kw: _Resp())
+        out = df_mod.fetch_limit_reasons_ths("20260806")
+        assert len(out) == 2
+        assert out.iloc[0]["symbol"] == "600892"
+        assert out.iloc[0]["reason"] == "短剧+游戏+摘帽"
+        assert out.iloc[0]["open_num"] == 12
+
+    def test_failure_returns_empty(self, monkeypatch):
+        import shared.data_fetcher as df_mod
+
+        def _boom(*a, **kw):
+            raise ConnectionError("reset")
+
+        monkeypatch.setattr("requests.get", _boom)
+        out = df_mod.fetch_limit_reasons_ths("20260806")
+        assert out.empty
