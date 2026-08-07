@@ -157,3 +157,23 @@ class TestContextFromDb:
         top = dragon_top(records)
         assert top[0]["symbol"] == "601700"
         assert all(r["dragon_grade"] in ("S", "A", "B") for r in top)
+
+
+class TestNanSafety:
+    def test_nan_fields_do_not_crash(self):
+        """老库新列 NULL → pandas NaN：评分不崩（回归：int(NaN) ValueError 曾致龙头候选全空）"""
+        ctx = _ctx({"电网设备": _sec()})
+        r = score_dragon(_rec(lbc=float("nan"), turnover=float("nan"),
+                              seal_amount=float("nan"), zbc=float("nan")), ctx)
+        assert r["grade"] in ("S", "A", "B", "C")
+        assert r["dims"]["强度"] >= 0
+
+    def test_to_int_to_float_nan(self):
+        from pipeline.dragon_head import to_float, to_int
+
+        assert to_int(float("nan")) == 0
+        assert to_float(float("nan")) == 0.0
+        assert to_int(None) == 0
+        assert to_float(None) == 0.0
+        assert to_int("4") == 4
+        assert to_float("2.5") == 2.5
