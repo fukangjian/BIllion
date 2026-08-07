@@ -4,7 +4,7 @@
 每日盘前流程（run_all 取数阶段调用）：
   板块相对强度 Top N（离线，复用 indicators 排名）
   → 东财行业成分股（联网，板块名同花顺→东财模糊匹配，单板块失败降级跳过）
-  → 合并去重、剔除禁买板块前缀（BANNED_BOARD_PREFIXES 创业板）
+  → 合并去重、剔除禁买板块前缀（BANNED_BOARD_PREFIXES，默认空=不过滤）
   → 截断 TREND_POOL_MAX 写 trend_pool 表
   → 并行补抓池内个股近 TREND_HISTORY_DAYS 个交易日日线
 
@@ -94,7 +94,7 @@ def _fetch_constituents_for_sectors(sectors: list[str]) -> pd.DataFrame:
 def _merge_trend_pool(cons_df: pd.DataFrame) -> pd.DataFrame:
     """
     合并趋势池（纯函数，可离线单测）：
-    剔除禁买板块前缀（创业板 300/301）→ 按代码去重（多板块归属以「+」连接板块名，
+    剔除禁买板块前缀（BANNED_BOARD_PREFIXES，默认空=不过滤）→ 按代码去重（多板块归属以「+」连接板块名，
     保留强度最高板块的首次出现位置）→ 截断 TREND_POOL_MAX。
     返回列: symbol / name / source_sector
     """
@@ -131,7 +131,7 @@ def build_trend_pool(
     top_n: int = TREND_SCAN_TOP_SECTORS,
 ) -> pd.DataFrame:
     """
-    构建今日趋势池：板块强度 Top N → 成分股 → 合并去重（剔除创业板）→ 写 trend_pool 表。
+    构建今日趋势池：板块强度 Top N → 成分股 → 合并去重（剔除禁买前缀，默认空）→ 写 trend_pool 表。
     排名无数据或成分股全失败时返回空 DataFrame（调用方降级，不阻塞主流程）。
     """
     trade_date = trade_date or datetime.now().strftime("%Y-%m-%d")

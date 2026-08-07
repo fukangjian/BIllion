@@ -96,7 +96,7 @@ def check_single_trade(
                 股票代码=trade.股票代码,
                 违规类型="禁买板块",
                 严重程度="高",
-                描述=f"代码 {symbol} 命中禁买板块前缀 {'/'.join(BANNED_BOARD_PREFIXES)}（自有纪律：不买创业板）",
+                描述=f"代码 {symbol} 命中禁买板块前缀 {'/'.join(BANNED_BOARD_PREFIXES)}（BANNED_BOARD_PREFIXES 配置）",
                 建议="放弃该标的；确有把握需 --force 强制并在备注留痕",
             ))
 

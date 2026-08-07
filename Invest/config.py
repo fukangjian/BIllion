@@ -30,7 +30,7 @@ PIPELINE_OUTPUT_DIR = MARKET_SCAN_OUTPUT_DIR
 # --- LLM 配置（Kimi / Moonshot API） ---
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-KIMI_MODEL = os.getenv("KIMI_MODEL", "moonshot-v1-8k")
+KIMI_MODEL = os.getenv("KIMI_MODEL", "kimi-k3")
 
 LLM_MAX_RETRIES = 3
 LLM_RETRY_DELAY = 2  # 秒
@@ -216,9 +216,9 @@ RISK_CLUSTER_LIMITS = {
     "单一事件链": {"exposure": 60.0, "stop_risk": 1.0},
 }
 
-# 禁买板块（代码前缀）：用户自有纪律「不买创业板」（2026-07 交易日志，壹连科技/通源石油两次违规实亏）
-# 建仓闸门高级违规默认拒绝；置空元组即关闭
-BANNED_BOARD_PREFIXES = ("300", "301")
+# 禁买板块（代码前缀）：2026-08-07 用户决策放开创业板（原 2026-07 纪律「不买创业板」废止）
+# 机制保留：重新配置前缀元组（如 ("300","301")）即恢复建仓闸门高级违规与纪律审计
+BANNED_BOARD_PREFIXES = ()
 
 # 纪律审计：闪电换仓判定阈值（分钟）——卖出后 N 分钟内买入视为计划外冲动换仓
 DISCIPLINE_SWITCH_MINUTES = 30

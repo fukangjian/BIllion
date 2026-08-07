@@ -135,7 +135,7 @@ def _check_banned_board(trades: list[Trade]) -> list[Finding]:
             严重程度="高",
             交易编号=t.交易编号,
             股票代码=t.股票代码,
-            描述=f"代码 {symbol} 命中禁买板块前缀 {'/'.join(BANNED_BOARD_PREFIXES)}（自有纪律：不买创业板）",
+            描述=f"代码 {symbol} 命中禁买板块前缀 {'/'.join(BANNED_BOARD_PREFIXES)}（BANNED_BOARD_PREFIXES 配置）",
             建议="移出股票池；复盘当时为何破例",
         ))
     return findings

@@ -33,8 +33,8 @@ class TestMergeTrendPool:
         assert row["source_sector"] == "酿酒+食品饮料"
         assert pool.iloc[0]["symbol"] == "600519"  # 顺序保持输入序
 
-    def test_banned_board_prefix_removed(self):
-        """创业板 300/301 剔除（用户纪律：禁买创业板），其余板保留"""
+    def test_chinext_kept_after_ban_lifted(self):
+        """2026-08-07 放开创业板：300/301 正常保留入池"""
         cons = _cons([
             ("300750", "宁德时代", "电池"),
             ("301234", "某创业", "电池"),
@@ -42,7 +42,7 @@ class TestMergeTrendPool:
             ("000858", "五粮液", "酿酒"),
         ])
         pool = _merge_trend_pool(cons)
-        assert set(pool["symbol"]) == {"688235", "000858"}
+        assert set(pool["symbol"]) == {"300750", "301234", "688235", "000858"}
 
     def test_truncate_to_max(self, monkeypatch):
         """池上限截断（按板块强度输入序优先）"""
@@ -82,17 +82,17 @@ class TestBuildTrendPool:
             tp, "_fetch_constituents_for_sectors",
             lambda sectors: _cons([
                 ("688981", "中芯国际", "半导体"),
-                ("300001", "某创业", "半导体"),  # 创业板应被剔除
+                ("300001", "某创业", "半导体"),  # 2026-08-07 放开创业板后正常入池
                 ("688235", "百济神州", "创新药"),
             ]),
         )
 
         db = tmp_path / "market.db"
         pool = build_trend_pool(trade_date="2026-08-05", db_path=db, top_n=2)
-        assert set(pool["symbol"]) == {"688981", "688235"}
+        assert set(pool["symbol"]) == {"688981", "300001", "688235"}
 
         loaded = load_trend_pool(db_path=db)
-        assert set(loaded["symbol"]) == {"688981", "688235"}
+        assert set(loaded["symbol"]) == {"688981", "300001", "688235"}
         assert set(loaded["trade_date"]) == {"2026-08-05"}
 
         # 再写一期更新日期，load 默认取最新

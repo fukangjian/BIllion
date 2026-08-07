@@ -111,10 +111,18 @@ class TestFastSwitch:
 
 
 class TestSimpleRules:
-    def test_banned_board_hit_and_miss(self):
+    def test_banned_board_default_off_after_lift(self):
+        """2026-08-07 放开创业板后：默认空前缀，301 代码不再命中禁买板块"""
+        assert _find(audit_discipline([_make_trade(股票代码="301631")]), RULE_BANNED) == []
+        assert _find(audit_discipline([_make_trade(股票代码="600519")]), RULE_BANNED) == []
+
+    def test_banned_board_mechanism_intact(self, monkeypatch):
+        """机制保留：重新配置前缀即恢复命中"""
+        import review.discipline_audit as da
+
+        monkeypatch.setattr(da, "BANNED_BOARD_PREFIXES", ("300", "301"))
         hit = _find(audit_discipline([_make_trade(股票代码="301631")]), RULE_BANNED)
         assert len(hit) == 1 and hit[0].严重程度 == "高"
-        assert _find(audit_discipline([_make_trade(股票代码="600519")]), RULE_BANNED) == []
 
     def test_no_stop_hit_and_miss(self):
         hit = _find(audit_discipline([_make_trade(止损价=0.0)]), RULE_NO_STOP)
@@ -137,13 +145,13 @@ class TestAuditToMarkdown:
 
     def test_summary_then_detail(self):
         findings = audit_discipline([
-            _make_trade(交易编号="T1", 股票代码="301631", 止损价=0.0, 是否系统内交易=False),
+            _make_trade(交易编号="T1", 股票代码="600519", 止损价=0.0, 是否系统内交易=False),
         ])
         md = audit_to_markdown(findings)
         assert "| 规则 | 严重程度 | 命中数 |" in md  # 先汇总表
         assert md.index("汇总") < md.index("明细")  # 汇总在明细前
-        assert "| 禁买板块 | 高 | 1 |" in md
+        assert "| 禁买板块 | 高 | 0 |" in md  # 2026-08-07 放开创业板后默认不触发
         assert "| 无止损 | 中 | 1 |" in md
         assert "| 非系统交易 | 低 | 1 |" in md
         assert "| 闪电换仓 | 中 | 0 |" in md  # 未命中规则也列计数
-        assert "T1" in md and "301631" in md
+        assert "T1" in md and "600519" in md

@@ -97,15 +97,14 @@ class TestBuyCandidates:
         assert len(buys) == 5
         assert [b["symbol"] for b in buys] == ["600006", "600005", "600004", "600003", "600002"]
 
-    def test_banned_board_gate_precheck(self, tmp_path):
-        """创业板候选（300）→ 闸门预检 ⛔禁买板块"""
+    def test_chinext_allowed_after_ban_lifted(self, tmp_path):
+        """创业板候选（300）→ 2026-08-07 放开后闸门预检不再报禁买板块"""
         plan = build_daily_plan(
             _scan_json(s1a=[_cand(symbol="300750")]), _monitor(),
             equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
         )
         assert len(plan["trend_buys"]) == 1
-        assert "⛔" in plan["trend_buys"][0]["gate"]
-        assert "禁买板块" in plan["trend_buys"][0]["gate"]
+        assert "禁买板块" not in plan["trend_buys"][0]["gate"]
 
     def test_s2a_account_mapping(self, tmp_path):
         """S2-A 候选默认账户为核心"""
