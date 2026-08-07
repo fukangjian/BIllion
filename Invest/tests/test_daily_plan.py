@@ -194,6 +194,19 @@ class TestDragonBuys:
         md = "\n".join(daily_plan_to_markdown(plan))
         assert "本期系统认定龙头：低分真龙（600002）" in md
 
+    def test_dragon_note_passthrough(self, tmp_path):
+        """K3 推理降级标注透传到计划（UI 据此显示警告横幅）"""
+        scan = _scan_json()
+        scan["hot_pool"] = {
+            "dragon_candidates": [_dragon()],
+            "dragon_note": "⚠️ K3 深度推理未启用（未配置 LLM Key 或已禁用），当前按量化评分排序",
+        }
+        plan = build_daily_plan(
+            scan, _monitor(),
+            equity=100_000, trade_log=_tmp_log(tmp_path), db_path=_tmp_db(tmp_path),
+        )
+        assert "K3 深度推理未启用" in plan["dragon_note"]
+
 
 class TestPositionActions:
     def test_alerts_become_actions(self, tmp_path):

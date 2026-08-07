@@ -107,3 +107,49 @@ class TestReasonDragons:
         monkeypatch.setattr(dr, "has_llm_api_key", lambda: True)
         monkeypatch.setattr(dr, "call_llm", lambda *a, **kw: "无法解析的回答")
         assert reason_dragons([_cand()], _ctx()) is None
+
+
+class TestLlmClientK3Compat:
+    def test_k3_temperature_coerced(self, monkeypatch):
+        """kimi-k3 仅允许 temperature=1：call_llm 自动上调（否则 400）"""
+        import shared.llm_client as lc
+
+        captured = {}
+        monkeypatch.setattr(lc, "_PROVIDER_KEYS", {"kimi": "sk-test", "deepseek": "", "custom": ""})
+        monkeypatch.setattr(lc, "KIMI_MODEL", "kimi-k3")
+
+        def fake_call(provider, prompt, system_prompt, temperature, max_tokens, model):
+            captured.update(temperature=temperature, model=model)
+            return "ok"
+
+        monkeypatch.setattr(lc, "_call_provider", fake_call)
+        r = lc.call_llm("测试", temperature=0.2, use_cache=False, task_type="summary")
+        assert r == "ok"
+        assert captured["temperature"] == 1.0
+        assert captured["model"] == "kimi-k3"
+
+    def test_non_k3_temperature_untouched(self, monkeypatch):
+        """非 K3 模型温度保持原值"""
+        import shared.llm_client as lc
+
+        captured = {}
+        monkeypatch.setattr(lc, "_PROVIDER_KEYS", {"kimi": "sk-test", "deepseek": "", "custom": ""})
+        monkeypatch.setattr(lc, "KIMI_MODEL", "moonshot-v1-8k")
+        monkeypatch.setattr(lc, "_call_provider",
+                            lambda provider, prompt, system_prompt, temperature, max_tokens, model:
+                            captured.update(temperature=temperature) or "ok")
+        lc.call_llm("测试", temperature=0.3, use_cache=False, task_type="summary")
+        assert captured["temperature"] == 0.3
+
+    def test_cache_key_includes_model(self, monkeypatch, tmp_path):
+        """同一 prompt 不同模型 → 不同缓存键（旧模型缓存不被误用）"""
+        import shared.llm_client as lc
+
+        monkeypatch.setattr(lc, "LLM_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(lc, "_PROVIDER_KEYS", {"kimi": "sk-test", "deepseek": "", "custom": ""})
+        monkeypatch.setattr(lc, "_call_provider", lambda *a, **kw: "resp")
+        monkeypatch.setattr(lc, "KIMI_MODEL", "model-a")
+        lc.call_llm("同一提示词", task_type="summary")
+        monkeypatch.setattr(lc, "KIMI_MODEL", "model-b")
+        lc.call_llm("同一提示词", task_type="summary")
+        assert len(list(tmp_path.glob("*.json"))) == 2
