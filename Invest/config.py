@@ -30,7 +30,7 @@ PIPELINE_OUTPUT_DIR = MARKET_SCAN_OUTPUT_DIR
 # --- LLM 配置（Kimi / Moonshot API） ---
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-KIMI_MODEL = os.getenv("KIMI_MODEL", "kimi-k3")
+KIMI_MODEL = os.getenv("KIMI_MODEL", "kimi-k2.6")  # moonshot-v1 系列 2026-08-31 停服；默认 kimi-k2.6（兼顾能力与费用）
 
 LLM_MAX_RETRIES = 3
 LLM_RETRY_DELAY = 2  # 秒
@@ -287,11 +287,11 @@ LLM_CACHE_DIR = DATA_DIR / "llm_cache"
 LLM_CACHE_TTL = 24 * 3600
 LLM_PROVIDER_PRIORITY = ["kimi", "deepseek", "custom"]
 
-# Kimi 长文模型（公告等 task_type=announcement 时使用；moonshot-v1 系列 2026-08-31 停服，默认 kimi-k3 1M 上下文）
-KIMI_MODEL_LONG = os.getenv("KIMI_MODEL_LONG", "kimi-k3")
+# Kimi 长文模型（公告等 task_type=announcement 时使用；moonshot-v1 系列 2026-08-31 停服，默认 kimi-k2.6）
+KIMI_MODEL_LONG = os.getenv("KIMI_MODEL_LONG", "kimi-k2.6")
 
-# Kimi 深度推理模型（task_type=reasoning：龙头辨识等多维综合研判；kimi-k3 为 2026-07 旗舰推理模型）
-KIMI_MODEL_REASONING = os.getenv("KIMI_MODEL_REASONING", "kimi-k3")
+# Kimi 深度推理模型（task_type=reasoning：龙头辨识等多维综合研判；kimi-k2.6 兼顾推理能力与费用）
+KIMI_MODEL_REASONING = os.getenv("KIMI_MODEL_REASONING", "kimi-k2.6")
 
 # --- 龙头深度推理（research/dragon_reasoner.py，系统自主辨龙头） ---
 DRAGON_REASON_ENABLED = os.getenv("DRAGON_REASON_ENABLED", "true").lower() == "true"  # false 时跳过 LLM 推理，按量化评分排序

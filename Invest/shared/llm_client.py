@@ -37,6 +37,9 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# 仅允许 temperature=1 的模型（Kimi API 硬约束，传入其他值报 400）
+_FORCE_TEMP_ONE_MODELS = ("kimi-k3", "kimi-k2.6", "kimi-k2.7-code")
+
 # 各提供商 API 密钥映射
 _PROVIDER_KEYS = {
     "kimi": KIMI_API_KEY,
@@ -158,8 +161,8 @@ def call_llm(
         return None
 
     model = _model_for_task(resolved, task_type)
-    if "kimi-k3" in model and temperature != 1.0:
-        # kimi-k3 仅允许 temperature=1（API 硬约束，否则 400）
+    if any(m in model for m in _FORCE_TEMP_ONE_MODELS) and temperature != 1.0:
+        # kimi-k3/k2.6/k2.7-code 等仅允许 temperature=1（API 硬约束，否则 400）
         logger.debug("模型 %s 仅允许 temperature=1，已自动调整（原 %s）", model, temperature)
         temperature = 1.0
 
