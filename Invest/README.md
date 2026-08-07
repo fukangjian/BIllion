@@ -192,6 +192,9 @@ python pipeline/hot_pool.py
 # 手动构建趋势动态池：强势板块 Top5 成分股 → trend_pool 表 + 日线补抓
 python pipeline/trend_pool.py
 
+# 龙头评分榜（离线读 limit_pool，打印五维明细）
+python pipeline/dragon_head.py
+
 # 初始化数据库
 python pipeline/database.py
 ```
@@ -202,7 +205,7 @@ python pipeline/database.py
 - `output/market_scans/market_scan_YYYY-MM-DD.md`（顶部含持仓监控区块）
 - `output/market_scans/market_scan_YYYY-MM-DD.json`（含 `position_monitor` 与 `hot_pool` 字段）
 
-扫描报告新增「五、超短热点池（1-5 天，HOT-S）」节：涨停/连板/炸板名单统计 + 热点池突破候选（与主扫描同通道参数；含**名称**与**推荐分析**——按买入规则 8 条自动核对 ①板块Top5 ②板块涨停家数增加 ③前排 ④放量突破 ⑦大盘环境，⑤⑥盘中确认、⑧事件催化自动判定（需配置 LLM Key，未配置给公告标题人工核对），候选按满足条数排序，表下附「候选⑧催化依据」区块与口径说明）。热点池突破信号以系统 `HOT-S` 写入 signals 表、5 个交易日强制结算，分组胜率见 `python pipeline/signal_tracker.py stats`。
+扫描报告新增「六、超短热点池（1-5 天，HOT-S）」节：涨停/连板/炸板名单统计 + 热点池突破候选（与主扫描同通道参数；含**名称**与**推荐分析**——按买入规则 8 条自动核对 ①板块Top5 ②板块涨停家数增加 ③前排 ④放量突破 ⑦大盘环境，⑤⑥盘中确认、⑧事件催化自动判定（需配置 LLM Key，未配置给公告标题人工核对），候选按满足条数排序，表下附「候选⑧催化依据」区块与口径说明）+ **🐉 龙头候选子表**（三维验证评分：身位/梯队/强度/逻辑/情绪五维，S/A/B 级，见《超短操作手册》§八）。热点池突破信号以系统 `HOT-S` 写入 signals 表、5 个交易日强制结算，分组胜率见 `python pipeline/signal_tracker.py stats`。
 
 ### 信号追踪（可验证性）
 
