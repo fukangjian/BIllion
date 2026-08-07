@@ -43,15 +43,15 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
     candidate_lines = []
     for c in candidates:
         dims = c.get("dragon_dims", {})
-        notes = "；".join(c.get("dragon_notes", []))
+        notes = "；".join(c.get("dragon_notes", []))[:150]
         cat = c.get("catalyst") or {}
         if cat.get("satisfied") is True:
-            cat_text = f"满足（{cat.get('catalyst_type', '')}）：{cat.get('basis', '')}"
+            cat_text = f"满足（{cat.get('catalyst_type', '')}）：{str(cat.get('basis', ''))[:120]}"
         elif cat.get("satisfied") is False:
             cat_text = "不满足"
         else:
             cat_text = "未判定（待人工核对）"
-        titles = "、".join((c.get("catalyst_titles") or [])[:3])
+        titles = "、".join((c.get("catalyst_titles") or [])[:2])[:100]
         candidate_lines.append(
             f"- {c['symbol']} {c.get('name', '')}（{c.get('sector', '')}，{c.get('lbc', 0)} 连板）："
             f"五维 身位{dims.get('身位', '-')}/梯队{dims.get('梯队', '-')}/强度{dims.get('强度', '-')}"

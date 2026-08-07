@@ -158,7 +158,7 @@ DAILY_PLAN_MAX_CANDIDATES = 5    # 明日操作计划买入候选上限（滤网
 
 # --- 候选催化分析（research/catalyst_analyzer.py，买入规则⑧事件/政策/业绩/技术突破/转型） ---
 HOT_CATALYST_ENABLED = os.getenv("HOT_CATALYST_ENABLED", "true").lower() == "true"  # 扫描时对热点候选做催化分析（联网，失败降级人工核对）
-HOT_CATALYST_MAX = 8         # 每日催化分析候选上限（按规则满足条数排序取前 N，控制耗时与 LLM 调用量）
+HOT_CATALYST_MAX = 5         # 每日催化分析候选上限（按规则满足条数排序取前 N，控制耗时与 LLM 调用量）
 CATALYST_ANNOUNCE_DAYS = 90  # 公告回溯天数
 
 # --- 合规规则（投资体系 V5.0；限额已按 3.25 万小资金校准，2026-07） ---
@@ -295,7 +295,7 @@ KIMI_MODEL_REASONING = os.getenv("KIMI_MODEL_REASONING", "kimi-k3")
 
 # --- 龙头深度推理（research/dragon_reasoner.py，系统自主辨龙头） ---
 DRAGON_REASON_ENABLED = os.getenv("DRAGON_REASON_ENABLED", "true").lower() == "true"  # false 时跳过 LLM 推理，按量化评分排序
-DRAGON_REASON_MAX = 8        # 每日深度推理候选上限（控制 LLM 调用量与耗时）
+DRAGON_REASON_MAX = 5        # 每日深度推理候选上限（控制 LLM 输入 token 与费用）
 
 # --- FastAPI 服务与定时调度 ---
 SCHEDULER_ENABLED = os.getenv("ENABLE_SCHEDULER", "").lower() == "true"
