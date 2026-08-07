@@ -112,7 +112,7 @@ def build_daily_plan(
     pool = sorted(seen.values(), key=lambda x: -(x[1].get("breakout_pct") or 0))
     pool = pool[:DAILY_PLAN_MAX_CANDIDATES]
 
-    buy_candidates: list[dict] = []
+    trend_buys: list[dict] = []
     for system, item in pool:
         symbol = str(item["symbol"]).zfill(6)[-6:]
         close = float(item["close"])
@@ -126,7 +126,7 @@ def build_daily_plan(
         gate = _gate_precheck(symbol, system, account, close, stop, calc,
                               equity, state, trade_log, db_path)
         note_parts = [p for p in (item.get("note"), *calc.get("备注", [])) if p]
-        buy_candidates.append({
+        trend_buys.append({
             "symbol": symbol,
             "name": names.get(symbol, ""),
             "system": system,
@@ -139,6 +139,42 @@ def build_daily_plan(
             "account": account,
             "gate": gate,
             "filter_brief": item.get("filter_brief", ""),
+            "note": "；".join(note_parts),
+        })
+
+    # ---- 龙头候选（主，超短 HOT-S）：热点池三维验证评分 S/A/B 级 ----
+    dragon_buys: list[dict] = []
+    for rec in (scan_json.get("hot_pool") or {}).get("dragon_candidates", []):
+        symbol = str(rec.get("symbol", "")).zfill(6)[-6:]
+        if not symbol or not rec.get("close"):
+            continue
+        close = float(rec["close"])
+        atr = float(rec.get("atr_20") or 0)
+        stop = round(close - atr * ATR_STOP_MULT, 2) if atr > 0 else round(close * 0.95, 2)
+        account = "事件"  # HOT-S 超短热点默认事件账户（与 cli from-scan 本地特判一致）
+        calc = calc_position(
+            equity=equity, entry=close, stop=stop, account_type=account,
+            drawdown_state=state, atr=atr or None,
+        )
+        gate = _gate_precheck(symbol, "HOT-S", account, close, stop, calc,
+                              equity, state, trade_log, db_path)
+        note_parts = [p for p in (rec.get("analysis"), *calc.get("备注", [])) if p]
+        dragon_buys.append({
+            "symbol": symbol,
+            "name": str(rec.get("name", "") or ""),
+            "system": "HOT-S",
+            "grade": rec.get("dragon_grade", ""),
+            "score": rec.get("dragon_score", 0),
+            "dims": rec.get("dragon_dims", {}),
+            "lbc": rec.get("lbc", 0),
+            "sector": rec.get("sector", ""),
+            "close": round(close, 2),
+            "stop": stop,
+            "shares": calc["股数"],
+            "risk_pct": calc["风险率"],
+            "position_pct": round(calc.get("仓位比例", 0), 1),
+            "account": account,
+            "gate": gate,
             "note": "；".join(note_parts),
         })
 
@@ -170,7 +206,8 @@ def build_daily_plan(
         "date": scan_json.get("date", ""),
         "market_state": market_state,
         "drawdown_state": state,
-        "buy_candidates": buy_candidates,
+        "dragon_buys": dragon_buys,
+        "trend_buys": trend_buys,
         "position_actions": position_actions,
         "no_trade_conditions": no_trade,
     }
@@ -186,23 +223,45 @@ def daily_plan_to_markdown(plan: dict) -> list[str]:
         "",
     ]
 
-    buys = plan.get("buy_candidates", [])
-    lines.append(f"### 买入候选（{len(buys)}）")
+    dragons = plan.get("dragon_buys", [])
+    trends = plan.get("trend_buys", [])
+    total = len(dragons) + len(trends)
+    lines.append(f"### 买入候选（{total}）")
     lines.append("")
-    if not buys:
-        lines.append("_明日无滤网全过的突破候选——不交易也是操作。_")
+    if not total:
+        lines.append("_明日无滤网全过的突破候选、无达标龙头——不交易也是操作。_")
     else:
-        lines.append("| 代码 | 名称 | 系统 | 参考买入价 | 建议止损 | 建议股数 | 风险率% | 仓位% | 闸门预检 | 备注 |")
-        lines.append("|------|------|------|-----------|----------|----------|---------|-------|----------|------|")
-        for b in buys:
-            lines.append(
-                f"| {b['symbol']} | {b.get('name') or '-'} | {b['system']} | {b['close']:.2f} "
-                f"| {b['stop']:.2f} | {b['shares']} | {b['risk_pct']} | {b['position_pct']} "
-                f"| {b['gate']} | {b.get('note') or '—'} |"
-            )
-        lines.append("")
+        if dragons:
+            lines.extend([
+                f"#### 🐉 龙头候选（超短 HOT-S，三维验证 S/A/B 级，{len(dragons)} 只）",
+                "",
+                "| 代码 | 名称 | 等级 | 总分 | 板块·连板 | 参考买入价 | 建议止损 | 建议股数 | 风险率% | 闸门预检 |",
+                "|------|------|------|------|-----------|-----------|----------|----------|---------|----------|",
+            ])
+            for b in dragons:
+                lines.append(
+                    f"| {b['symbol']} | {b.get('name') or '-'} | **{b['grade']}** | {b['score']} "
+                    f"| {b.get('sector') or '-'}·{b.get('lbc', 0)}板 | {b['close']:.2f} "
+                    f"| {b['stop']:.2f} | {b['shares']} | {b['risk_pct']} | {b['gate']} |"
+                )
+            lines.append("")
+        if trends:
+            lines.extend([
+                f"#### 📈 趋势候选（S1-A/S2-A 滤网全过，{len(trends)} 只）",
+                "",
+                "| 代码 | 名称 | 系统 | 参考买入价 | 建议止损 | 建议股数 | 风险率% | 仓位% | 闸门预检 | 备注 |",
+                "|------|------|------|-----------|----------|----------|---------|-------|----------|------|",
+            ])
+            for b in trends:
+                lines.append(
+                    f"| {b['symbol']} | {b.get('name') or '-'} | {b['system']} | {b['close']:.2f} "
+                    f"| {b['stop']:.2f} | {b['shares']} | {b['risk_pct']} | {b['position_pct']} "
+                    f"| {b['gate']} | {b.get('note') or '—'} |"
+                )
+            lines.append("")
         lines.append("> 执行入口：`python review/cli.py from-scan <代码> --execute`（一键建仓："
-                     "仓位计算 → 合规闸门 → 写库 → 买入卡）；浮盈 0.5N 后用 `add-position <代码>` 加仓。")
+                     "仓位计算 → 合规闸门 → 写库 → 买入卡）；浮盈 0.5N 后用 `add-position <代码>` 加仓。"
+                     "龙头候选为超短 HOT-S（5 日强制结算），仓位上限与止损按事件账户口径。")
     lines.append("")
 
     actions = plan.get("position_actions", [])
