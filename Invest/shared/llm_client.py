@@ -157,13 +157,19 @@ def call_llm(
         logger.warning("无可用 LLM 提供商")
         return None
 
-    cache_key = _make_cache_key(prompt)
+    model = _model_for_task(resolved, task_type)
+    if "kimi-k3" in model and temperature != 1.0:
+        # kimi-k3 仅允许 temperature=1（API 硬约束，否则 400）
+        logger.debug("模型 %s 仅允许 temperature=1，已自动调整（原 %s）", model, temperature)
+        temperature = 1.0
+
+    # 缓存键含模型名：不同模型响应不混用（旧模型缓存在 TTL 内自然过期）
+    cache_key = _make_cache_key(f"{model}\n{prompt}")
     if use_cache:
         cached = _load_cache(cache_key)
         if cached is not None:
             return cached
 
-    model = _model_for_task(resolved, task_type)
     last_err = None
 
     for attempt in range(LLM_MAX_RETRIES):

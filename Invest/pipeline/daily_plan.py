@@ -219,6 +219,7 @@ def build_daily_plan(
         "drawdown_state": state,
         "dragon_primary": (scan_json.get("hot_pool") or {}).get("dragon_primary", ""),
         "dragon_market_comment": (scan_json.get("hot_pool") or {}).get("dragon_market_comment", ""),
+        "dragon_note": (scan_json.get("hot_pool") or {}).get("dragon_note", ""),
         "dragon_buys": dragon_buys,
         "trend_buys": trend_buys,
         "position_actions": position_actions,

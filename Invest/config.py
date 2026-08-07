@@ -287,8 +287,8 @@ LLM_CACHE_DIR = DATA_DIR / "llm_cache"
 LLM_CACHE_TTL = 24 * 3600
 LLM_PROVIDER_PRIORITY = ["kimi", "deepseek", "custom"]
 
-# Kimi 长文模型（公告等 task_type=announcement 时使用）
-KIMI_MODEL_LONG = os.getenv("KIMI_MODEL_LONG", "moonshot-v1-32k")
+# Kimi 长文模型（公告等 task_type=announcement 时使用；moonshot-v1 系列 2026-08-31 停服，默认 kimi-k3 1M 上下文）
+KIMI_MODEL_LONG = os.getenv("KIMI_MODEL_LONG", "kimi-k3")
 
 # Kimi 深度推理模型（task_type=reasoning：龙头辨识等多维综合研判；kimi-k3 为 2026-07 旗舰推理模型）
 KIMI_MODEL_REASONING = os.getenv("KIMI_MODEL_REASONING", "kimi-k3")

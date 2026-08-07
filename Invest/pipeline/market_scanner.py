@@ -689,7 +689,14 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                             result["dragon_primary"] = reasoning.get("primary") or ""
                             result["dragon_market_comment"] = reasoning.get("market_comment", "")
                         elif result["dragon_candidates"]:
-                            result["dragon_note"] = "未经深度推理，按量化评分排序"
+                            from config import DRAGON_REASON_ENABLED
+                            from shared.llm_client import has_llm_api_key
+
+                            result["dragon_note"] = (
+                                "⚠️ K3 深度推理未启用（未配置 LLM Key 或已禁用），当前按量化评分排序"
+                                if (not has_llm_api_key() or not DRAGON_REASON_ENABLED) else
+                                "⚠️ K3 深度推理失败，当前按量化评分排序（详见日志）"
+                            )
                     except Exception as e:
                         logger.warning("龙头深度推理失败（已降级按量化评分排序）: %s", e)
                 except Exception as e:

@@ -194,6 +194,10 @@ function renderPlan(d) {
     return `<span class="badge badge-${cls}" title="${tip.replace(/"/g, "'")}">${b.verdict}${b.confidence != null ? " " + b.confidence + "%" : ""}</span>`;
   };
   let html = "";
+  if (d.dragon_note) {
+    html += `<div style="background:#fdeceb;border:1px solid #f5c6c2;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:13px;color:#c0392b;">
+      <b>${d.dragon_note}</b><br><span style="color:#8a919e;">龙头辨识依赖 Kimi K3 深度推理（系统核心功能）；请检查 KIMI_API_KEY 配置或稍后重跑盘前流程。</span></div>`;
+  }
   if (dragons.length) {
     if (d.dragon_primary) {
       const p = dragons.find(x => x.symbol === d.dragon_primary);
