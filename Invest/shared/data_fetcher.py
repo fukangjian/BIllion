@@ -33,6 +33,24 @@ def _normalize_date(d) -> str:
     return s[:10]
 
 
+def _safe_float(v, default: float = 0.0) -> float:
+    """NaN 安全 float（数据源缺字段时 pd.to_numeric 产出 NaN，int(NaN) 会抛错）"""
+    try:
+        f = float(v)
+        return default if f != f else f
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(v, default: int = 0) -> int:
+    """NaN 安全 int"""
+    try:
+        f = float(v)
+        return default if f != f else int(f)
+    except (TypeError, ValueError):
+        return default
+
+
 def _sina_symbol(symbol: str) -> str:
     """6位代码转新浪格式 (sh600519 / sz000001)"""
     if symbol.startswith(("6", "5", "9")):
@@ -399,6 +417,54 @@ def fetch_sector_constituents(sector_name: str) -> pd.DataFrame:
     return _fetch_sector_constituents_em(sector_name)
 
 
+def fetch_limit_reasons_ths(trade_date: Optional[str] = None) -> pd.DataFrame:
+    """
+    同花顺涨停池「涨停归因」（龙头逻辑维度证据，data.10jqka.com.cn 直连）。
+
+    返回列: symbol / name / reason（涨停原因，如「短剧+游戏+摘帽」）/ open_num（开板次数）
+    / turnover_rate（换手率，与东财字段互备）。失败返回空 DataFrame（调用方降级）。
+    """
+    import requests
+
+    trade_date = (trade_date or datetime.now().strftime("%Y%m%d")).replace("-", "")
+    url_tpl = ("https://data.10jqka.com.cn/dataapi/limit_up/limit_up_pool"
+               "?page={page}&limit=200&field=199112,9001,9002,1968584"
+               f"&filter=HS,GEM2STAR&date={trade_date}&order_field=330324&order_type=0")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36",
+    }
+    records = []
+    try:
+        with bypass_proxy():
+            for page in range(1, 4):  # 200/页 × 3 足够覆盖全市场涨停
+                try:
+                    r = requests.get(url_tpl.format(page=page), headers=headers, timeout=10)
+                    data = r.json().get("data") or {}
+                    items = data.get("info") or []
+                    if not items:
+                        break
+                    for it in items:
+                        records.append({
+                            "symbol": str(it.get("code", "")).zfill(6)[-6:],
+                            "name": str(it.get("name", "")),
+                            "reason": str(it.get("reason_type", "") or ""),
+                            "open_num": _safe_int(it.get("open_num")),
+                            "turnover_rate": _safe_float(it.get("turnover_rate")),
+                        })
+                    total = int((data.get("page") or {}).get("total", 0))
+                    if page * 200 >= total:
+                        break
+                except Exception as e:
+                    logger.warning("THS 涨停归因第 %d 页失败（保留已抓部分）: %s", page, e)
+                    break
+                time.sleep(0.3)
+    except Exception as e:
+        logger.warning("THS 涨停归因获取失败: %s", e)
+        return pd.DataFrame(columns=["symbol", "name", "reason", "open_num", "turnover_rate"])
+    return pd.DataFrame(records)
+
+
 def fetch_limit_stats(trade_date: Optional[str] = None) -> pd.DataFrame:
     """获取涨跌停及市场宽度统计"""
     if trade_date is None:
@@ -499,9 +565,9 @@ def fetch_limit_pools(trade_date: Optional[str] = None) -> pd.DataFrame:
                 "sector": str(row.get("所属行业", "")),
                 # 龙头评分数据（2026-08 扩列）：首次封板时间/封板资金/换手率/炸板次数
                 "fbt": str(fbt_val) if pd.notna(fbt_val) else "",
-                "seal_amount": float(pd.to_numeric(row.get("封板资金", 0), errors="coerce") or 0),
-                "turnover": float(pd.to_numeric(row.get("换手率", 0), errors="coerce") or 0),
-                "zbc": int(pd.to_numeric(row.get("炸板次数", 0), errors="coerce") or 0),
+                "seal_amount": _safe_float(row.get("封板资金")),
+                "turnover": _safe_float(row.get("换手率")),
+                "zbc": _safe_int(row.get("炸板次数")),
             })
 
     try:

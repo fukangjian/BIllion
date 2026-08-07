@@ -46,7 +46,7 @@ from pipeline.database import (
     save_limit_pool,
 )
 from pipeline.indicators import rank_sectors_by_strength
-from shared.data_fetcher import fetch_limit_pools, fetch_stock_daily
+from shared.data_fetcher import fetch_limit_pools, fetch_limit_reasons_ths, fetch_stock_daily
 from shared.utils import get_symbol_by_name, retry_fetch
 
 logger = logging.getLogger(__name__)
@@ -182,13 +182,20 @@ def build_hot_pool(
     trade_date = trade_date or datetime.now().strftime("%Y-%m-%d")
     init_database(db_path)
 
-    # 1) 涨停/炸板名单（东财 push2ex），存 limit_pool 表
+    # 1) 涨停/炸板名单（东财 push2ex），存 limit_pool 表；同花顺涨停归因合并（失败降级空，不阻塞）
     limit_df = fetch_limit_pools(trade_date)
     if not limit_df.empty:
         limit_save = limit_df.copy()
+        try:
+            reasons = fetch_limit_reasons_ths(trade_date)
+            reason_map = dict(zip(reasons["symbol"], reasons["reason"])) if not reasons.empty else {}
+        except Exception as e:
+            logger.warning("THS 涨停归因合并失败（降级为空）: %s", e)
+            reason_map = {}
+        limit_save["reason"] = limit_save["symbol"].map(lambda s: reason_map.get(str(s), ""))
         limit_save["trade_date"] = trade_date
         n = save_limit_pool(limit_save, db_path)
-        logger.info("涨停/炸板名单入库 %d 条（%s）", n, trade_date)
+        logger.info("涨停/炸板名单入库 %d 条（%s），归因覆盖 %d 只", n, trade_date, len(reason_map))
     else:
         logger.warning("涨停/炸板名单为空（数据源降级），热点池仅含领涨股")
 
