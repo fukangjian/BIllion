@@ -644,6 +644,8 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                         build_dragon_context,
                         dragon_top,
                         grade_hot_candidates,
+                        to_float,
+                        to_int,
                     )
 
                     limit_info = {}
@@ -653,11 +655,11 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                     for rec in records:
                         lr = limit_info.get(rec["symbol"])
                         if lr is not None:
-                            rec["lbc"] = int(lr.get("lbc", 0) or 0)
+                            rec["lbc"] = to_int(lr.get("lbc"))
                             rec["fbt"] = str(lr.get("fbt", "") or "")
-                            rec["turnover"] = float(lr.get("turnover", 0) or 0)
-                            rec["seal_amount"] = float(lr.get("seal_amount", 0) or 0)
-                            rec["zbc"] = int(lr.get("zbc", 0) or 0)
+                            rec["turnover"] = to_float(lr.get("turnover"))
+                            rec["seal_amount"] = to_float(lr.get("seal_amount"))
+                            rec["zbc"] = to_int(lr.get("zbc"))
                         sdf = symbols_data.get(rec["symbol"])
                         if sdf is not None and not sdf.empty:
                             last = sdf.sort_values("trade_date").iloc[-1]

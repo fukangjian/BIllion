@@ -34,6 +34,24 @@ logger = logging.getLogger(__name__)
 GRADE_S, GRADE_A, GRADE_B = 80, 65, 50  # 等级分数线（V5.0 凸性评分段口径）
 
 
+def to_int(v, default: int = 0) -> int:
+    """NaN 安全 int 转换（老库新列 NULL 经 pandas 读取为 NaN，int(NaN) 会抛 ValueError）"""
+    try:
+        f = float(v)
+        return default if f != f else int(f)  # f != f 即 NaN
+    except (TypeError, ValueError):
+        return default
+
+
+def to_float(v, default: float = 0.0) -> float:
+    """NaN 安全 float 转换"""
+    try:
+        f = float(v)
+        return default if f != f else f
+    except (TypeError, ValueError):
+        return default
+
+
 def build_dragon_context(trade_date: str, db_path: Optional[Path] = None) -> dict:
     """
     构建龙头评分上下文（离线）：
@@ -92,7 +110,7 @@ def build_dragon_context(trade_date: str, db_path: Optional[Path] = None) -> dic
 
 def _score_position(rec: dict, sec_ctx: dict) -> tuple[int, str]:
     """身位（30）：板块内连板最高且 lbc≥2 → 30；首板且首次封板时间板块前 3 → 20；跟风 → 8"""
-    lbc = int(rec.get("lbc", 0) or 0)
+    lbc = to_int(rec.get("lbc"))
     symbol = str(rec.get("symbol", ""))
     if not sec_ctx:
         return 8, "无板块梯队数据，按跟风计"
@@ -124,14 +142,14 @@ def _score_strength(rec: dict) -> tuple[int, str]:
     封板资金 ≥1 亿 → 10、≥5000 万 → 6、<1000 万 → 2、其他 3；炸板 ≥3 次 → 总分减半"""
     if rec.get("one_word_board"):
         return 4, "一字板（无量，要么买不到要么坑）"
-    turnover = float(rec.get("turnover", 0) or 0)
+    turnover = to_float(rec.get("turnover"))
     if 15 <= turnover <= 35:
         t_score = 10
     elif 5 <= turnover < 15 or 35 < turnover <= 50:
         t_score = 6
     else:
         t_score = 3
-    seal = float(rec.get("seal_amount", 0) or 0)
+    seal = to_float(rec.get("seal_amount"))
     if seal >= 1e8:
         s_score = 10
     elif seal >= 5e7:
@@ -142,7 +160,7 @@ def _score_strength(rec: dict) -> tuple[int, str]:
         s_score = 3
     total = t_score + s_score
     note = f"换手 {turnover:.1f}%（{t_score}）+ 封单 {seal / 1e8:.2f} 亿（{s_score}）"
-    zbc = int(rec.get("zbc", 0) or 0)
+    zbc = to_int(rec.get("zbc"))
     if zbc >= 3:
         total //= 2
         note += f"；炸板 {zbc} 次减半"
