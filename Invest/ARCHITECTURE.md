@@ -56,7 +56,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K3 推理等（390 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K2.6 推理等（395 用例） |
 
 ---
 
@@ -583,7 +583,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `reason_dragons` | `(candidates, ctx, market_state="") -> dict \| None` | 单次 LLM 调用（`task_type="reasoning"` → kimi-k3，temperature=1 硬约束，max_tokens 8000 防截断，24h 缓存）；None = 降级按量化评分排序 |
 | `_parse_verdicts` | `(text, valid_symbols) -> dict \| None` | 防编造护栏：symbol 候选集校验、verdict 枚举、confidence 截断 0-100 |
 
-- 配置：`KIMI_MODEL_REASONING`（默认 `kimi-k3`）、`DRAGON_REASON_MAX=5`、`DRAGON_REASON_ENABLED`（env）；
+- 配置：`KIMI_MODEL_REASONING`（默认 `kimi-k2.6`）、`DRAGON_REASON_MAX=5`、`DRAGON_REASON_ENABLED`（env）；
 - `llm_client._model_for_task` 新增 `reasoning` 路由（kimi→KIMI_MODEL_REASONING）；
 - 集成：`market_scanner._build_hot_section` 在量化评分后调用，dragon_candidates 附 verdict/confidence/reasoning/risk 并按判定优先级重排，`hot_pool.dragon_primary`/`dragon_market_comment` 写入扫描 JSON；报告龙头子表加系统判定列与理由行；`daily_plan` 与 UI 同步展示。
 
@@ -1043,9 +1043,9 @@ flowchart TD
 |------|--------|------|
 | `KIMI_API_KEY` | `""` | Moonshot API 密钥 |
 | `KIMI_BASE_URL` | `https://api.moonshot.cn/v1` | Kimi API 端点 |
-| `KIMI_MODEL` | `kimi-k3` | 默认模型（moonshot-v1 系列 2026-08-31 停服） |
-| `KIMI_MODEL_LONG` | `kimi-k3` | 长文/公告模型 |
-| `KIMI_MODEL_REASONING` | `kimi-k3` | 深度推理模型（龙头辨识，task_type=reasoning；仅允许 temperature=1，llm_client 自动上调） |
+| `KIMI_MODEL` | `kimi-k2.6` | 默认模型（moonshot-v1 系列 2026-08-31 停服；k2.6 兼顾能力与费用） |
+| `KIMI_MODEL_LONG` | `kimi-k2.6` | 长文/公告模型 |
+| `KIMI_MODEL_REASONING` | `kimi-k2.6` | 深度推理模型（龙头辨识，task_type=reasoning；k2.6/k3 仅允许 temperature=1，llm_client 自动上调） |
 | `DEEPSEEK_API_KEY` | `""` | DeepSeek API 密钥 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek 端点 |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek 默认模型（快速） |
@@ -1163,7 +1163,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 390 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 395 passed |
 
 ### 10.4 模块联动点
 
@@ -1612,7 +1612,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（390 用例，全部离线）</summary>
+<summary>tests/（395 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 12 用例
@@ -1637,11 +1637,11 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_portfolio_heat.py` — 16 用例（热度上限/市场状态门禁/分层统计）
 - `test_run_batch.py` — 4 用例（汇总数学/异常不中断/文件输出/真实 cerebro 离线冒烟）
 - `test_signal_backtest_reconcile.py` — 1 用例（信号↔回测锁定止损口径对账）
-- `test_daily_plan.py` — 16 用例（候选过滤/参数口径/闸门预检/双系统去重/持仓行动/不交易条件/渲染）
+- `test_daily_plan.py` — 18 用例（候选过滤/参数口径/闸门预检/双系统去重/持仓行动/不交易条件/渲染）
 - `test_trade_ops.py` — 12 用例（建仓/from-scan/卖出拆单/更新止损/查询，全 mock）
 - `test_web_api.py` — 10 用例（页面路由/查询端点/写端点 409 与 200 接线）
 - `test_dragon_head.py` — 15 用例（身位/梯队/强度/逻辑/情绪真值表/等级边界/上下文聚合）
-- `test_dragon_reasoner.py` — 13 用例（payload/JSON 解析/护栏/降级）
+- `test_dragon_reasoner.py` — 15 用例（payload/JSON 解析/护栏/降级）
 
 </details>
 
@@ -1670,7 +1670,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 |------|--------|
 | `KIMI_API_KEY` | env, 默认 `""` |
 | `KIMI_MODEL` | `kimi-k3` |
-| `KIMI_MODEL_LONG` | `kimi-k3` |
+| `KIMI_MODEL_LONG` | `kimi-k2.6` |
 | `DEEPSEEK_API_KEY` | env, 默认 `""` |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` |
 | `CUSTOM_LLM_*` | env, 默认 `""` |
