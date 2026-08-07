@@ -56,7 +56,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K3 推理等（388 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K3 推理等（390 用例） |
 
 ---
 
@@ -583,7 +583,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `reason_dragons` | `(candidates, ctx, market_state="") -> dict \| None` | 单次 LLM 调用（`task_type="reasoning"` → kimi-k3，temperature=1 硬约束，max_tokens 8000 防截断，24h 缓存）；None = 降级按量化评分排序 |
 | `_parse_verdicts` | `(text, valid_symbols) -> dict \| None` | 防编造护栏：symbol 候选集校验、verdict 枚举、confidence 截断 0-100 |
 
-- 配置：`KIMI_MODEL_REASONING`（默认 `kimi-k3`）、`DRAGON_REASON_MAX=8`、`DRAGON_REASON_ENABLED`（env）；
+- 配置：`KIMI_MODEL_REASONING`（默认 `kimi-k3`）、`DRAGON_REASON_MAX=5`、`DRAGON_REASON_ENABLED`（env）；
 - `llm_client._model_for_task` 新增 `reasoning` 路由（kimi→KIMI_MODEL_REASONING）；
 - 集成：`market_scanner._build_hot_section` 在量化评分后调用，dragon_candidates 附 verdict/confidence/reasoning/risk 并按判定优先级重排，`hot_pool.dragon_primary`/`dragon_market_comment` 写入扫描 JSON；报告龙头子表加系统判定列与理由行；`daily_plan` 与 UI 同步展示。
 
@@ -1163,7 +1163,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 388 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 390 passed |
 
 ### 10.4 模块联动点
 
@@ -1363,7 +1363,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 1 | 公告链 | `research/catalyst_analyzer.py`：复用 `announcement_fetcher.fetch_latest_announcements`（东财/巨潮 fallback，回溯 `CATALYST_ANNOUNCE_DAYS`=90 天）→ `_pick_relevant_announcements` 标题关键词（预增/中标/收购/重组/转型/研发/突破等）筛 3 篇 → 前 2 篇取正文（缓存 aside） |
 | 2 | 护栏 | `has_real_content`：无正文禁调 LLM（与公告分析同一防编造护栏）；无公告/无 Key/无正文逐级降级 `satisfied=None`（人工核对），但公告标题+日期（事实）始终尽量给出 |
 | 3 | LLM 判定 | prompt `CATALYST_ANALYSIS`/`CATALYST_SYSTEM`（task_type=announcement，24h 缓存；严格依据公告原文、禁外部信息、拿不准判「不满足」）；`parse_verdict` 解析四行格式（判定/催化类型/持续性/依据），返回 {satisfied: bool\|None, catalyst_type, sustainability, basis, titles} |
-| 4 | 两遍评估接入 | `market_scanner._build_hot_section` 改两遍评估：离线初评排序 → 前 `HOT_CATALYST_MAX`（=8）只做 `_analyze_catalysts_safe`（逐股 try/except 降级）→ 终评重排；`_evaluate_buy_rules` 新增 `catalyst: dict \| None = None` 参数，satisfied 为 True/False 计入 met、None 维持人工核对；文本分支 ⑧满足·类型（持续性）／⑧无明确催化／⑧人工核对(最重要)；记录新增 `catalyst_basis`/`catalyst_titles`（JSON 双写），报告候选表下新增「候选⑧催化依据」区块（公告标题事实或 LLM 依据，≤10 行） |
+| 4 | 两遍评估接入 | `market_scanner._build_hot_section` 改两遍评估：离线初评排序 → 前 `HOT_CATALYST_MAX`（=5）只做 `_analyze_catalysts_safe`（逐股 try/except 降级）→ 终评重排；`_evaluate_buy_rules` 新增 `catalyst: dict \| None = None` 参数，satisfied 为 True/False 计入 met、None 维持人工核对；文本分支 ⑧满足·类型（持续性）／⑧无明确催化／⑧人工核对(最重要)；记录新增 `catalyst_basis`/`catalyst_titles`（JSON 双写），报告候选表下新增「候选⑧催化依据」区块（公告标题事实或 LLM 依据，≤10 行） |
 | 5 | 配置项 | `HOT_CATALYST_ENABLED`（env，默认 true；false 恢复纯离线）、`HOT_CATALYST_MAX`=8（每日催化分析候选上限）、`CATALYST_ANNOUNCE_DAYS`=90 |
 | 6 | 测试 | `tests/test_catalyst_analyzer.py` 18 用例（parse_verdict/关键词筛选/无公告/无 Key/无正文护栏/LLM 成功与失败降级/规则⑧接入/集成），`test_hot_rules.py` 集成补 `_analyze_catalysts_safe` mock，全量 231 passed |
 | 7 | 降级验证 | 无 LLM Key 实跑：Top 8 候选全部抓到真实公告标题（东财/巨潮），⑧依据区块标注「未配置 LLM，需人工核对」；配置 `KIMI_API_KEY`（或 DEEPSEEK/CUSTOM）后自动升级为 LLM 判定 |
@@ -1612,7 +1612,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（388 用例，全部离线）</summary>
+<summary>tests/（390 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 12 用例
@@ -1640,7 +1640,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_daily_plan.py` — 16 用例（候选过滤/参数口径/闸门预检/双系统去重/持仓行动/不交易条件/渲染）
 - `test_trade_ops.py` — 12 用例（建仓/from-scan/卖出拆单/更新止损/查询，全 mock）
 - `test_web_api.py` — 10 用例（页面路由/查询端点/写端点 409 与 200 接线）
-- `test_dragon_head.py` — 13 用例（身位/梯队/强度/逻辑/情绪真值表/等级边界/上下文聚合）
+- `test_dragon_head.py` — 15 用例（身位/梯队/强度/逻辑/情绪真值表/等级边界/上下文聚合）
 - `test_dragon_reasoner.py` — 13 用例（payload/JSON 解析/护栏/降级）
 
 </details>
