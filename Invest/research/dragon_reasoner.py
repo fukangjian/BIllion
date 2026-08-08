@@ -31,7 +31,7 @@ VERDICT_PRIORITY = {"真龙头": 0, "疑似龙头": 1, "跟风": 2, "伪龙头":
 
 
 def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str = "",
-                            calendar: dict | None = None) -> dict:
+                            calendar: dict | None = None, evidence: dict | None = None) -> dict:
     """把候选与上下文整理成 prompt 占位内容（只含事实，供 LLM 引用说理）"""
     emotion = ctx.get("emotion", {})
     sectors = ctx.get("sectors", {})
@@ -50,6 +50,7 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
         for e in sector_events
     ] or ["- 无（未启用联网探查或无可靠事项）"]
 
+    evidence = evidence or {}
     candidate_lines = []
     for c in candidates:
         dims = c.get("dragon_dims", {})
@@ -67,13 +68,21 @@ def build_reasoning_payload(candidates: list[dict], ctx: dict, market_state: str
         sym_events = symbol_events.get(str(c.get("symbol", "")).zfill(6)[-6:], [])
         events_text = ("；未来事项：" + "、".join(
             f"{e['date']}{e['type']}" for e in sym_events[:3])) if sym_events else ""
+        # 个股证据链深挖摘要（引爆点/行业地位/正反证据，仅 Top N 有）
+        ev = evidence.get(str(c.get("symbol", "")).zfill(6)[-6:])
+        ev_text = ""
+        if ev:
+            ev_text = (f"；引爆点：{ev.get('ignition', '')[:80]}"
+                       f"；行业地位：{ev.get('industry_position', '')[:60]}"
+                       f"；正面证据：{'；'.join((ev.get('positives') or [])[:2])[:150]}"
+                       f"；反面证据：{'；'.join((ev.get('negatives') or [])[:1])[:80]}")
         candidate_lines.append(
             f"- {c['symbol']} {c.get('name', '')}（{c.get('sector', '')}，{c.get('lbc', 0)} 连板）："
             f"五维 身位{dims.get('身位', '-')}/梯队{dims.get('梯队', '-')}/强度{dims.get('强度', '-')}"
             f"/逻辑{dims.get('逻辑', '-')}/情绪{dims.get('情绪', '-')}（总分 {c.get('dragon_score', '-') }）；"
             f"换手率 {c.get('turnover', '-') }%，封单 {round(float(c.get('seal_amount', 0) or 0) / 1e8, 2)} 亿，"
             f"首次封板 {c.get('fbt') or '-'}，炸板 {c.get('zbc', 0)} 次；"
-            f"评分依据：{notes}；⑧催化：{cat_text}{reason_text}{events_text}"
+            f"评分依据：{notes}；⑧催化：{cat_text}{reason_text}{events_text}{ev_text}"
             f"{('；公告：' + titles) if titles else ''}"
         )
 
@@ -158,10 +167,11 @@ def reason_dragons(
     ctx: dict,
     market_state: str = "",
     calendar: dict | None = None,
+    evidence: dict | None = None,
 ) -> dict | None:
     """
     对龙头候选做 Kimi 深度推理（单次调用，走 llm_client 24h 缓存）。
-    calendar 为事件日历（个股结构化事项 + 板块联网探查事件），注入推理证据。
+    calendar 为事件日历、evidence 为个股证据链（Top N 深挖），均注入推理证据。
     返回 {"primary", "verdicts", "sector_focus", "market_comment"}；
     未启用 / 无 Key / 调用失败 / 解析失败 → None（调用方降级按量化评分排序）。
     """
@@ -172,7 +182,7 @@ def reason_dragons(
         return None
 
     cands = candidates[:DRAGON_REASON_MAX]
-    payload = build_reasoning_payload(cands, ctx, market_state, calendar=calendar)
+    payload = build_reasoning_payload(cands, ctx, market_state, calendar=calendar, evidence=evidence)
     prompt = DRAGON_REASONING.format(**payload)
     text = call_llm(
         prompt,

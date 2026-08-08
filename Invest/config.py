@@ -296,6 +296,7 @@ KIMI_MODEL_REASONING = os.getenv("KIMI_MODEL_REASONING", "kimi-k2.6")
 # --- 龙头深度推理（research/dragon_reasoner.py，系统自主辨龙头） ---
 DRAGON_REASON_ENABLED = os.getenv("DRAGON_REASON_ENABLED", "true").lower() == "true"  # false 时跳过 LLM 推理，按量化评分排序
 DRAGON_REASON_MAX = 5        # 每日深度推理候选上限（控制 LLM 输入 token 与费用）
+DRAGON_EVIDENCE_MAX = 3      # 每日个股证据链深挖上限（K2.6 联网检索，控制调用成本）
 
 # --- FastAPI 服务与定时调度 ---
 SCHEDULER_ENABLED = os.getenv("ENABLE_SCHEDULER", "").lower() == "true"

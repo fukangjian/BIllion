@@ -130,8 +130,8 @@ _SECTOR_EVENTS_PROMPT = """今天是 {date}。请联网搜索以下 A 股板块�
 搜不到可靠信息的板块不要硬写；总数不超过 8 条。"""
 
 
-def _call_kimi_with_web_search(prompt: str, system_prompt: str) -> Optional[str]:
-    """Kimi $web_search 内建工具多轮调用（服务端执行搜索），返回最终文本；失败返回 None"""
+def _call_kimi_with_web_search(prompt: str, system_prompt: str, max_rounds: int = 3) -> Optional[str]:
+    """Kimi $web_search 内建工具多轮调用（服务端执行搜索），返回最终文本；超过 max_rounds 未收敛返回 None"""
     if not KIMI_API_KEY:
         return None
     from openai import OpenAI
@@ -139,7 +139,7 @@ def _call_kimi_with_web_search(prompt: str, system_prompt: str) -> Optional[str]
     client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL)
     messages = [{"role": "user", "content": prompt}]
     tools = [{"type": "builtin_function", "function": {"name": "$web_search"}}]
-    for _ in range(3):
+    for _ in range(max_rounds):
         resp = client.chat.completions.create(
             model=KIMI_MODEL_REASONING,
             messages=messages,
@@ -156,12 +156,12 @@ def _call_kimi_with_web_search(prompt: str, system_prompt: str) -> Optional[str]
                 "role": "tool", "tool_call_id": tc.id,
                 "name": tc.function.name, "content": tc.function.arguments,
             })
-    logger.warning("联网探查超过 3 轮未收敛，放弃")
+    logger.warning("联网探查超过 %d 轮未收敛，放弃", max_rounds)
     return None
 
 
 def _parse_sector_events(text: str | None, valid_sectors: set) -> list[dict]:
-    """解析行业事件 JSON（护栏：板块名必须在候选集合内；逐条字段截断）"""
+    """解析行业事件 JSON（护栏：板块名必须在候选集合内；逐条字段截断；相同事件去重为「多板块」）"""
     if not text:
         return []
     s = text.strip()
@@ -174,20 +174,26 @@ def _parse_sector_events(text: str | None, valid_sectors: set) -> list[dict]:
         data = json.loads(s[start:end + 1])
     except json.JSONDecodeError:
         return []
-    out = []
+    seen: dict[tuple, dict] = {}
     for e in data.get("events") or []:
         sec = str(e.get("sector", ""))
+        title = str(e.get("title", ""))[:120]
+        key = (str(e.get("type", "")), title)
+        if key in seen:
+            # 相同事件多板块重复（如半年报集中披露期）→ 合并为「多板块」
+            seen[key]["sector"] = "多板块"
+            continue
         if not sec or (valid_sectors and sec not in valid_sectors):
             continue
-        out.append({
+        seen[key] = {
             "sector": sec,
             "date": str(e.get("date", ""))[:30],
             "type": str(e.get("type", ""))[:10],
-            "title": str(e.get("title", ""))[:120],
+            "title": title,
             "chain": str(e.get("chain", ""))[:120],
             "source": str(e.get("source", ""))[:40],
-        })
-    return out[:8]
+        }
+    return list(seen.values())[:8]
 
 
 def explore_sector_events(sectors: list[str], trade_date: Optional[str] = None,

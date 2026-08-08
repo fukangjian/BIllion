@@ -247,6 +247,24 @@ function renderPlan(d) {
           ${symEventLines.map(e => `<li><b>${e.who}</b>｜${e.date}｜${e.type}：${e.title}</li>`).join("")}
         </ul></div>`;
     }
+    // 个股证据链（Top N 联网深挖）
+    const evCards = dragons.filter(b => b.evidence);
+    if (evCards.length) {
+      html += `<div style="margin-top:10px;background:#fdf7f0;border:1px solid #f0dcc0;border-radius:8px;padding:10px 14px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🔍 个股证据链（联网深挖）</div>` +
+        evCards.map(b => {
+          const ev = b.evidence;
+          return `<details style="margin-bottom:8px;"><summary style="cursor:pointer;font-size:13px;">
+            <b>${b.symbol} ${b.name}</b>　🔥 <span style="color:#c0392b;">${ev.ignition || ""}</span>
+            <span class="muted">｜${ev.industry_position || ""}</span></summary>
+            <div style="padding:6px 0 4px 14px;font-size:12.5px;line-height:1.8;">
+              <div>🔗 ${ev.chain || ""}</div>
+              ${(ev.positives || []).map(p => `<div>✅ ${p}</div>`).join("")}
+              ${(ev.negatives || []).map(n => `<div style="color:#b4690e;">⚠️ ${n}</div>`).join("")}
+              ${(ev.relations || []).map(r => `<div class="muted">🔀 关联：${r.symbol_name}（${r.relation}）${r.note}</div>`).join("")}
+            </div></details>`;
+        }).join("") + `</div>`;
+    }
   }
   if (trends.length) {
     const rows = trends.map(b => `

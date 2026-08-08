@@ -364,6 +364,7 @@ def _build_scan_json(
             "dragon_note": hot.get("dragon_note", ""),
             "sector_focus": hot.get("sector_focus", []),
             "event_calendar": hot.get("event_calendar", {}),
+            "evidence_chains": hot.get("evidence_chains", {}),
             "note": hot.get("note", ""),
         },
     }
@@ -551,6 +552,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         "dragon_note": "",
         "sector_focus": [],
         "event_calendar": {},
+        "evidence_chains": {},
         "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
     }
     try:
@@ -698,8 +700,20 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                             logger.warning("事件日历构建失败（降级）: %s", e)
                             result["event_calendar"] = {}
 
+                        # 个股证据链深挖（Top N 联网检索：引爆点/推导链/正反证据，注入推理）
+                        evidence_chains = {}
+                        try:
+                            from research.evidence_chain import build_evidence_chains
+
+                            evidence_chains = build_evidence_chains(result["dragon_candidates"], today)
+                            result["evidence_chains"] = evidence_chains
+                        except Exception as e:
+                            logger.warning("证据链深挖失败（降级）: %s", e)
+                            result["evidence_chains"] = {}
+
                         reasoning = reason_dragons(result["dragon_candidates"], dragon_ctx,
-                                                   market_state, calendar=calendar)
+                                                   market_state, calendar=calendar,
+                                                   evidence=evidence_chains)
                         if reasoning:
                             vmap = {v["symbol"]: v for v in reasoning["verdicts"]}
                             for rec in result["dragon_candidates"]:
@@ -954,6 +968,25 @@ def _format_report(
                         reason_part = f"归因「{reason}」；" if reason else ""
                         risk_part = f"；风险：{risk}" if risk else ""
                         lines.append(f"- {nm}（{verdict}）：{reason_part}{reasoning}{risk_part}")
+
+                # 个股证据链（Top N 联网深挖：引爆点/推导链/正反证据/关联个股）
+                evidence_map = hot.get("evidence_chains", {}) or {}
+                if evidence_map:
+                    lines.extend(["", "#### 🔍 个股证据链（联网深挖）", ""])
+                    for sym, ev in list(evidence_map.items())[:5]:
+                        nm = next((r.get("name", "") for r in dragons if r["symbol"] == sym), sym)
+                        lines.append(f"**{nm}（{sym}）｜行业地位：{ev.get('industry_position', '未知')}**")
+                        lines.append("")
+                        lines.append(f"- 🔥 引爆点：{ev.get('ignition', '')}")
+                        lines.append(f"- 🔗 推导链：{ev.get('chain', '')}")
+                        for p in (ev.get("positives") or [])[:3]:
+                            lines.append(f"- ✅ {p}")
+                        for n in (ev.get("negatives") or [])[:3]:
+                            lines.append(f"- ⚠️ {n}")
+                        for rel in (ev.get("relations") or []):
+                            lines.append(f"- 🔀 关联：{rel.get('symbol_name', '')}"
+                                         f"（{rel.get('relation', '')}）{rel.get('note', '')}")
+                        lines.append("")
                 lines.extend([
                     "",
                     "> 龙头评分口径：身位（板块最高板 30 / 首板封板前 3 得 20 / 跟风 8）+ 梯队（板块涨停家数与层级）"

@@ -231,6 +231,11 @@ def build_daily_plan(
     for b in dragon_buys:
         b["events"] = (calendar.get("symbol_events") or {}).get(b["symbol"], [])
 
+    # ---- 个股证据链（Top N 联网深挖） ----
+    evidence_chains = (scan_json.get("hot_pool") or {}).get("evidence_chains", {}) or {}
+    for b in dragon_buys:
+        b["evidence"] = evidence_chains.get(b["symbol"])
+
     return {
         "date": scan_json.get("date", ""),
         "market_state": market_state,
@@ -240,6 +245,7 @@ def build_daily_plan(
         "dragon_note": (scan_json.get("hot_pool") or {}).get("dragon_note", ""),
         "sector_focus": (scan_json.get("hot_pool") or {}).get("sector_focus", []),
         "event_calendar": calendar,
+        "evidence_chains": evidence_chains,
         "dragon_buys": dragon_buys,
         "trend_buys": trend_buys,
         "bid_checklist": bid_checklist,
