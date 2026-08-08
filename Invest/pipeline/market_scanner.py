@@ -678,7 +678,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                     grade_hot_candidates(records, dragon_ctx)
                     result["dragon_candidates"] = dragon_top(records)
 
-                    # Kimi K3 深度推理（系统自主辨龙头；失败降级按量化评分排序并标注）
+                    # Kimi 深度推理（系统自主辨龙头，模型见 KIMI_MODEL_REASONING；失败降级按量化评分排序并标注）
                     try:
                         from research.dragon_reasoner import VERDICT_PRIORITY, reason_dragons
 
@@ -930,7 +930,7 @@ def _format_report(
             if dragons:
                 lines.extend([
                     "",
-                    "### 🐉 龙头候选（三维验证评分 + Kimi K3 深度推理判定）",
+                    "### 🐉 龙头候选（三维验证评分 + Kimi 深度推理判定）",
                     "",
                 ])
                 primary = hot.get("dragon_primary")
@@ -991,7 +991,7 @@ def _format_report(
                     "",
                     "> 龙头评分口径：身位（板块最高板 30 / 首板封板前 3 得 20 / 跟风 8）+ 梯队（板块涨停家数与层级）"
                     "+ 强度（换手率/封单/炸板次数，一字板降档）+ 逻辑（⑧催化）+ 情绪（大盘涨停家数）；"
-                    "系统判定由 Kimi K3 综合上述事实深度推理给出（无 Key 或调用失败时降级为纯量化评分排序并标注）。",
+                    "系统判定由 Kimi 推理模型综合上述事实给出（无 Key 或调用失败时降级为纯量化评分排序并标注）。",
                 ])
             lines.extend([
                 "",

@@ -140,7 +140,7 @@ def main():
         "-w", "--watchlist",
         nargs="*",
         default=None,
-        help="研究日报关注股票（默认 config.DEFAULT_WATCHLIST）",
+        help="研究日报关注股票（默认 持仓 + RESEARCH_WATCHLIST）",
     )
     parser.add_argument(
         "-s", "--sectors",
