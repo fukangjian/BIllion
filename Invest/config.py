@@ -4,6 +4,9 @@
 import os
 from pathlib import Path
 
+# 系统版本（UI 顶栏与使用说明弹窗展示）
+APP_VERSION = "v2026.08"
+
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent
 VAULT_ROOT = PROJECT_ROOT.parent

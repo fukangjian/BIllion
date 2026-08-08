@@ -19,6 +19,7 @@ from typing import Optional
 
 from config import (
     ACCOUNT_EQUITY,
+    APP_VERSION,
     ATR_STOP_MULT,
     MARKET_SCAN_OUTPUT_DIR,
     PORTFOLIO_HEAT_LIMITS,
@@ -73,6 +74,7 @@ def get_overview(trade_log: TradeLog | None = None, db_path=None) -> dict:
             )
 
     return {
+        "version": APP_VERSION,
         "equity": ACCOUNT_EQUITY,
         "open_count": len(open_trades),
         "total_risk_pct": round(sum(t.风险率 for t in open_trades if t.风险率 > 0), 2),
