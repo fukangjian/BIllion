@@ -148,3 +148,14 @@ class TestQueries:
         r = ops.get_overview(trade_log=log, db_path=tmp_path / "empty.db")
         assert r["open_count"] == 0
         assert r["drawdown_state"] == "Normal"
+
+
+class TestVersion:
+    def test_overview_includes_version(self, tmp_path, monkeypatch):
+        """概览携带系统版本号（UI 顶栏/使用说明展示）"""
+        from config import APP_VERSION
+
+        monkeypatch.setattr(ops, "MARKET_SCAN_OUTPUT_DIR", tmp_path / "no_scan")
+        log = _log(tmp_path)
+        r = ops.get_overview(trade_log=log, db_path=tmp_path / "empty.db")
+        assert r["version"] == APP_VERSION
