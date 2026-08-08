@@ -56,7 +56,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K2.6 推理、事件日历等（412 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K2.6 推理、事件日历、证据链等（426 用例） |
 
 ---
 
@@ -601,6 +601,17 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `build_event_calendar` | `(symbols, sectors, trade_date=None, days=30, use_llm=True) -> dict` | `{symbol_events, sector_events, llm_available}` |
 
 集成：扫描器在龙头推理前构建日历（候选个股 + 梯队前 6 板块），注入 `reason_dragons`（payload 增 `event_lines` 与候选「未来事项」），写入扫描 JSON `hot_pool.event_calendar`；计划与 UI 展示「📅 未来 30 天关键事项」区块。无 Key/联网失败降级仅结构化事项。
+
+#### `evidence_chain.py` — 个股证据链深挖（2026-08-07 新增，research/）
+
+**职责**：解决「个股核心证据雷同（只有财报预约日期）」——对量化分 Top `DRAGON_EVIDENCE_MAX`(3) 龙头候选，逐股 Kimi K2.6 + `$web_search` 检索近 1-3 个月公告/新闻/行业动态，产出结构化证据链：引爆点（具体事件）、链式推导（事件→业绩传导→预期差→股价）、正面证据 ≤4、反面证据 ≤4、关联个股（同概念龙头/跟风/上下游，≤3）、行业地位。复用 `event_calendar._call_kimi_with_web_search` 多轮收敛；当日缓存 `data/evidence_chain/{date}_{symbol}.json`；解析护栏（ignition 必填、字段截断）失败降级 None。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `dig_evidence` | `(symbol, name, sector, reason, trade_date=None, use_cache=True) -> dict \| None` | 单股证据链深挖 |
+| `build_evidence_chains` | `(candidates, trade_date=None, max_n=DRAGON_EVIDENCE_MAX) -> dict[str, dict]` | Top N 逐股深挖（单股失败不阻塞） |
+
+集成：扫描器在龙头评分排序后深挖 → 证据摘要注入 `reason_dragons` payload（候选行引爆点/行业地位/正反证据）→ 写 `hot_pool.evidence_chains`；报告龙头节「🔍 个股证据链」子节、UI 证据链折叠卡（`<details>`）。另：`event_calendar._parse_sector_events` 相同事件去重为「多板块」（半年报刷屏修复）。
 
 #### `signal_tracker.py` — 信号追踪（可验证性）
 
@@ -1178,7 +1189,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 | 月末 | `review/cli.py monthly` | vault 月报（含信号验证、纪律审计节；调度器每月最后一天 16:00 自动生成） |
 | 交易统计 | `review/cli.py stats` | 终端 + vault 统计/ |
 | 策略验证 | `backtest/run_backtest.py` | PNG + stats |
-| 单元测试 | `python -m pytest tests/ -v` | 412 passed |
+| 单元测试 | `python -m pytest tests/ -v` | 426 passed |
 
 ### 10.4 模块联动点
 
@@ -1627,7 +1638,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（412 用例，全部离线）</summary>
+<summary>tests/（426 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 12 用例
@@ -1653,7 +1664,9 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_run_batch.py` — 4 用例（汇总数学/异常不中断/文件输出/真实 cerebro 离线冒烟）
 - `test_signal_backtest_reconcile.py` — 1 用例（信号↔回测锁定止损口径对账）
 - `test_daily_plan.py` — 18 用例
-- `test_event_calendar.py` — 7 用例（结构化事项/解析护栏/当日缓存/payload 注入）（候选过滤/参数口径/闸门预检/双系统去重/持仓行动/不交易条件/渲染）
+- `test_event_calendar.py` — 7 用例
+- `test_evidence_chain.py` — 9 用例（深挖解析/缓存/TopN/事件去重/payload 注入）
+- `test_ths_line_fetch.py` — 5 用例（THS 日线解析/失败跳过/日期过滤/指数映射）（结构化事项/解析护栏/当日缓存/payload 注入）（候选过滤/参数口径/闸门预检/双系统去重/持仓行动/不交易条件/渲染）
 - `test_trade_ops.py` — 12 用例（建仓/from-scan/卖出拆单/更新止损/查询，全 mock）
 - `test_web_api.py` — 10 用例（页面路由/查询端点/写端点 409 与 200 接线）
 - `test_dragon_head.py` — 21 用例（身位/梯队/强度/逻辑/情绪真值表/等级边界/上下文聚合）
