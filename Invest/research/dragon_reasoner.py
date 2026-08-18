@@ -188,7 +188,7 @@ def reason_dragons(
         prompt,
         system_prompt=DRAGON_REASONING_SYSTEM,
         temperature=1.0,  # kimi-k3 仅允许 temperature=1（API 硬约束）
-        max_tokens=8000,  # K3 推理输出较长，预留余量防截断
+        max_tokens=16384,  # 推理模型的思考链计入 max_tokens（实测 8000 会被思考链占满导致 JSON 截断），预留双倍余量
         task_type="reasoning",
     )
     valid = {str(c["symbol"]).zfill(6)[-6:] for c in cands}

@@ -580,7 +580,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
 | `build_reasoning_payload` | `(candidates, ctx, market_state="") -> dict` | prompt 占位内容（只含事实） |
-| `reason_dragons` | `(candidates, ctx, market_state="") -> dict \| None` | 单次 LLM 调用（`task_type="reasoning"` → kimi-k3，temperature=1 硬约束，max_tokens 8000 防截断，24h 缓存）；None = 降级按量化评分排序 |
+| `reason_dragons` | `(candidates, ctx, market_state="") -> dict \| None` | 单次 LLM 调用（`task_type="reasoning"` → kimi-k3，temperature=1 硬约束，max_tokens 16384——思考链计入 max_tokens，8000 曾被占满致 JSON 截断，24h 缓存）；None = 降级按量化评分排序 |
 | `_parse_verdicts` | `(text, valid_symbols) -> dict \| None` | 防编造护栏：symbol 候选集校验、verdict 枚举、confidence 截断 0-100 |
 
 - 配置：`KIMI_MODEL_REASONING`（默认 `kimi-k2.6`）、`DRAGON_REASON_MAX=5`、`DRAGON_REASON_ENABLED`（env）；
