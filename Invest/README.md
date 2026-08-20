@@ -265,6 +265,12 @@ python backtest/run_batch.py --strategy S2-A --symbols 600519,000858 --start 201
 python review/cli.py add 600519 --account 核心 --system S1-A `
     --entry 1800 --stop 1700 --risk 0.5 --shares 100
 # 可选：--time 14:20:34 记录入场时间（纪律审计用）；平仓用 update --exit-price ... --exit-time
+# 可选：--logic "买入理由" --target 2000 记录三行记账（买入理由/止损位/目标位，六条硬规则）
+#
+# 六条硬规则（2026-08 实盘复盘，建仓闸门强制执行；config.py「六条硬规则」区可调）：
+#   ① 永久拉黑 N/C 字头新股（高级违规）  ② 单票 ≤50% 且同时持仓 ≤2 只（高级）
+#   ③ 09:30–10:00 开盘追高（中级警告+纪律审计）  ④ 监控新增「移动止盈」建议（最高点回落 3%）
+#   ⑤ 连亏 2 笔停手 1 天（高级）  ⑥ 每周新开仓 ≤2 笔（高级）+ 三行记账（缺理由/目标位中级提醒）
 
 # 从扫描结果查看建议参数（只打印，不落库；热点池突破候选系统为 HOT-S，默认账户 事件）
 python review/cli.py from-scan 600519

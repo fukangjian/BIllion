@@ -414,3 +414,53 @@ class TestNoStopAlert:
         result = check_positions(log, db_path=db)
         types = [a["类型"] for a in result["alerts"]]
         assert types == ["止损", "无止损"]
+
+
+# ---------- 移动止盈（六条硬规则④：自入场后最高收盘回落 3%） ----------
+
+def _pullback_rows(last_close: float) -> list[dict]:
+    """入场 100 后冲高至 110 再回落的日线（振幅 2，ATR≈2）"""
+    dates = pd.date_range("2026-07-01", periods=15, freq="D").strftime("%Y-%m-%d")
+    closes = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 109, 108, 107, last_close]
+    return [
+        {
+            "trade_date": d, "open": c, "high": c + 1.0, "low": c - 1.0,
+            "close": float(c), "volume": 1000.0, "amount": 100000.0,
+        }
+        for d, c in zip(dates, closes)
+    ]
+
+
+def _hot_trade() -> dict:
+    """HOT-S 持仓（无退出通道），入场 100 / 止损 95"""
+    return _open_trade(
+        日期="2026-07-01", 入场系统="HOT-S", 账户类型="事件",
+        入场价=100.0, 止损价=95.0, 仓位金额=10000.0,
+    )
+
+
+class TestTrailingProfit:
+    def test_pullback_over_3pct_alerts(self, tmp_path):
+        # 最高收盘 110，现价 106 回落 3.6%（≤ 106.7 参考位）且仍盈利 → 移动止盈
+        log = _make_log(tmp_path, [_hot_trade()])
+        db = _make_db(tmp_path, {"600519": _pullback_rows(106.0)})
+        result = check_positions(log, db_path=db)
+        trailing = [a for a in result["alerts"] if a["类型"] == "移动止盈"]
+        assert len(trailing) == 1
+        assert "110.00" in trailing[0]["建议动作"]
+        assert "106.70" in trailing[0]["建议动作"]
+
+    def test_pullback_within_3pct_no_alert(self, tmp_path):
+        # 现价 108 仅回落 1.8%，不触发移动止盈（浮动R 1.6 → 命中移动止损建议）
+        log = _make_log(tmp_path, [_hot_trade()])
+        db = _make_db(tmp_path, {"600519": _pullback_rows(108.0)})
+        result = check_positions(log, db_path=db)
+        assert not any(a["类型"] == "移动止盈" for a in result["alerts"])
+        assert any(a["类型"] == "移动止损建议" for a in result["alerts"])
+
+    def test_under_water_no_trailing(self, tmp_path):
+        # 现价 97 低于入场价 100，移动止盈不适用（仍未破止损 95）
+        log = _make_log(tmp_path, [_hot_trade()])
+        db = _make_db(tmp_path, {"600519": _pullback_rows(97.0)})
+        result = check_positions(log, db_path=db)
+        assert not any(a["类型"] == "移动止盈" for a in result["alerts"])

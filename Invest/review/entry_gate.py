@@ -11,6 +11,7 @@ from pathlib import Path
 from config import ACCOUNT_EQUITY, DRAWDOWN_STATE
 from review.compliance_check import (
     Violation,
+    check_behavior_guards,
     check_market_conditions,
     check_risk_cluster,
     check_single_trade,
@@ -57,7 +58,8 @@ def check_entry(
 ) -> tuple[list[Violation], str]:
     """
     建仓合规闸门：单笔检查 + 含本笔假设建仓的组合级风险簇检查
-    + 组合总热度/市场状态门禁（V5.0 §5.6，market_state 显式传入可跳过 DB 读取）。
+    + 组合总热度/市场状态门禁（V5.0 §5.6，market_state 显式传入可跳过 DB 读取）
+    + 六条硬规则行为门禁（持仓只数/连亏停手/周频率）。
 
     返回 (违规列表, 实际使用的回撤状态)。
     """
@@ -65,8 +67,12 @@ def check_entry(
     state = drawdown_state or derive_state_safe(log)
 
     violations = check_single_trade(trade, drawdown_state=state, account_equity=account_equity)
-    open_trades = log.list_all(open_only=True)
+    all_trades = log.list_all()
+    open_trades = [t for t in all_trades if not t.is_closed]
+    closed_trades = [t for t in all_trades if t.is_closed]
     violations.extend(check_risk_cluster(open_trades + [trade], account_equity=account_equity))
+    # 六条硬规则组合级门禁：持仓只数 / 连亏停手 / 周频率
+    violations.extend(check_behavior_guards(trade, open_trades, closed_trades))
 
     if market_state is None:
         market_state = get_latest_market_state(db_path)

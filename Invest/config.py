@@ -226,6 +226,17 @@ BANNED_BOARD_PREFIXES = ()
 # 纪律审计：闪电换仓判定阈值（分钟）——卖出后 N 分钟内买入视为计划外冲动换仓
 DISCIPLINE_SWITCH_MINUTES = 30
 
+# --- 六条硬规则（2026-08 实盘复盘定制，建仓闸门/监控/审计共用） ---
+BANNED_NEW_STOCK_ENABLED = True   # 规则1：永久拉黑 N/C 字头新股次新（按股票名称前缀判定）
+MAX_SINGLE_POSITION_PCT = 50.0    # 规则2a：单票仓位绝对上限（占权益 %，高级违规，独立于 POSITION_LIMITS）
+MAX_OPEN_POSITIONS = 2            # 规则2b：同时持仓只数上限（含本笔，高级违规）
+OPEN_CHASE_CUTOFF = "10:00"       # 规则3：入场时间早于该时点记「开盘追高」（审计+中级警告）
+TRAILING_PROFIT_PCT = 3.0         # 规则4：移动止盈回落幅度 %（自入场后最高收盘价回落，建议类警报）
+STOP_SUGGEST_MAX_PCT = 4.0        # 规则4：止损宽度超过该 % 中级警告（建议 -3%~-4%）
+CONSECUTIVE_LOSS_HALT_COUNT = 2   # 规则5：最近 N 笔已平仓全亏触发停手
+CONSECUTIVE_LOSS_HALT_DAYS = 1    # 规则5：停手自然日数（自最近退出日期起）
+MAX_WEEKLY_ENTRIES = 2            # 规则6：每周（周一至当日）新开仓上限（含本笔，高级违规）
+
 FORBIDDEN_IN_DRAWDOWN = {
     "Caution": ["预埋"],
     "Defensive": ["预埋", "事件", "事件交易", "实验"],

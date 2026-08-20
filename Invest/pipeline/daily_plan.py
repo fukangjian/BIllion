@@ -63,6 +63,8 @@ def _gate_precheck(symbol, system, account, close, stop, calc, equity, state, tr
             trade, trade_log=trade_log, account_equity=equity,
             drawdown_state=state, db_path=db_path,
         )
+        # 三行记账（买入理由/目标位）属下单时纪律提醒，盘前预检不展示，避免整列噪音
+        violations = [v for v in violations if v.违规类型 not in ("缺少买入理由", "缺少目标位")]
         high, others = split_by_severity(violations)
         if high:
             return "⛔ " + "、".join(v.违规类型 for v in high)

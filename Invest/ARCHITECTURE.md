@@ -48,15 +48,15 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库（含市场状态/滤网/系统1附注）、逐根回放结算、胜率/平均R 统计 + 市场状态分层（持有天数按系统分：HOT-S=5） |
 | 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链、热点候选⑧催化判定 |
 | 交易复盘 | `review/` | 交易日志、合规、周报月报（含纪律审计节） |
-| **持仓监控** | `review/monitor.py` | 止损/无止损/退出通道警报、移动止损建议（+1R 保本 / +2R 兑现 1/3）、回撤状态自动推导 |
-| **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查（单票/簇/组合总热度/市场状态门禁），高级违规拒绝，`--force` 留痕 |
+| **持仓监控** | `review/monitor.py` | 止损/无止损/退出通道警报、移动止损建议（+1R 保本 / +2R 兑现 1/3）、移动止盈建议（最高点回落 3%，六条硬规则）、回撤状态自动推导 |
+| **入场合规闸门** | `review/entry_gate.py` | 建仓前合规检查（单票/簇/组合总热度/市场状态门禁 + 六条硬规则行为门禁），高级违规拒绝，`--force` 留痕 |
 | **金字塔加仓** | `review/pyramid.py` | 单位链聚合、0.5N 触发判定（与回测同函数）、加仓统一止损上移、三档风险 40/30/30 |
 | **买入卡** | `review/buy_card.py` | 建仓后自动生成买入卡（写 vault 交易日志/） |
 | 持仓视图 | `review/positions.py` | 开放持仓、风险敞口、未实现盈亏（market.db 收盘价） |
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
-| **纪律审计** | `review/discipline_audit.py` | 5 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易） |
+| **纪律审计** | `review/discipline_audit.py` | 7 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易/禁买新股/开盘追高） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K2.6 推理、事件日历、证据链等（427 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K2.6 推理、事件日历、证据链、行为门禁等（462 用例） |
 
 ---
 
@@ -838,11 +838,11 @@ CLI：`python backtest/run_batch.py --strategy S1-A --watchlist --start 2020-01-
 | `audit_to_markdown` | `(findings: list[Finding]) -> str` | 汇总表（各规则命中数）+ 明细表；空则 `[PASS]` |
 | `Finding` | dataclass | 规则/严重程度/交易编号/股票代码/描述/建议 |
 
-**规则清单**（严重程度）：追高接回（高，同代码当日先卖后买且买价 > 卖价；两笔都有时间字段时要求买在卖后，缺时间按日期+价格降级判定并注明）、闪电换仓（中，买入与当日他股卖出间隔 < `DISCIPLINE_SWITCH_MINUTES`=30 分钟，缺时间跳过）、禁买板块（高，代码前缀命中 `BANNED_BOARD_PREFIXES`）、无止损（中，止损价 ≤ 0）、非系统交易（低，是否系统内交易=False）。
+**规则清单**（严重程度）：追高接回（高，同代码当日先卖后买且买价 > 卖价；两笔都有时间字段时要求买在卖后，缺时间按日期+价格降级判定并注明）、闪电换仓（中，买入与当日他股卖出间隔 < `DISCIPLINE_SWITCH_MINUTES`=30 分钟，缺时间跳过）、禁买板块（高，代码前缀命中 `BANNED_BOARD_PREFIXES`）、无止损（中，止损价 ≤ 0）、非系统交易（低，是否系统内交易=False）、禁买新股（高，名称 N/C 前缀且 `BANNED_NEW_STOCK_ENABLED`，六条硬规则①）、开盘追高（中，入场时间早于 `OPEN_CHASE_CUTOFF`=10:00，六条硬规则③）。
 
 #### `trade_log.py` / `metrics.py` / `compliance_check.py` / `report_generator.py` / `trade_ops.py`
 
-（同前版本。增量：`Trade` 新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""，向后兼容，券商导入与纪律审计用）与 `关联单号` / `单位序号`（默认 ""/1，金字塔加仓子单与分批平仓拆分子单指向来源交易编号，2026-08）。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`；`check_single_trade` 新增「禁买板块」高级违规（代码 zfill 后前缀命中 `BANNED_BOARD_PREFIXES`，建仓闸门默认拒绝）；`check_market_conditions` 新增组合总热度与市场状态门禁（建仓闸门专用，见 entry_gate 节）。`metrics.TradeStats` 新增 `总盈亏金额`（已平仓盈亏合计，元）；胜率改为金额符号口径（无止损的历史导入交易也可统计），R 系指标仍仅统计有止损交易；`stats_to_markdown` 增加「总盈亏金额」行。`report_generator` 新增 `signal_verification_section(days=90)` 与 `discipline_audit_section(trades)`：周报含「五、纪律审计」节（原五/六顺延为六/七），月报含「七、纪律审计」节（原七/八顺延为八/九），审计异常降级 `_纪律审计不可用_`。）
+（同前版本。增量：`Trade` 新增可选字段 `入场时间` / `退出时间`（HH:MM:SS，默认 ""，向后兼容，券商导入与纪律审计用）与 `关联单号` / `单位序号`（默认 ""/1，金字塔加仓子单与分批平仓拆分子单指向来源交易编号，2026-08）及 `目标价`（默认 None，六条硬规则三行记账之目标位，2026-08-20）。`compliance_check` 的 `get_risk_limit` / `get_position_limit` 已公开化供仓位计算器复用；「非系统内交易」检查对齐 `config.STRATEGY_CODES`；`check_single_trade` 新增「禁买板块」高级违规（代码 zfill 后前缀命中 `BANNED_BOARD_PREFIXES`，建仓闸门默认拒绝）与六条硬规则单笔检查（禁买新股 高 / 单票 50% 绝对上限 高 / 开盘追高 中 / 止损过宽 中·S1/S2 豁免 / 缺少买入理由·目标位 中）；`check_market_conditions` 新增组合总热度与市场状态门禁（建仓闸门专用，见 entry_gate 节）；`check_behavior_guards`（2026-08-20 新增，建仓闸门专用纯函数）判定持仓只数 ≤2（按代码去重）/ 连亏 2 笔停手 1 天 / 每周新开仓 ≤2（加仓子单不计）。`metrics.TradeStats` 新增 `总盈亏金额`（已平仓盈亏合计，元）；胜率改为金额符号口径（无止损的历史导入交易也可统计），R 系指标仍仅统计有止损交易；`stats_to_markdown` 增加「总盈亏金额」行。`report_generator` 新增 `signal_verification_section(days=90)` 与 `discipline_audit_section(trades)`：周报含「五、纪律审计」节（原五/六顺延为六/七），月报含「七、纪律审计」节（原七/八顺延为八/九），审计异常降级 `_纪律审计不可用_`。）
 
 **`trade_ops.py`（2026-08-06 新增）**：Web 控制台 API 与 CLI 共用的程序化交易操作层（返回 dict 不打印）：`get_overview` / `get_daily_plan`（读最新扫描 JSON）/ `get_positions_view`（持仓摘要+账户热度）/ `get_sell_check_lines` / `execute_add` / `execute_from_scan` / `execute_add_position` / `execute_sell`（全平/部分拆单）/ `execute_update_stop`。写操作与 cli 同口径（合规闸门、force 留痕、买入卡）；全部函数支持注入 `trade_log`/`db_path`（测试不碰真实数据）。
 
@@ -850,7 +850,7 @@ CLI：`python backtest/run_batch.py --strategy S1-A --watchlist --start 2020-01-
 
 子命令：`add`, `update`, `list`, `show`, `stats`, `weekly`, `monthly`, `check`, `positions`, `import`, `sell-check`, `add-position`, `sell`, **`from-scan`**
 
-- **`add`**：写入前自动过入场合规闸门（`entry_gate`）；`--system` 校验 `STRATEGY_CODES`；`--equity`/`--force`；`--time` 记录入场时间（HH:MM:SS，纪律审计用）；成功后自动生成买入卡
+- **`add`**：写入前自动过入场合规闸门（`entry_gate`）；`--system` 校验 `STRATEGY_CODES`；`--equity`/`--force`；`--time` 记录入场时间（HH:MM:SS，纪律审计用）；`--logic`/`--target` 记录三行记账（六条硬规则：买入理由/止损位/目标位）；成功后自动生成买入卡
 - **`update`**：`--exit-time` 记录退出时间（HH:MM:SS）
 - **`add-position <代码>`**：金字塔加仓（V5.0 §5.5）：单位链触发判定（0.5N，复用 `pyramid.check_add_trigger`）→ 回撤状态非 Normal 拒绝 → 加仓股数（首仓风险 ×30/40）→ 合规闸门 → 落库子单（`关联单号`/`单位序号`）→ 全链未平仓单位止损统一上移（只上不下，旧止损备注留痕）；`--price` 按实际成交价，`--force/--equity` 可调
 - **`sell <代码>`**：卖出登记：`--shares` ≥ 持仓股数即全平（自动算 R，同 update 口径）；部分卖出拆单——原单减股数留痕，新增已平仓子单（`关联单号` 指向原单，R 独立计算），股数守恒；`--id` 指定单位、`--reason`（部分卖出默认「分批止盈」）；末尾打印 V5.0 §7.6 重新入场条件
@@ -1061,7 +1061,8 @@ flowchart TD
 | 服务/调度 | `SERVER_HOST`, `SERVER_PORT`, `SCHEDULER_*`, `WEEKLY_REVIEW_TIME`, `MONTHLY_REVIEW_TIME` | 环境变量 |
 | 复盘 | `ACCOUNT_EQUITY`, `DRAWDOWN_STATE`, `TRADE_LOG_OUTPUT_DIR` | 环境变量/代码推导 |
 | 合规 | `RISK_LIMITS_*`, `POSITION_LIMITS`, `RISK_CLUSTER_LIMITS`, `INDUSTRY_MAP`, `BANNED_BOARD_PREFIXES` | 投资体系 V5.0（限额已按 3.25 万小资金校准，2026-07） |
-| 纪律审计 | `DISCIPLINE_SWITCH_MINUTES`, `BANNED_BOARD_PREFIXES` | 自有纪律（代码默认） |
+| 纪律审计 | `DISCIPLINE_SWITCH_MINUTES`, `BANNED_BOARD_PREFIXES`, `OPEN_CHASE_CUTOFF`, `BANNED_NEW_STOCK_ENABLED` | 自有纪律 + 六条硬规则（代码默认） |
+| 六条硬规则 | `MAX_SINGLE_POSITION_PCT`, `MAX_OPEN_POSITIONS`, `TRAILING_PROFIT_PCT`, `STOP_SUGGEST_MAX_PCT`, `CONSECUTIVE_LOSS_HALT_COUNT/DAYS`, `MAX_WEEKLY_ENTRIES` | 2026-08 实盘复盘定制（代码默认） |
 
 ### 7.2 环境变量
 
@@ -1531,7 +1532,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 <details>
 <summary>review/discipline_audit.py</summary>
 
-- `audit_discipline(trades) -> list[Finding]` — 5 条规则（追高接回/闪电换仓/禁买板块/无止损/非系统交易）
+- `audit_discipline(trades) -> list[Finding]` — 7 条规则（追高接回/闪电换仓/禁买板块/无止损/非系统交易/禁买新股/开盘追高）
 - `audit_to_markdown(findings) -> str` — 汇总表 + 明细表
 - `Finding` dataclass；规则常量 `RULE_*` / `RULE_ORDER` / `RULE_SEVERITY`
 - `main()`
@@ -1666,12 +1667,13 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（427 用例，全部离线）</summary>
+<summary>tests/（462 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
-- `test_compliance.py` — 12 用例
+- `test_compliance.py` — 23 用例（含六条硬规则单笔检查 11）
 - `test_positions.py` — 8 用例
-- `test_monitor.py` — 30 用例（止损/退出通道/回撤推导/移动止损建议）
+- `test_monitor.py` — 33 用例（止损/退出通道/回撤推导/移动止损建议/移动止盈）
+- `test_behavior_guards.py` — 14 用例（持仓只数去重/连亏停手窗口/周频率含加仓子单豁免）
 - `test_compliance_gate.py` — 46 用例（口径统一/闸门/force 留痕/from-scan --execute 含 HOT-S/买入卡/禁买板块）
 - `test_signal_tracker.py` — 22 用例（入库去重/回放结算/统计/系统1过滤查询/扫描附注集成）
 - `test_strategy_params.py` — 19 用例（config 单一来源/枚举/簇映射）
@@ -1803,6 +1805,19 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `SIGNAL_MAX_HOLDING_DAYS` | 20 | 信号到期强制结算（交易日） |
 | `SIGNAL_MAX_HOLDING_BY_SYSTEM` | `{"HOT-S": 5}` | 按系统覆盖持有天数；未列出系统沿用 20 日 |
 | `SIGNAL_STATS_MIN_SAMPLE` | 5 | 统计最小样本量 |
+
+#### 六条硬规则（2026-08 实盘复盘定制）
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `BANNED_NEW_STOCK_ENABLED` | True | 规则①：N/C 字头新股永久拉黑（名称前缀判定，闸门高级违规+纪律审计） |
+| `MAX_SINGLE_POSITION_PCT` | 50.0 | 规则②a：单票仓位绝对上限 %（高级，独立于 POSITION_LIMITS） |
+| `MAX_OPEN_POSITIONS` | 2 | 规则②b：同时持仓只数上限（按代码去重，加仓子单不重复计，高级） |
+| `OPEN_CHASE_CUTOFF` | "10:00" | 规则③：入场时间早于该时点记「开盘追高」（中级警告+纪律审计） |
+| `TRAILING_PROFIT_PCT` | 3.0 | 规则④：移动止盈回落幅度 %（monitor 建议类警报，仅提示不改库） |
+| `STOP_SUGGEST_MAX_PCT` | 4.0 | 规则④：止损宽度建议上限 %（中级；趋势系统 S1/S2 的 2N 止损豁免） |
+| `CONSECUTIVE_LOSS_HALT_COUNT` / `CONSECUTIVE_LOSS_HALT_DAYS` | 2 / 1 | 规则⑤：最近 N 笔已平仓全亏且退出距今 ≤ N 天 → 高级「连亏停手」 |
+| `MAX_WEEKLY_ENTRIES` | 2 | 规则⑥：每周（周一至当日）新开仓上限（加仓子单不计，高级） |
 
 ---
 

@@ -10,8 +10,10 @@ sys.path.insert(0, str(ROOT))
 from review.discipline_audit import (
     RULE_BANNED,
     RULE_CHASE,
+    RULE_NEW_STOCK,
     RULE_NO_STOP,
     RULE_OFF_SYSTEM,
+    RULE_OPEN_CHASE,
     RULE_SWITCH,
     audit_discipline,
     audit_to_markdown,
@@ -155,3 +157,39 @@ class TestAuditToMarkdown:
         assert "| 非系统交易 | 低 | 1 |" in md
         assert "| 闪电换仓 | 中 | 0 |" in md  # 未命中规则也列计数
         assert "T1" in md and "600519" in md
+
+
+class TestNewStockBan:
+    def test_n_prefix_hit(self):
+        t = _make_trade(股票名称="N某某")
+        findings = _find(audit_discipline([t]), RULE_NEW_STOCK)
+        assert len(findings) == 1
+        assert findings[0].严重程度 == "高"
+
+    def test_c_prefix_hit(self):
+        t = _make_trade(股票名称="C大合")
+        assert len(_find(audit_discipline([t]), RULE_NEW_STOCK)) == 1
+
+    def test_normal_name_pass(self):
+        t = _make_trade(股票名称="贵州茅台")
+        assert _find(audit_discipline([t]), RULE_NEW_STOCK) == []
+
+    def test_empty_name_pass(self):
+        t = _make_trade(股票名称="")
+        assert _find(audit_discipline([t]), RULE_NEW_STOCK) == []
+
+
+class TestOpenChase:
+    def test_morning_entry_hit(self):
+        t = _make_trade(入场时间="09:35:12")
+        findings = _find(audit_discipline([t]), RULE_OPEN_CHASE)
+        assert len(findings) == 1
+        assert findings[0].严重程度 == "中"
+
+    def test_tail_entry_pass(self):
+        t = _make_trade(入场时间="14:35:00")
+        assert _find(audit_discipline([t]), RULE_OPEN_CHASE) == []
+
+    def test_no_entry_time_pass(self):
+        t = _make_trade()
+        assert _find(audit_discipline([t]), RULE_OPEN_CHASE) == []

@@ -32,6 +32,7 @@ class Trade:
     股数: int = 0
     仓位金额: float = 0.0
     实际退出价: Optional[float] = None
+    目标价: Optional[float] = None  # 目标位（六条硬规则之三行记账：买入理由/止损位/目标位）
     退出日期: Optional[str] = None
     退出时间: str = ""  # 退出时间 HH:MM:SS（可选，券商导入/手工补录；纪律审计用）
     退出原因: str = ""

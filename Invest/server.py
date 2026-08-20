@@ -307,6 +307,8 @@ async def api_trade_add(request: Request):
             shares=int(p.get("shares", 0)),
             name=str(p.get("name", "")),
             force=bool(p.get("force", False)),
+            target=float(p["target"]) if p.get("target") else None,
+            logic=str(p.get("logic", "")),
         )
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result)

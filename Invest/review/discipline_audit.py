@@ -9,6 +9,8 @@
 3. 禁买板块（高）：代码前缀命中 BANNED_BOARD_PREFIXES
 4. 无止损（中）：止损价 <= 0
 5. 非系统交易（低）：是否系统内交易=False
+6. 禁买新股（高）：名称 N/C 字头新股次新（六条硬规则①，BANNED_NEW_STOCK_ENABLED）
+7. 开盘追高（中）：入场时间早于 OPEN_CHASE_CUTOFF（六条硬规则③）
 
 用法:
     python review/discipline_audit.py     # 审计全部 trades 并打印
@@ -22,7 +24,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import BANNED_BOARD_PREFIXES, DISCIPLINE_SWITCH_MINUTES
+from config import (
+    BANNED_BOARD_PREFIXES,
+    BANNED_NEW_STOCK_ENABLED,
+    DISCIPLINE_SWITCH_MINUTES,
+    OPEN_CHASE_CUTOFF,
+)
 from review.trade_log import Trade, TradeLog
 
 logger = logging.getLogger(__name__)
@@ -32,15 +39,22 @@ RULE_SWITCH = "闪电换仓"
 RULE_BANNED = "禁买板块"
 RULE_NO_STOP = "无止损"
 RULE_OFF_SYSTEM = "非系统交易"
+RULE_NEW_STOCK = "禁买新股"
+RULE_OPEN_CHASE = "开盘追高"
 
 # 汇总表固定顺序与严重程度
-RULE_ORDER = [RULE_CHASE, RULE_SWITCH, RULE_BANNED, RULE_NO_STOP, RULE_OFF_SYSTEM]
+RULE_ORDER = [
+    RULE_CHASE, RULE_SWITCH, RULE_BANNED, RULE_NO_STOP, RULE_OFF_SYSTEM,
+    RULE_NEW_STOCK, RULE_OPEN_CHASE,
+]
 RULE_SEVERITY = {
     RULE_CHASE: "高",
     RULE_SWITCH: "中",
     RULE_BANNED: "高",
     RULE_NO_STOP: "中",
     RULE_OFF_SYSTEM: "低",
+    RULE_NEW_STOCK: "高",
+    RULE_OPEN_CHASE: "中",
 }
 
 
@@ -171,6 +185,42 @@ def _check_off_system(trades: list[Trade]) -> list[Finding]:
     ]
 
 
+def _check_new_stock(trades: list[Trade]) -> list[Finding]:
+    """禁买新股（高）：名称 N/C 字头新股次新（六条硬规则①）"""
+    findings = []
+    for t in trades:
+        name = (t.股票名称 or "").strip()
+        if not name or name.upper()[:1] not in ("N", "C"):
+            continue
+        findings.append(Finding(
+            规则=RULE_NEW_STOCK,
+            严重程度="高",
+            交易编号=t.交易编号,
+            股票代码=t.股票代码,
+            描述=f"「{t.股票名称}」为 N/C 字头新股次新（六条硬规则：永久拉黑）",
+            建议="新股次新永久拉黑，不再以任何理由买入",
+        ))
+    return findings
+
+
+def _check_open_chase(trades: list[Trade]) -> list[Finding]:
+    """开盘追高（中）：入场时间早于 OPEN_CHASE_CUTOFF（六条硬规则③）"""
+    findings = []
+    for t in trades:
+        entry_time = (t.入场时间 or "").strip()
+        if not entry_time or entry_time[:5] >= OPEN_CHASE_CUTOFF:
+            continue
+        findings.append(Finding(
+            规则=RULE_OPEN_CHASE,
+            严重程度="中",
+            交易编号=t.交易编号,
+            股票代码=t.股票代码,
+            描述=f"入场时间 {entry_time} 早于 {OPEN_CHASE_CUTOFF}，属开盘追高（六条硬规则③）",
+            建议="改为尾盘 14:30 后或盘中回调时买入；开盘瞬间冲进去的大亏单最多",
+        ))
+    return findings
+
+
 def audit_discipline(trades: list[Trade]) -> list[Finding]:
     """对交易列表跑全部纪律规则，返回 Finding 列表（按规则固定顺序分组）"""
     findings: list[Finding] = []
@@ -179,6 +229,9 @@ def audit_discipline(trades: list[Trade]) -> list[Finding]:
     findings.extend(_check_banned_board(trades))
     findings.extend(_check_no_stop(trades))
     findings.extend(_check_off_system(trades))
+    if BANNED_NEW_STOCK_ENABLED:
+        findings.extend(_check_new_stock(trades))
+    findings.extend(_check_open_chase(trades))
     return findings
 
 

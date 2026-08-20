@@ -113,3 +113,71 @@ class TestRunComplianceCheck:
         trades = [_make_trade(风险率=2.0)]
         report = run_compliance_check(trades=trades)
         assert report.违规笔数 >= 1
+
+
+class TestSixHardRules:
+    """六条硬规则（2026-08 实盘复盘）单笔检查"""
+
+    def test_new_stock_n_prefix_high(self):
+        trade = _make_trade(股票名称="N某某")
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert any(v.违规类型 == "禁买新股" and v.严重程度 == "高" for v in violations)
+
+    def test_new_stock_c_prefix_high(self):
+        trade = _make_trade(股票名称="C大合")
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert any(v.违规类型 == "禁买新股" for v in violations)
+
+    def test_normal_name_no_new_stock_violation(self):
+        trade = _make_trade(股票名称="贵州茅台")
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert not any(v.违规类型 == "禁买新股" for v in violations)
+
+    def test_position_absolute_cap_high(self):
+        # 60 万 / 100 万 = 60% 超绝对上限 50% → 高级
+        trade = _make_trade(账户类型="事件", 仓位金额=600000.0)
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert any(v.违规类型 == "仓位超限" and v.严重程度 == "高" for v in violations)
+
+    def test_position_below_absolute_cap_keeps_medium(self):
+        # 40% 未达绝对上限但超核心账户 30% → 仍为中级
+        trade = _make_trade(账户类型="核心", 仓位金额=400000.0)
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        pos = [v for v in violations if v.违规类型 == "仓位超限"]
+        assert len(pos) == 1 and pos[0].严重程度 == "中"
+
+    def test_open_chase_medium(self):
+        trade = _make_trade(入场时间="09:35:00")
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert any(v.违规类型 == "开盘追高" and v.严重程度 == "中" for v in violations)
+
+    def test_late_entry_no_open_chase(self):
+        trade = _make_trade(入场时间="14:35:00")
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert not any(v.违规类型 == "开盘追高" for v in violations)
+
+    def test_stop_too_wide_medium_non_trend(self):
+        # 事件系统止损宽度 5% > 4% → 中级
+        trade = _make_trade(入场系统="HOT-S", 入场价=100.0, 止损价=95.0)
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert any(v.违规类型 == "止损过宽" and v.严重程度 == "中" for v in violations)
+
+    def test_stop_wide_exempt_for_trend_system(self):
+        # S1-A 的 2N 止损为系统定义，豁免止损过宽检查
+        trade = _make_trade(入场系统="S1-A", 入场价=100.0, 止损价=95.0)
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        assert not any(v.违规类型 == "止损过宽" for v in violations)
+
+    def test_missing_logic_and_target_medium(self):
+        trade = _make_trade()
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        types = [v.违规类型 for v in violations]
+        assert "缺少买入理由" in types
+        assert "缺少目标位" in types
+
+    def test_logic_and_target_filled_no_violation(self):
+        trade = _make_trade(核心逻辑="测试理由", 目标价=110.0)
+        violations = check_single_trade(trade, account_equity=1_000_000)
+        types = [v.违规类型 for v in violations]
+        assert "缺少买入理由" not in types
+        assert "缺少目标位" not in types

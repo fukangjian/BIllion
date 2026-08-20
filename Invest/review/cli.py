@@ -91,6 +91,7 @@ def cmd_add(args):
         风险率=args.risk,
         股数=args.shares,
         仓位金额=args.position or (args.entry * args.shares),
+        目标价=getattr(args, "target", None),
         是否系统内交易=not args.off_system,
     )
     if not _apply_entry_gate(trade, log, equity, force=args.force):
@@ -798,6 +799,7 @@ def main():
     p_add.add_argument("--risk", type=float, required=True, help="风险率 (%%)")
     p_add.add_argument("--shares", type=int, required=True, help="股数")
     p_add.add_argument("--position", type=float, default=None, help="仓位金额")
+    p_add.add_argument("--target", type=float, default=None, help="目标价（六条硬规则三行记账：买入理由/止损位/目标位）")
     p_add.add_argument("--equity", type=float, default=None, help="账户权益（默认 config.ACCOUNT_EQUITY）")
     p_add.add_argument("--off-system", action="store_true", help="标记为非系统内交易")
     p_add.add_argument("--force", action="store_true", help="高级违规也强制写入（备注留痕）")

@@ -28,6 +28,7 @@ from config import (
     EXIT_CHANNEL_PERIODS,
     MARKET_SCAN_OUTPUT_DIR,
     MONTHLY_DRAWDOWN_LIMITS,
+    TRAILING_PROFIT_PCT,
 )
 from pipeline.database import load_daily_quotes
 from pipeline.indicators import calc_atr, calc_donchian_channel
@@ -39,8 +40,8 @@ logger = logging.getLogger(__name__)
 # 回撤状态严重度排序（数值越大越严重）
 _STATE_SEVERITY = {"Normal": 0, "Caution": 1, "Defensive": 2, "Review": 3}
 
-# 警报优先级：止损 > 无止损 > 退出 > 接近止损 > 移动止损建议（建议类，仅提示不改库）
-_ALERT_PRIORITY = {"止损": 0, "无止损": 1, "退出": 2, "接近止损": 3, "移动止损建议": 4}
+# 警报优先级：止损 > 无止损 > 退出 > 接近止损 > 移动止盈 > 移动止损建议（建议类，仅提示不改库）
+_ALERT_PRIORITY = {"止损": 0, "无止损": 1, "退出": 2, "接近止损": 3, "移动止盈": 4, "移动止损建议": 5}
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -126,22 +127,35 @@ def _check_single_position(trade: Trade, db_path: Optional[Path] = None) -> dict
     elif info["距止损N"] is not None and info["距止损N"] < 1:
         info["类型"] = "接近止损"
         info["建议动作"] = "距止损不足 1N，关注风险，勿加仓"
-    elif risk_per_share > 0 and trade.止损价 < trade.入场价:
-        # 移动止损建议（V5.0 §7.4 具体化；建议类警报，仅提示不改库，
-        # 人工执行: python review/cli.py update <编号> --stop <价位>）
-        r = info.get("浮动R")
-        if r is not None and r >= 2:
-            protect = round(trade.入场价 + risk_per_share, 2)
-            info["类型"] = "移动止损建议"
+    elif risk_per_share > 0:
+        # 移动止盈（六条硬规则④，替代「次日开盘必卖」）：
+        # 现价自入场后最高收盘价回落 ≥ TRAILING_PROFIT_PCT 且仍盈利 → 建议类警报，仅提示不改库
+        entry_date = str(trade.日期 or "")
+        since_entry = df[df["trade_date"].astype(str) >= entry_date] if entry_date else df
+        peak = float(since_entry["close"].max()) if not since_entry.empty else close
+        trail_ref = round(peak * (1 - TRAILING_PROFIT_PCT / 100), 2)
+        if peak > trade.入场价 and close > trade.入场价 and close <= trail_ref:
+            info["类型"] = "移动止盈"
             info["建议动作"] = (
-                f"浮动R {r:+.2f} ≥ +2R：建议卖出 1/3 兑现，"
-                f"保护位上移至 +1R 位 {protect:.2f}"
+                f"现价自入场后最高收盘 {peak:.2f} 回落超 {TRAILING_PROFIT_PCT:.0f}%"
+                f"（移动止盈）：建议离场，参考挂单价 {trail_ref:.2f}"
             )
-        elif r is not None and r >= 1:
-            info["类型"] = "移动止损建议"
-            info["建议动作"] = (
-                f"浮动R {r:+.2f} ≥ +1R：建议止损上移至成本价 {trade.入场价:.2f}（保本）"
-            )
+        elif trade.止损价 < trade.入场价:
+            # 移动止损建议（V5.0 §7.4 具体化；建议类警报，仅提示不改库，
+            # 人工执行: python review/cli.py update <编号> --stop <价位>）
+            r = info.get("浮动R")
+            if r is not None and r >= 2:
+                protect = round(trade.入场价 + risk_per_share, 2)
+                info["类型"] = "移动止损建议"
+                info["建议动作"] = (
+                    f"浮动R {r:+.2f} ≥ +2R：建议卖出 1/3 兑现，"
+                    f"保护位上移至 +1R 位 {protect:.2f}"
+                )
+            elif r is not None and r >= 1:
+                info["类型"] = "移动止损建议"
+                info["建议动作"] = (
+                    f"浮动R {r:+.2f} ≥ +1R：建议止损上移至成本价 {trade.入场价:.2f}（保本）"
+                )
 
     return info
 

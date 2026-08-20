@@ -184,6 +184,7 @@ def execute_add(
     symbol: str, account: str, system: str, entry: float, stop: float,
     risk: float, shares: int, name: str = "", cluster: str = "",
     force: bool = False, equity: float | None = None, trade_log: TradeLog | None = None,
+    target: float | None = None, logic: str = "",
 ) -> dict:
     """手工建仓（对应 cli add）：构造 Trade → 闸门 → 落库 → 买入卡"""
     from review.buy_card import calc_dict_from_trade, generate_buy_card
@@ -194,8 +195,8 @@ def execute_add(
     trade = Trade(
         日期=datetime.now().strftime("%Y-%m-%d"),
         股票代码=symbol, 股票名称=name, 账户类型=account, 风险簇=resolved_cluster,
-        入场系统=system, 入场价=entry, 止损价=stop, 风险率=risk,
-        股数=shares, 仓位金额=round(entry * shares, 2), 是否系统内交易=True,
+        入场系统=system, 核心逻辑=logic, 入场价=entry, 止损价=stop, 风险率=risk,
+        股数=shares, 仓位金额=round(entry * shares, 2), 目标价=target, 是否系统内交易=True,
     )
     gate = _gate(trade, log, equity, force, state=None)
     if not gate["allowed"]:
