@@ -365,6 +365,7 @@ def _build_scan_json(
             "sector_focus": hot.get("sector_focus", []),
             "event_calendar": hot.get("event_calendar", {}),
             "evidence_chains": hot.get("evidence_chains", {}),
+            "second_board": hot.get("second_board", {}),
             "note": hot.get("note", ""),
         },
     }
@@ -553,6 +554,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         "sector_focus": [],
         "event_calendar": {},
         "evidence_chains": {},
+        "second_board": {},
         "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
     }
     try:
@@ -560,6 +562,14 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         pool = load_hot_pool(trade_date=today)
         if limit_today.empty and pool.empty:
             return result
+
+        # 二板战法观察池（《二板打法》首板硬过滤+软评分，离线读 limit_pool/daily_quotes；失败降级不阻塞）
+        try:
+            from pipeline.second_board import build_second_board_pool
+
+            result["second_board"] = build_second_board_pool(trade_date=today)
+        except Exception as e:
+            logger.warning("二板观察池构建失败（已降级，扫描报告不含该区块）: %s", e)
 
         up = limit_today[limit_today["pool_type"] == "up"] if not limit_today.empty else pd.DataFrame()
         broken = limit_today[limit_today["pool_type"] == "broken"] if not limit_today.empty else pd.DataFrame()

@@ -143,6 +143,24 @@ HOT_POOL_MAX = 120          # 热点池总量上限（控制日线补抓量）
 HOT_HISTORY_DAYS = 90       # 热点池日线补抓长度（交易日目标，超短不需要长历史）
 HOT_SIGNAL_SYSTEM = "HOT-S"  # 超短热点信号系统标识（signals 表 system 列）
 
+# --- 二板战法观察池（pipeline/second_board.py，vault《二板打法》首板识别→二板买入框架） ---
+# 硬性条件（全部满足才进池；数据缺失视为不满足，宁缺毋滥）
+SECOND_BOARD_SEAL_TIME_MAIN = "100000"    # 主板首封时间须早于 10:00:00（HHMMSS）
+SECOND_BOARD_SEAL_TIME_STAR = "094500"    # 科创板流动性弱，9:45 前封死才算强
+SECOND_BOARD_SEAL_RATIO_MIN = 3.0         # 封单金额 ≥ 流通市值 × 3%
+SECOND_BOARD_TURNOVER_MAX = 12.0          # 换手率 < 12%（涨停换手太高说明筹码松）
+SECOND_BOARD_CAP_MIN_YI = 30.0            # 流通市值下限（亿）：太小流动性差
+SECOND_BOARD_CAP_MAX_YI = 120.0           # 流通市值上限（亿）：太大拉不动
+SECOND_BOARD_PRICE_MIN = 10.0             # 股价下限（元）
+SECOND_BOARD_PRICE_MAX = 60.0             # 股价上限（元）
+SECOND_BOARD_PREV5_GAIN_MAX = 15.0        # 首板前 5 日涨幅 < 15%（避免追高接盘）
+# 软性评分（≥ SECOND_BOARD_MIN_SCORE 进观察池，按评分降序取前 N）
+SECOND_BOARD_MIN_SCORE = 6
+SECOND_BOARD_TOP_N = 10                   # 观察池上限（方案：前 5-10 只）
+SECOND_BOARD_SMALL_CAP_YI = 50.0          # 流通市值 < 50 亿 +1 分（小盘弹性大）
+SECOND_BOARD_HOT_KEYWORDS = ("生物", "科技", "智能")  # 名称带热点关键词 +1 分
+SECOND_BOARD_STOP_PCT = 0.10              # 二板 -10% 硬止损（科创板风控铁律）
+
 # --- 趋势扫描动态池（pipeline/trend_pool.py，强势板块成分股，趋势候选来源；V5.0 §4.2 板块共振） ---
 TREND_SCAN_TOP_SECTORS = 5   # 相对强度前 N 的板块：取成分股入趋势池
 TREND_POOL_MAX = 300         # 趋势池总量上限（控制日线补抓量）

@@ -248,6 +248,7 @@ def build_daily_plan(
         "sector_focus": (scan_json.get("hot_pool") or {}).get("sector_focus", []),
         "event_calendar": calendar,
         "evidence_chains": evidence_chains,
+        "second_board": (scan_json.get("hot_pool") or {}).get("second_board", {}) or {},
         "dragon_buys": dragon_buys,
         "trend_buys": trend_buys,
         "bid_checklist": bid_checklist,
