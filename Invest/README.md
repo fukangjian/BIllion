@@ -8,7 +8,7 @@
 
 | 模块 | 目录 | 功能 | 入口 |
 |------|------|------|------|
-| 数据管道 | `pipeline/` | 行情并行获取、市场扫描（三重滤网）、突破候选、信号追踪、超短热点池、趋势动态池 | `python pipeline/run_daily.py` |
+| 数据管道 | `pipeline/` | 行情并行获取、市场扫描（三重滤网）、突破候选、信号追踪、超短热点池、趋势动态池、二板观察池 | `python pipeline/run_daily.py` |
 | 研究助手 | `research/` | 公告全文分析、财报对比、产业链、每日日报 | `python research/run_daily_report.py` |
 | 交易复盘 | `review/` | 交易日志、合规闸门（含总热度/市场状态）、持仓监控、金字塔加仓、分批卖出、券商导入、纪律审计、周/月报 | `python review/cli.py` |
 | 回测 | `backtest/` | S1-A / S2-A 策略验证（与实盘同口径参数）、批量回测汇总 | `python backtest/run_backtest.py` |
@@ -195,6 +195,9 @@ python pipeline/trend_pool.py
 # 龙头评分榜（离线读 limit_pool，打印五维明细）
 python pipeline/dragon_head.py
 
+# 二板观察池（离线读 limit_pool/daily_quotes，首板硬过滤 + 软评分，《二板打法》）
+python pipeline/second_board.py
+
 # 初始化数据库
 python pipeline/database.py
 ```
@@ -361,6 +364,7 @@ Invest/
 │   ├── indicators.py
 │   ├── market_scanner.py  # 扫描 + 持仓监控区块 + 超短热点区块，输出 MD + JSON
 │   ├── hot_pool.py        # 超短热点池构建（涨停/连板/炸板 + 强板块领涨股）与日线补抓
+│   ├── second_board.py    # 二板观察池（《二板打法》：首板硬过滤 + 软评分，扫描时离线生成）
 │   ├── signal_tracker.py  # 信号入库/结算/统计（持有天数按系统分，HOT-S=5）
 │   └── run_daily.py
 ├── backtest/              # 回测（与实盘共用 config 策略参数）

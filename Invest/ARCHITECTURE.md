@@ -42,6 +42,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | 数据管道 | `pipeline/` | SQLite 缓存、指标、市场扫描（MD + JSON）、超短热点池、趋势动态池、三重滤网 |
 | **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
 | **龙头识别** | `pipeline/dragon_head.py` | 龙头评分（身位/梯队/强度/逻辑/情绪五维，S/A/B/C 等级），《如何识别真假龙头》可量化落地 |
+| **二板观察池** | `pipeline/second_board.py` | 《二板打法》首板硬过滤（首封时间/封单力度/换手/市值/股价/前5日涨幅）+ 软评分 ≥6 入池，离线生成并入扫描 JSON，Web 控制台「二板观察池」卡片展示 |
 | **趋势动态池** | `pipeline/trend_pool.py` | 强势板块 Top N → 东财成分股（名称模糊匹配）→ 剔除创业板 → 入池补抓日线（趋势候选来源） |
 | **三重滤网** | `pipeline/trend_filters.py` | 周线 20 周均线 / 板块强度前 20% / 成交额≥20 日中位数 /（S2-A）MA20>MA60，纯函数 |
 | **盘前操作清单** | `pipeline/daily_plan.py` | 明日操作计划：滤网全过候选带止损/股数/闸门预检 + 持仓行动 + 不交易条件 |
@@ -438,7 +439,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `fetch_sector_list` | `() -> pd.DataFrame` | 行业板块列表 |
 | `fetch_sector_daily` | `(sector_name, start_date, end_date) -> pd.DataFrame` | 板块指数日线 |
 | `fetch_limit_stats` | `(trade_date=None) -> pd.DataFrame` | 涨跌停/市场宽度 |
-| `fetch_limit_pools` | `(trade_date=None) -> pd.DataFrame` | 涨停池+炸板池个股名单（东财 push2ex），列 symbol/name/pool_type(up/broken)/change_pct/amount/lbc(连板数)/sector；单池失败降级跳过 |
+| `fetch_limit_pools` | `(trade_date=None) -> pd.DataFrame` | 涨停池+炸板池个股名单（东财 push2ex），列 symbol/name/pool_type(up/broken)/change_pct/amount/lbc(连板数)/sector/fbt/seal_amount/turnover/zbc/latest(最新价)/circular_cap(流通市值，元)；单池失败降级跳过 |
 | `fetch_etf_flow` | `(trade_date=None) -> pd.DataFrame` | ETF 资金流 |
 | `fetch_dragon_tiger` | `(start_date=None, end_date=None) -> pd.DataFrame` | 龙虎榜 |
 | `fetch_and_save_all` | `(symbols, start_date="20230101", sector_limit=SECTOR_FETCH_LIMIT) -> dict` | 串行批量抓取（保留兼容） |
@@ -648,6 +649,22 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 - 连板判定直接用东财涨停池自带「连板数」（lbc≥2），不做跨日交集——盘前运行时东财返回上一交易日池子，跨日交集会把整池误判为连板
 - 强板块成分股接口不可用（akshare 1.16.95 无同花顺成分接口 `stock_board_industry_cons_ths`，东财 `stock_board_industry_cons_em` 走 push2 被风控），强板块个股来源降级为「领涨股」（每板块 1 只）
 - `hot_pool.source` 取值：连板/涨停/炸板/领涨（可组合）
+
+#### `second_board.py` — 二板观察池（《二板打法》首板→二板，2026-08 新增）
+
+**职责**：市场扫描时从 `limit_pool` 表筛首板股（up 且 lbc≤1），硬条件全过 + 软评分 ≥`SECOND_BOARD_MIN_SCORE`(6) 入池，降序截断 `SECOND_BOARD_TOP_N`(10)；结果挂扫描 JSON `hot_pool.second_board`，经 `daily_plan` 透传 `/api/plan`，Web 控制台「二板观察池」卡片展示（含竞价 S/A/B/C 执行清单与风控铁律）。仅读本地 DB，离线可用；失败降级不拖垮扫描。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `build_second_board_pool` | `(trade_date=None, db_path=None) -> dict` | DB 包装：读 limit_pool（当日为空回退最近一期）+ daily_quotes + 最近一期龙虎榜净买额 → 筛选结果 dict（candidates/excluded_reasons/params 等） |
+| `screen_first_boards` | `(records, daily_map, lhb_net=None) -> (candidates, excluded_reasons, below_score)` | 筛选纯函数：硬过滤 + 软评分 + 板块内首封名次（按全部首板股排，不受硬过滤影响） |
+| `hard_filter_reasons` | `(rec, daily) -> (reasons, info)` | 硬条件逐条核对（数据缺失视为不满足）：首封时间（主板 10:00/科创板 9:45）、封单 ≥3%、换手 <12%、市值 30-120 亿、股价 10-60 元、前 5 日涨幅 <15%、非 ST/北交所/N/C 字头 |
+| `score_candidate` | `(rec, info, sector_fbt_rank, broke_high, on_lhb) -> (score, notes)` | 软评分：龙一 +2/前三 +1、突破前高 +2、龙虎榜净买入 +1、热点关键词 +1、市值 <50 亿 +1、整数关口 +1（研报/互动易、游资席位无离线源不自动评分） |
+| `board_of` / `limit_up_pct` | `(symbol) -> str / float` | 板块归属（STAR/GEM/MAIN/BSE）与涨跌停幅度（20%/10%） |
+| `prev5_gain` / `broke_prior_high` | `(df) -> float|None / bool` | 首板前 5 日涨幅（不含首板日）/ 收盘突破前高平台（窗口 ≥20 根） |
+| `main` | `() -> None` | CLI：`python pipeline/second_board.py` |
+
+**设计要点**：硬过滤数据 `latest`/`circular_cap` 为 limit_pool 2026-08 扩列（老数据为 NULL → 按「数据缺失」淘汰，次日取数后自动恢复）；候选输出次日涨停价（S 级挂单参考）与 -10% 硬止损位；竞价等级/开盘处理依赖盘中数据，不做自动判定，由 Web 卡片静态清单提示人工执行。
 
 #### `run_daily.py`
 
@@ -910,6 +927,8 @@ CREATE TABLE IF NOT EXISTS limit_pool (
     seal_amount REAL,               -- 封板资金
     turnover    REAL,               -- 换手率
     zbc         INTEGER,            -- 炸板次数
+    latest      REAL,               -- 最新价（2026-08 二板战法扩列）
+    circular_cap REAL,              -- 流通市值（元，同上）
     PRIMARY KEY (trade_date, symbol, pool_type)
 );
 -- 老库由 init_database() 内 _migrate_limit_pool_columns 幂等 ALTER TABLE 补列
