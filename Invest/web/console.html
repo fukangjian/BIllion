@@ -411,7 +411,7 @@ function renderSecondBoard(sb) {
       每月回撤 -15% 停止当月交易 · 14:30 后封板的二板放弃 · <b>9:45 前不封板当天放弃</b>
     </div>
     <div class="muted" style="font-size:11px;margin-top:6px;">硬条件：首封 主板&lt;${p.seal_time_main ?? "10:00:00"}/科创板&lt;${p.seal_time_star ?? "09:45:00"} ·
-      封单 ≥${p.seal_ratio_min ?? 3}% · 换手 &lt;${p.turnover_max ?? 12}% · 市值 ${p.cap_min_yi ?? 30}-${p.cap_max_yi ?? 120} 亿 ·
+      封单 主板≥${p.seal_ratio_min_main ?? 1}%/20cm≥${p.seal_ratio_min_20cm ?? 3}% · 换手 &lt;${p.turnover_max ?? 12}% · 市值 ${p.cap_min_yi ?? 30}-${p.cap_max_yi ?? 120} 亿 ·
       股价 ${p.price_min ?? 10}-${p.price_max ?? 60} 元 · 前5日涨幅 &lt;${p.prev5_gain_max ?? 15}%；「无当日利空」与机构/游资席位需人工核对</div>`;
   el.innerHTML = html;
 }

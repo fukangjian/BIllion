@@ -658,7 +658,7 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 |------|------|--------|
 | `build_second_board_pool` | `(trade_date=None, db_path=None) -> dict` | DB 包装：读 limit_pool（当日为空回退最近一期）+ daily_quotes + 最近一期龙虎榜净买额 → 筛选结果 dict（candidates/excluded_reasons/params 等） |
 | `screen_first_boards` | `(records, daily_map, lhb_net=None) -> (candidates, excluded_reasons, below_score)` | 筛选纯函数：硬过滤 + 软评分 + 板块内首封名次（按全部首板股排，不受硬过滤影响） |
-| `hard_filter_reasons` | `(rec, daily) -> (reasons, info)` | 硬条件逐条核对（数据缺失视为不满足）：首封时间（主板 10:00/科创板 9:45）、封单 ≥3%、换手 <12%、市值 30-120 亿、股价 10-60 元、前 5 日涨幅 <15%、非 ST/北交所/N/C 字头 |
+| `hard_filter_reasons` | `(rec, daily) -> (reasons, info)` | 硬条件逐条核对（数据缺失视为不满足）：首封时间（主板 10:00/科创板 9:45）、封单 ≥1%（主板）/≥3%（科创·创业 20cm，方案原文系科创口径，主板按 2026-08-21 实测校准）、换手 <12%、市值 30-120 亿、股价 10-60 元、前 5 日涨幅 <15%、非 ST/北交所/N/C 字头 |
 | `score_candidate` | `(rec, info, sector_fbt_rank, broke_high, on_lhb) -> (score, notes)` | 软评分：龙一 +2/前三 +1、突破前高 +2、龙虎榜净买入 +1、热点关键词 +1、市值 <50 亿 +1、整数关口 +1（研报/互动易、游资席位无离线源不自动评分） |
 | `board_of` / `limit_up_pct` | `(symbol) -> str / float` | 板块归属（STAR/GEM/MAIN/BSE）与涨跌停幅度（20%/10%） |
 | `prev5_gain` / `broke_prior_high` | `(df) -> float|None / bool` | 首板前 5 日涨幅（不含首板日）/ 收盘突破前高平台（窗口 ≥20 根） |

@@ -17,7 +17,8 @@ from config import (
     SECOND_BOARD_PREV5_GAIN_MAX,
     SECOND_BOARD_PRICE_MAX,
     SECOND_BOARD_PRICE_MIN,
-    SECOND_BOARD_SEAL_RATIO_MIN,
+    SECOND_BOARD_SEAL_RATIO_MIN_20CM,
+    SECOND_BOARD_SEAL_RATIO_MIN_MAIN,
     SECOND_BOARD_STOP_PCT,
     SECOND_BOARD_TOP_N,
     SECOND_BOARD_TURNOVER_MAX,
@@ -153,9 +154,18 @@ class TestHardFilters:
         assert not any("首封" in r for r in main)
 
     def test_seal_ratio(self):
-        weak = _pass_rec(seal_amount=1e8)  # 1亿/50亿 = 2% < 3%
+        weak = _pass_rec(seal_amount=1e8)  # 科创板 1亿/50亿 = 2% < 3%（20cm 口径）
         reasons, _ = hard_filter_reasons(weak, _flat_daily())
         assert any("封单力度不足" in r for r in reasons)
+
+    def test_seal_ratio_by_board(self):
+        """封单阈值分板块：主板 1% / 科创·创业 20cm 3%"""
+        star, _ = hard_filter_reasons(_pass_rec(seal_amount=1e8), _flat_daily())          # 688 2% < 3%
+        assert any("封单力度不足" in r for r in star)
+        main_ok, _ = hard_filter_reasons(_pass_rec(symbol="600001", seal_amount=1e8), _flat_daily())  # 主板 2% ≥ 1%
+        assert not any("封单" in r for r in main_ok)
+        main_weak, _ = hard_filter_reasons(_pass_rec(symbol="600001", seal_amount=4e7), _flat_daily())  # 主板 0.8% < 1%
+        assert any("封单力度不足" in r for r in main_weak)
 
     def test_turnover(self):
         reasons, _ = hard_filter_reasons(_pass_rec(turnover=12.0), _flat_daily())
@@ -361,7 +371,7 @@ class TestConfigSanity:
     """阈值与 vault《二板打法》方案口径一致"""
 
     def test_thresholds(self):
-        assert SECOND_BOARD_SEAL_RATIO_MIN == 3.0
+        assert (SECOND_BOARD_SEAL_RATIO_MIN_MAIN, SECOND_BOARD_SEAL_RATIO_MIN_20CM) == (1.0, 3.0)
         assert SECOND_BOARD_TURNOVER_MAX == 12.0
         assert (SECOND_BOARD_CAP_MIN_YI, SECOND_BOARD_CAP_MAX_YI) == (30.0, 120.0)
         assert (SECOND_BOARD_PRICE_MIN, SECOND_BOARD_PRICE_MAX) == (10.0, 60.0)

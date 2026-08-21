@@ -4,7 +4,8 @@
 每日扫描时从 limit_pool 表（run_all 取数阶段写入）筛首板股（涨停且连板数 ≤ 1）：
 
 - 硬性条件（全部满足才进池；数据缺失视为不满足，宁缺毋滥）：
-  首封时间（主板 <10:00，科创板 <9:45）、封单金额 ≥ 流通市值 × 3%、换手率 <12%、
+  首封时间（主板 <10:00，科创板 <9:45）、封单金额 ≥ 流通市值 × 1%（主板）/3%（科创·创业 20cm，
+  方案原文 3% 系科创板口径，主板按 2026-08-21 实测分布校准）、换手率 <12%、
   流通市值 30-120 亿、股价 10-60 元、首板前 5 日涨幅 <15%、非 ST/北交所/N/C 字头新股；
   「无当日利空」无离线数据源，不自动判定，需人工核对。
 - 软性评分（≥ SECOND_BOARD_MIN_SCORE 进池，按评分降序取前 SECOND_BOARD_TOP_N）：
@@ -40,7 +41,8 @@ from config import (
     SECOND_BOARD_PREV5_GAIN_MAX,
     SECOND_BOARD_PRICE_MAX,
     SECOND_BOARD_PRICE_MIN,
-    SECOND_BOARD_SEAL_RATIO_MIN,
+    SECOND_BOARD_SEAL_RATIO_MIN_20CM,
+    SECOND_BOARD_SEAL_RATIO_MIN_MAIN,
     SECOND_BOARD_SEAL_TIME_MAIN,
     SECOND_BOARD_SEAL_TIME_STAR,
     SECOND_BOARD_SMALL_CAP_YI,
@@ -149,10 +151,11 @@ def hard_filter_reasons(rec: dict, daily: Optional[pd.DataFrame]) -> tuple[list[
         reasons.append("价格/市值/换手数据缺失")
     else:
         seal_ratio = seal / (cap_yi * 1e8) * 100
+        seal_min = SECOND_BOARD_SEAL_RATIO_MIN_MAIN if board == "MAIN" else SECOND_BOARD_SEAL_RATIO_MIN_20CM
         if seal <= 0:
             reasons.append("封板资金缺失")
-        elif seal_ratio < SECOND_BOARD_SEAL_RATIO_MIN:
-            reasons.append(f"封单力度不足：{seal_ratio:.1f}% < {SECOND_BOARD_SEAL_RATIO_MIN:.0f}%")
+        elif seal_ratio < seal_min:
+            reasons.append(f"封单力度不足：{seal_ratio:.1f}% < {seal_min:.0f}%（{'主板' if board == 'MAIN' else '20cm'}口径）")
         if turnover >= SECOND_BOARD_TURNOVER_MAX:
             reasons.append(f"换手率过高：{turnover:.1f}% ≥ {SECOND_BOARD_TURNOVER_MAX:.0f}%")
         if not (SECOND_BOARD_CAP_MIN_YI <= cap_yi <= SECOND_BOARD_CAP_MAX_YI):
@@ -350,7 +353,8 @@ def _params_view() -> dict:
     return {
         "seal_time_main": fmt_fbt(SECOND_BOARD_SEAL_TIME_MAIN),
         "seal_time_star": fmt_fbt(SECOND_BOARD_SEAL_TIME_STAR),
-        "seal_ratio_min": SECOND_BOARD_SEAL_RATIO_MIN,
+        "seal_ratio_min_main": SECOND_BOARD_SEAL_RATIO_MIN_MAIN,
+        "seal_ratio_min_20cm": SECOND_BOARD_SEAL_RATIO_MIN_20CM,
         "turnover_max": SECOND_BOARD_TURNOVER_MAX,
         "cap_min_yi": SECOND_BOARD_CAP_MIN_YI,
         "cap_max_yi": SECOND_BOARD_CAP_MAX_YI,

@@ -147,7 +147,8 @@ HOT_SIGNAL_SYSTEM = "HOT-S"  # 超短热点信号系统标识（signals 表 syst
 # 硬性条件（全部满足才进池；数据缺失视为不满足，宁缺毋滥）
 SECOND_BOARD_SEAL_TIME_MAIN = "100000"    # 主板首封时间须早于 10:00:00（HHMMSS）
 SECOND_BOARD_SEAL_TIME_STAR = "094500"    # 科创板流动性弱，9:45 前封死才算强
-SECOND_BOARD_SEAL_RATIO_MIN = 3.0         # 封单金额 ≥ 流通市值 × 3%
+SECOND_BOARD_SEAL_RATIO_MIN_MAIN = 1.0    # 主板封单金额 ≥ 流通市值 × 1%（2026-08-21 实测校准：首板封单力度中位数仅 1.27%）
+SECOND_BOARD_SEAL_RATIO_MIN_20CM = 3.0    # 科创板/创业板 ≥ 3%（方案原文口径：20cm 封单力度要更足）
 SECOND_BOARD_TURNOVER_MAX = 12.0          # 换手率 < 12%（涨停换手太高说明筹码松）
 SECOND_BOARD_CAP_MIN_YI = 30.0            # 流通市值下限（亿）：太小流动性差
 SECOND_BOARD_CAP_MAX_YI = 120.0           # 流通市值上限（亿）：太大拉不动
