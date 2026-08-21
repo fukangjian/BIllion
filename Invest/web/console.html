@@ -94,6 +94,10 @@
           <div class="card-body" id="plan-buys"><span class="muted">加载中…</span></div>
         </div>
         <div class="card">
+          <div class="card-header"><h2>🃏 二板观察池</h2><span class="tag">首板硬过滤 + 软评分 · 次日竞价定买卖（《二板打法》）</span></div>
+          <div class="card-body" id="sb-pool"><span class="muted">加载中…</span></div>
+        </div>
+        <div class="card">
           <div class="card-header"><h2>⚠️ 持仓行动</h2></div>
           <div class="card-body" id="plan-actions"><span class="muted">加载中…</span></div>
         </div>
@@ -154,7 +158,8 @@
       <li><b>市场状态 A/B/C/D</b>：决定总仓位上限与趋势仓许可；D 状态闸门直接拒绝新开趋势仓，C 状态建议风险减半。</li>
       <li><b>等级</b>（S/A/B/C）：量化五维评分（身位/梯队/强度/逻辑/情绪），S≥80 分。</li>
       <li><b>系统判定</b>（真龙头/疑似/跟风/伪龙头 + 置信度）：Kimi 推理模型综合评分、涨停归因、证据链后的判定；<b>悬浮徽章</b>可见完整判定理由与风险。</li>
-      <li><b>9:25 竞价核对清单</b>：竞价定去留——高开 3-5% 放量执行、一字不追、低开剔除。</li>
+      <li><b>9:25 竞价核对清单</b>：竞价定去留——高开 3-5% 放量执行、一字不追、低开剔除（龙头候选/竞价清单/关键事项均只列前 5 只，完整名单见扫描报告）。</li>
+      <li><b>🃏 二板观察池</b>：《二板打法》首板→二板——首板硬条件（首封时间/封单力度/换手/市值/股价/前5日涨幅）全过 + 软评分 ≥6 分入池；表中「次日涨停价」是 S 级竞价挂单参考，「硬止损」为 -10%；竞价等级与风控铁律在卡片底部，人工执行。</li>
       <li><b>📅 未来 30 天关键事项</b>：财报预约/解禁 + 板块政策会议事件；<b>🔍 个股证据链</b>：Top 候选的引爆点与正反证据（点行展开）。</li>
       <li><b>持仓行动</b>：止损/退出/无止损/移动止损建议逐条列出，直接点「补/改止损」「卖出」。</li>
       <li><b>force 勾选</b>：高级违规（如单笔风险超限）强制建仓，备注自动留痕——正常情况不要勾。</li>
@@ -227,8 +232,14 @@ function renderOverview(d) {
 }
 
 function renderPlan(d) {
-  if (!d.available) { $("plan-buys").innerHTML = `<span class="muted">${d.note || "无操作计划"}</span>`; $("plan-actions").innerHTML = ""; $("plan-notrade").innerHTML = ""; return; }
-  const dragons = d.dragon_buys || [];
+  if (!d.available) {
+    $("plan-buys").innerHTML = `<span class="muted">${d.note || "无操作计划"}</span>`;
+    $("plan-actions").innerHTML = ""; $("plan-notrade").innerHTML = "";
+    renderSecondBoard(null);
+    return;
+  }
+  const dragonsAll = d.dragon_buys || [];
+  const dragons = dragonsAll.slice(0, 5);  // 页面只列前 5 只（完整名单见扫描报告）
   const trends = d.trend_buys || [];
   const gradeBadge = (g) => `<span class="badge badge-${g === "S" ? "alert" : g === "A" ? "C" : "B"}">${g}</span>`;
   const verdictBadge = (b) => {
@@ -270,18 +281,18 @@ function renderPlan(d) {
         <td>${b.gate === "通过" ? "✅" : b.gate}</td>
         <td><button class="btn btn-buy btn-sm" onclick="buyFromScan('${b.symbol}','HOT-S')">建仓</button></td>
       </tr>`).join("");
-    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px;">🐉 龙头候选（超短 HOT-S · 三维验证 + Kimi 推理判定）</div>
+    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px;">🐉 龙头候选（超短 HOT-S · 三维验证 + Kimi 推理判定）${dragonsAll.length > 5 ? `<span class="muted" style="font-weight:400;">（共 ${dragonsAll.length} 只，仅列前 5）</span>` : ""}</div>
       <table><thead><tr><th>代码/名称</th><th>等级</th><th>系统判定</th><th>板块·连板</th><th class="num">参考价</th><th class="num">止损</th><th class="num">股数</th><th class="num">风险率</th><th>闸门预检</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
     if (d.bid_checklist && d.bid_checklist.length) {
       html += `<div style="margin-top:10px;background:#f0f5ff;border:1px solid #cfe0ff;border-radius:8px;padding:10px 14px;">
         <div style="font-size:13px;font-weight:600;margin-bottom:6px;">⏰ 9:25 竞价核对清单</div>
         <div class="muted" style="font-size:11.5px;margin-bottom:6px;">竞价后只盯这几只，不看全市场；对照执行，不临场发挥</div>
         <ul style="font-size:12.5px;line-height:1.9;padding-left:18px;margin:0;">
-          ${d.bid_checklist.map(i => `<li><b>${i.symbol} ${i.name}</b>：${i.text}</li>`).join("")}
+          ${d.bid_checklist.slice(0, 5).map(i => `<li><b>${i.symbol} ${i.name}</b>：${i.text}</li>`).join("")}
         </ul></div>`;
     }
     const cal = d.event_calendar || {};
-    const secEvents = cal.sector_events || [];
+    const secEvents = (cal.sector_events || []).slice(0, 5);
     const symEventLines = dragons.flatMap(b => (b.events || []).map(e => ({ who: `${b.symbol} ${b.name}`, ...e })));
     if (secEvents.length || symEventLines.length) {
       html += `<div style="margin-top:10px;background:#f6f4ef;border:1px solid #e3ddc9;border-radius:8px;padding:10px 14px;">
@@ -339,6 +350,70 @@ function renderPlan(d) {
       </div>`).join("")
     : '<span class="muted">持仓无警报，按原计划持有。</span>';
   $("plan-notrade").innerHTML = (d.no_trade_conditions || []).map(c => `<li>${c}</li>`).join("");
+  renderSecondBoard(d.second_board);
+}
+
+// 二板观察池（《二板打法》首板→二板：硬过滤+软评分离线筛出，竞价/开盘处理为人工执行清单）
+function renderSecondBoard(sb) {
+  const el = $("sb-pool");
+  if (!sb || !sb.available) {
+    el.innerHTML = `<span class="muted">${(sb && sb.note) || "二板观察池不可用（需先运行盘前流程构建涨停池）"}</span>`;
+    return;
+  }
+  const cands = sb.candidates || [];
+  const p = sb.params || {};
+  let html = `<div class="muted" style="font-size:12px;margin-bottom:8px;">首板日 ${sb.date || "-"} · 首板 ${sb.total_first_boards ?? 0} 只 →
+    硬过滤淘汰 ${sb.excluded_count ?? 0} 只 / 评分不足 ${p.min_score ?? 6} 分 ${sb.below_score_count ?? 0} 只 →
+    <b style="color:#1f2329;">入池 ${cands.length} 只</b>（评分≥${p.min_score ?? 6}，硬条件全过）</div>`;
+  if (cands.length) {
+    const rows = cands.map(c => `
+      <tr>
+        <td><b>${c.symbol}</b> ${c.name || ""}</td>
+        <td>${c.board || "-"}·${c.sector || "-"}</td>
+        <td><span class="badge ${c.score >= 8 ? "badge-alert" : c.score >= 7 ? "badge-C" : "badge-B"}" title="${(c.score_notes || []).join("；")}">${c.score}</span></td>
+        <td class="num">${c.fbt || "-"}</td>
+        <td class="num">${c.seal_ratio != null ? c.seal_ratio + "%" : "-"}</td>
+        <td class="num">${c.turnover != null ? c.turnover + "%" : "-"}</td>
+        <td class="num">${c.cap_yi ?? "-"}</td>
+        <td class="num">${c.prev5_gain != null ? c.prev5_gain + "%" : "-"}</td>
+        <td class="num">${c.close != null ? c.close.toFixed(2) : "-"}</td>
+        <td class="num" style="color:#c0392b;font-weight:600;">${c.limit_up_price != null ? c.limit_up_price.toFixed(2) : "-"}</td>
+        <td class="num">${c.stop_price != null ? c.stop_price.toFixed(2) : "-"}</td>
+      </tr>`).join("");
+    html += `<table><thead><tr>
+        <th>代码/名称</th><th>板块·行业</th><th title="软评分，悬浮见加分明细">评分</th>
+        <th class="num">首封时间</th><th class="num" title="封板资金 / 流通市值">封单力度</th>
+        <th class="num">换手率</th><th class="num">市值(亿)</th>
+        <th class="num" title="首板前 5 日涨幅">前5日%</th><th class="num">现价</th>
+        <th class="num" title="S 级竞价挂单参考">次日涨停价</th><th class="num" title="-${p.stop_pct ?? 10}% 硬止损">硬止损</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  } else if (sb.note) {
+    html += `<div class="muted" style="margin-bottom:6px;">${sb.note}</div>`;
+  }
+  const er = sb.excluded_reasons || {};
+  const erKeys = Object.keys(er).sort((a, b) => er[b] - er[a]);
+  if (erKeys.length) {
+    html += `<div class="muted" style="font-size:11.5px;margin-top:6px;">硬过滤明细：${erKeys.map(k => `${k} ×${er[k]}`).join(" · ")}</div>`;
+  }
+  html += `
+    <div style="margin-top:10px;background:#f0f5ff;border:1px solid #cfe0ff;border-radius:8px;padding:10px 14px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px;">⏰ 次日竞价等级（9:15-9:25，70% 的决定在竞价做出）</div>
+      <ul style="font-size:12.5px;line-height:1.9;padding-left:18px;margin:0;">
+        <li><b>S 级</b>：高开 8%-15% 且竞价量 &gt; 昨日总成交 8%，板块有一字板/高开 15%+ → <b>9:24:50 挂涨停价抢筹</b></li>
+        <li><b>A 级</b>：高开 5%-8% 且竞价量 &gt; 昨日 5%，板块整体高开 → 9:30 后观察，秒板则排板</li>
+        <li><b>B 级</b>：高开 0-5%，竞价量 &lt; 5% → 放弃主动买，等盘中回封，不回封不看</li>
+        <li><b>C 级</b>：低开/平开 → 坚决放弃（科创板低开=核按钮）</li>
+        <li class="muted">只看 9:20-9:25 不可撤单段：量增价推=资金抢筹（S 级信号）；量缩价落=排单在撤（降级）</li>
+      </ul>
+    </div>
+    <div style="margin-top:8px;background:#fdeceb;border:1px solid #f5c6c2;border-radius:8px;padding:10px 14px;font-size:12.5px;line-height:1.8;">
+      <b>⚔️ 风控铁律</b>：单股 ≤15% · 总仓 ≤50% · <b>-${p.stop_pct ?? 10}% 硬止损</b> · 二板后次日不涨停开盘就走（不幻想三板）·
+      每月回撤 -15% 停止当月交易 · 14:30 后封板的二板放弃 · <b>9:45 前不封板当天放弃</b>
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:6px;">硬条件：首封 主板&lt;${p.seal_time_main ?? "10:00:00"}/科创板&lt;${p.seal_time_star ?? "09:45:00"} ·
+      封单 ≥${p.seal_ratio_min ?? 3}% · 换手 &lt;${p.turnover_max ?? 12}% · 市值 ${p.cap_min_yi ?? 30}-${p.cap_max_yi ?? 120} 亿 ·
+      股价 ${p.price_min ?? 10}-${p.price_max ?? 60} 元 · 前5日涨幅 &lt;${p.prev5_gain_max ?? 15}%；「无当日利空」与机构/游资席位需人工核对</div>`;
+  el.innerHTML = html;
 }
 
 function renderPositions(d) {
