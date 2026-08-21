@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS limit_pool (
     turnover    REAL,
     zbc         INTEGER,
     reason      TEXT,
+    latest      REAL,
+    circular_cap REAL,
     PRIMARY KEY (trade_date, symbol, pool_type)
 );
 
@@ -167,10 +169,12 @@ def _migrate_signals_columns(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_limit_pool_columns(conn: sqlite3.Connection) -> None:
-    """老库 limit_pool 表补列（幂等）：fbt/seal_amount/turnover/zbc/reason（2026-08 龙头评分数据）"""
+    """老库 limit_pool 表补列（幂等）：fbt/seal_amount/turnover/zbc/reason（2026-08 龙头评分数据）；
+    latest/circular_cap（2026-08 二板战法硬过滤数据）"""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(limit_pool)")}
     for col, ddl in (("fbt", "TEXT"), ("seal_amount", "REAL"),
-                     ("turnover", "REAL"), ("zbc", "INTEGER"), ("reason", "TEXT")):
+                     ("turnover", "REAL"), ("zbc", "INTEGER"), ("reason", "TEXT"),
+                     ("latest", "REAL"), ("circular_cap", "REAL")):
         if col not in existing:
             conn.execute(f"ALTER TABLE limit_pool ADD COLUMN {col} {ddl}")
 

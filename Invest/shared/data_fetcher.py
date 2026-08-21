@@ -510,7 +510,8 @@ def fetch_limit_pools(trade_date: Optional[str] = None) -> pd.DataFrame:
     获取涨停/炸板个股名单（超短热点原料；东财 push2ex 主机，与行情 push2 不同，风控互不影响）。
 
     返回列: symbol / name / pool_type(up=涨停, broken=炸板) / change_pct / amount / lbc(连板数) / sector
-    / fbt(首次封板时间) / seal_amount(封板资金) / turnover(换手率) / zbc(炸板次数)。
+    / fbt(首次封板时间) / seal_amount(封板资金) / turnover(换手率) / zbc(炸板次数)
+    / latest(最新价) / circular_cap(流通市值，元)。
     单个池失败降级跳过，不阻塞另一个池；全失败返回空 DataFrame。
     """
     if trade_date is None:
@@ -536,6 +537,9 @@ def fetch_limit_pools(trade_date: Optional[str] = None) -> pd.DataFrame:
                 "seal_amount": _safe_float(row.get("封板资金")),
                 "turnover": _safe_float(row.get("换手率")),
                 "zbc": _safe_int(row.get("炸板次数")),
+                # 二板战法硬过滤数据（2026-08 扩列）：最新价 / 流通市值（元）
+                "latest": _safe_float(row.get("最新价")),
+                "circular_cap": _safe_float(row.get("流通市值")),
             })
 
     try:
