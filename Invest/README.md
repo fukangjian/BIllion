@@ -81,7 +81,7 @@ start http://127.0.0.1:8900/
 # 触发盘前流程（命令行方式）
 curl -X POST http://127.0.0.1:8900/pre-market
 
-# 启用定时调度（每天 08:30 自动盘前；每周五 15:45 自动周报、每月最后一天 16:00 自动月报）
+# 启用定时调度（每天 08:30 自动盘前；每周五 15:45 自动周报、每月最后一天 16:00 自动月报；工作日 09:26 竞价判定）
 $env:ENABLE_SCHEDULER = "true"
 $env:SCHEDULER_TIME = "08:30"
 python server.py
@@ -197,6 +197,9 @@ python pipeline/dragon_head.py
 
 # 二板观察池（离线读 limit_pool/daily_quotes，首板硬过滤 + 软评分，《二板打法》）
 python pipeline/second_board.py
+
+# 9:25 竞价判定（候选分级 + 持仓竞价风控；交易日 9:26 后运行，联网取快照）
+python pipeline/auction_check.py
 
 # 初始化数据库
 python pipeline/database.py
@@ -365,6 +368,7 @@ Invest/
 │   ├── market_scanner.py  # 扫描 + 持仓监控区块 + 超短热点区块，输出 MD + JSON
 │   ├── hot_pool.py        # 超短热点池构建（涨停/连板/炸板 + 强板块领涨股）与日线补抓
 │   ├── second_board.py    # 二板观察池（《二板打法》：首板硬过滤 + 软评分，扫描时离线生成）
+│   ├── auction_check.py   # 9:25 竞价判定（候选分级 + 持仓竞价风控，9:26 定时/手动，联网快照）
 │   ├── signal_tracker.py  # 信号入库/结算/统计（持有天数按系统分，HOT-S=5）
 │   └── run_daily.py
 ├── backtest/              # 回测（与实盘共用 config 策略参数）
@@ -415,6 +419,8 @@ Invest/
 | `SCHEDULER_TIME` | 定时盘前时间 | 08:30 |
 | `WEEKLY_REVIEW_TIME` | 定时周报时间（每周五） | 15:45 |
 | `MONTHLY_REVIEW_TIME` | 定时月报时间（每月最后一天） | 16:00 |
+| `AUCTION_CHECK_TIME` | 定时竞价判定时间（工作日，9:25 撮合完成后） | 09:26 |
+| `AUCTION_CHECK_ENABLED` | 9:25 竞价判定开关（false 时手动/定时均跳过） | true |
 | `SERVER_PORT` | API 服务端口 | 8900 |
 
 ## 关联文档

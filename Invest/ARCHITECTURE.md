@@ -43,6 +43,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
 | **龙头识别** | `pipeline/dragon_head.py` | 龙头评分（身位/梯队/强度/逻辑/情绪五维，S/A/B/C 等级），《如何识别真假龙头》可量化落地 |
 | **二板观察池** | `pipeline/second_board.py` | 《二板打法》首板硬过滤（首封时间/封单力度/换手/市值/股价/前5日涨幅）+ 软评分 ≥6 入池，离线生成并入扫描 JSON，Web 控制台「二板观察池」卡片展示 |
+| **竞价判定** | `pipeline/auction_check.py` | 9:25 竞价自动判定：二板 S/A/B/C（高开幅度×竞昨比×板块共振）+ 龙头执行/不追/剔除 + 持仓竞价风控（低开/破止损警报）；全市场快照一次调用 + 盘前分时走向（Top N），工作日 9:26 定时/手动，Web 控制台「9:25 竞价结果」卡片 |
 | **趋势动态池** | `pipeline/trend_pool.py` | 强势板块 Top N → 东财成分股（名称模糊匹配）→ 剔除创业板 → 入池补抓日线（趋势候选来源） |
 | **三重滤网** | `pipeline/trend_filters.py` | 周线 20 周均线 / 板块强度前 20% / 成交额≥20 日中位数 /（S2-A）MA20>MA60，纯函数 |
 | **盘前操作清单** | `pipeline/daily_plan.py` | 明日操作计划：滤网全过候选带止损/股数/闸门预检 + 持仓行动 + 不交易条件 |
@@ -666,6 +667,25 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 **设计要点**：硬过滤数据 `latest`/`circular_cap` 为 limit_pool 2026-08 扩列（老数据为 NULL → 按「数据缺失」淘汰，次日取数后自动恢复）；候选输出次日涨停价（S 级挂单参考）与 -10% 硬止损位；竞价等级/开盘处理依赖盘中数据，不做自动判定，由 Web 卡片静态清单提示人工执行。
 
+#### `auction_check.py` — 9:25 集合竞价判定（2026-08-24 新增）
+
+**职责**：把静态竞价核对清单变成自动判定。名单 = 最新扫描 JSON 的二板池全部候选 + 龙头候选前 5（页面口径）+ 未平仓持仓；9:26 取全市场快照一次调用（东财 `stock_zh_a_spot_em`，9:25-9:30 休市故「今开=竞价撮合价、成交量≈竞价量」；失败降级新浪 `stock_zh_a_spot`，成交量单位股 ÷100 换手），逐股算竞价涨幅与竞昨比（÷昨日成交量，daily_quotes 末行）后分级；**竞昨比仅 9:26-9:31 窗口准确**，窗口外快照量为当日累计 → 结果带 `vol_in_window` 标记与「竞昨比偏大仅供参考」备注（竞价涨幅任何时刻准确）；S/A 级与执行龙头再逐股取盘前分时判 9:20→9:25 走向（上限 `AUCTION_PRE_MIN_MAX`，东财盘前分时接口，本机 push2 风控时自动降级为空）。输出 `auction_check_YYYY-MM-DD.{json,md}`（结构化双写）；快照双源皆失败 → available=False 降级标注，不抛异常。只输出判定建议，不自动交易。服务端 `GET /api/auction-check`（读最新 JSON）、`POST /auction-check`（手动跑）、工作日 `AUCTION_CHECK_TIME` cron（`ENABLE_SCHEDULER=true` 生效）。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `run_auction_check` | `(db_path=None, trade_log=None, scan=None, snapshot=None) -> dict` | 编排：名单→快照→分级→Top N 分时走向→落盘；scan/snapshot 可注入（测试离线） |
+| `grade_second_board` | `(open_pct, vol_ratio, sector_resonance) -> (grade, text)` | 二板 S/A/B/C：S=高开 8-15% 且竞昨比 ≥8% 且板块共振（无共振降级 A）；A=5-8% 且 ≥5%；C=低开/平开；>15% 透支归 B |
+| `grade_hot_candidate` | `(open_pct, vol_ratio, is_yizi) -> (verdict, text)` | 龙头：一字/高开 >7% 不追、低开/平开剔除、高开 3-7% 且竞昨比 ≥5% 执行、其余观察 |
+| `grade_position` | `(open_pct, auction_price, stop) -> str|None` | 持仓：竞价破止损 → 开盘执行止损警报；低开 ≤-2% → 盯防警报 |
+| `auction_metrics` | `(spot, yesterday_volume) -> (open_pct, vol_ratio, is_yizi)` | 竞价涨幅/竞昨比/一字板（开盘=涨停价，幅度按 second_board.limit_up_pct） |
+| `pre_min_trend_from_df` | `(df) -> dict|None` | 盘前分时走向纯函数：9:20→9:25 价变 >+0.5% 且末段量占比 ≥40% → 抢筹；<-0.5% → 撤单；否则平淡 |
+| `fetch_spot_snapshot` | `() -> dict` | 全市场快照（东财→新浪降级链）；{symbol: {open/prev_close/volume/amount}} |
+| `fetch_pre_min_trend` | `(symbol) -> dict|None` | 逐股盘前分时（`stock_zh_a_hist_pre_min_em` 09:15-09:25），失败降级 None |
+| `build_watchlist` | `(db_path=None, trade_log=None, scan=None) -> dict` | 观察名单三组：二板全部候选 + 龙头前 5 + 未平仓持仓 |
+| `main` | `() -> None` | CLI：`python pipeline/auction_check.py` |
+
+**口径依据**（2026-08-24 联网调研）：竞昨比合格线 5%/优秀线 10%（`AUCTION_VOL_RATIO_GOOD/EXCELLENT`）；二板分档为 vault《二板打法》原文（`AUCTION_SB_*`）；龙头口径为《如何识别真假龙头》第二板斧（`AUCTION_HOT_EXEC_OPEN`）。
+
 #### `run_daily.py`
 
 CLI 入口：`--symbols`, `--start-date`, `--skip-fetch`, `--fetch-only`, `--output-dir`；fetch 使用 `fetch_and_save_all_parallel`。
@@ -1187,7 +1207,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8900/status"
 Invoke-RestMethod -Uri "http://127.0.0.1:8900/latest-report"
 ```
 
-**定时调度**：`ENABLE_SCHEDULER=true` 时，服务启动后 BackgroundScheduler 每日 `SCHEDULER_TIME` 自动执行盘前流程，每周五 `WEEKLY_REVIEW_TIME`（15:45）自动生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）自动生成月报；若已有任务运行则跳过。
+**定时调度**：`ENABLE_SCHEDULER=true` 时，服务启动后 BackgroundScheduler 每日 `SCHEDULER_TIME` 自动执行盘前流程，每周五 `WEEKLY_REVIEW_TIME`（15:45）自动生成周报、每月最后一天 `MONTHLY_REVIEW_TIME`（16:00）自动生成月报、工作日 `AUCTION_CHECK_TIME`（09:26）自动竞价判定；若已有任务运行则跳过。
 
 ### 10.3 盘后/周期性流程
 

@@ -41,6 +41,7 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── hot_pool.py         # 超短热点池：涨停/连板/炸板+强板块领涨股，构建与日线补抓
     │   ├── dragon_head.py      # 龙头识别评分：身位/梯队/强度/逻辑/情绪五维（S/A/B/C 等级）
     │   ├── second_board.py     # 二板观察池：首板硬过滤（首封/封单/换手/市值/股价/前5日涨幅）+ 软评分（《二板打法》，扫描时离线生成，Web 控制台「二板观察池」卡片）
+    │   ├── auction_check.py    # 9:25 竞价判定：二板 S/A/B/C 分级 + 龙头执行/不追/剔除 + 持仓竞价风控（快照联网，9:26 定时/手动，Web 控制台「9:25 竞价结果」卡片）
     │   ├── trend_pool.py       # 趋势动态池：强势板块 Top5 成分股（双源：同花顺直连优先/东财备用）→ 入池补抓
     │   ├── trend_filters.py    # 三重滤网量化纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）
     │   ├── daily_plan.py       # 盘前操作清单：滤网全过候选带止损/股数/闸门预检 + 持仓行动 + 不交易条件
@@ -104,6 +105,7 @@ python pipeline/run_daily.py           # 仅数据管道（取数 + 扫描，含
 python pipeline/hot_pool.py            # 手动构建超短热点池（run_all 已自动执行）
 python pipeline/trend_pool.py          # 手动构建趋势动态池（强势板块成分股，run_all 已自动执行）
 python pipeline/second_board.py        # 手动查看二板观察池（扫描已自动生成并写入扫描 JSON）
+python pipeline/auction_check.py       # 手动跑一次 9:25 竞价判定（交易日 9:26 后；服务已有工作日定时）
 python research/run_daily_report.py    # 仅研究日报
 python research/catalyst_analyzer.py 600162 --name 香江控股 --sector 房地产开发  # 单票⑧催化判定（调试用）
 
@@ -146,7 +148,7 @@ $env:DEEPSEEK_API_KEY="sk-..."    # 备选（默认 deepseek-v4-flash，可用 D
 $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端点
 ```
 
-其他环境变量：`ACCOUNT_EQUITY`（默认 32500，3.25 万实盘）、`DRAWDOWN_STATE`（Normal/Caution/Defensive/Review；未显式设置时由 `review/monitor.py` 按权益曲线自动推导，冲突时以推导值为准）、`WEEKLY_REVIEW_TIME`（15:45，周五自动周报）、`MONTHLY_REVIEW_TIME`（16:00，月末自动月报）、`SERVER_PORT`（8900）等，完整列表见 `Invest/README.md` 与 `Invest/ARCHITECTURE.md` 第 7 章。
+其他环境变量：`ACCOUNT_EQUITY`（默认 32500，3.25 万实盘）、`DRAWDOWN_STATE`（Normal/Caution/Defensive/Review；未显式设置时由 `review/monitor.py` 按权益曲线自动推导，冲突时以推导值为准）、`WEEKLY_REVIEW_TIME`（15:45，周五自动周报）、`MONTHLY_REVIEW_TIME`（16:00，月末自动月报）、`AUCTION_CHECK_TIME`（09:26，工作日定时竞价判定，`AUCTION_CHECK_ENABLED=false` 关闭）、`SERVER_PORT`（8900）等，完整列表见 `Invest/README.md` 与 `Invest/ARCHITECTURE.md` 第 7 章。
 
 ## 5. 开发约定
 
@@ -168,7 +170,7 @@ $env:CUSTOM_LLM_API_KEY / CUSTOM_LLM_BASE_URL / CUSTOM_LLM_MODEL  # 自定义端
 
 ## 6. 测试
 
-- 框架：pytest，目录 `Invest/tests/`，共 **508 个用例**（指标 16 + 合规 12+11 + 持仓 8 + 监控 30+3 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14+7 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 10 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1 + 盘前清单 13 + 交易操作层 13 + Web API 10 + 龙头评分 21 + 计划双组 3+3 + K3 推理 15+2 + 计划降级透传 1 + 事件日历 7 + 证据链 9 + THS日线 5 + 行为门禁 14 + 二板战法 46），已验证全部通过（`508 passed`，2026-08-21 复测）。
+- 框架：pytest，目录 `Invest/tests/`，共 **546 个用例**（指标 16 + 合规 12+11 + 持仓 8 + 监控 30+3 + 入场合规闸门 46 + 信号追踪 22 + 策略参数 19 + 回测 12+3 + 热点池 9 + 券商导入 14 + 纪律审计 14+7 + 卖点检查 9 + 统计口径 3 + 热点规则 17 + 催化分析 18 + 趋势池 10 + 滤网 17 + 加仓 13 + 分批退出 8 + 热度门禁 16 + 批量回测 4 + 信号回测对账 1 + 盘前清单 13 + 交易操作层 13 + Web API 10 + 龙头评分 21 + 计划双组 3+3 + K3 推理 15+2 + 计划降级透传 1 + 事件日历 7 + 证据链 9 + THS日线 5 + 行为门禁 14 + 二板战法 46 + 竞价判定 38），已验证全部通过（`546 passed`，2026-08-24 复测）。
 - 运行：`python -m pytest tests/ -v`（在 `Invest/` 目录下）。
 - 测试**不依赖网络与 API Key**：使用 mock DataFrame 与临时文件（如 `tmp_path`、临时 SQLite）隔离数据。新增测试也必须保持这一特性——禁止在单元测试中真实请求 AkShare/LLM。
 - 测试通过 `sys.path.insert` 引入项目根模块，无需安装包。部分用例由参数化/动态生成（如 `test_compliance_gate.py` 46 例、`test_strategy_params.py`），统计以 `pytest --collect-only` 为准。
