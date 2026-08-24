@@ -178,6 +178,22 @@ FALSE_BREAKOUT_COOLDOWN_DAYS = 20  # 冷却自然日数（期内同标的同系�
 # --- 盘前操作清单（pipeline/daily_plan.py，V5.0 盘前「只保留 3—5 只重点候选」） ---
 DAILY_PLAN_MAX_CANDIDATES = 5    # 明日操作计划买入候选上限（滤网全过者优先，按突破幅度排序）
 
+# --- 9:25 集合竞价判定（pipeline/auction_check.py，竞价分级自动判定 + 持仓竞价风控） ---
+AUCTION_CHECK_ENABLED = os.getenv("AUCTION_CHECK_ENABLED", "true").lower() == "true"  # false 时跳过竞价判定
+AUCTION_CHECK_TIME = os.getenv("AUCTION_CHECK_TIME", "09:26")  # 工作日定时：竞价撮合完成后自动运行
+AUCTION_VOL_RATIO_GOOD = 5.0       # 竞昨比（竞价量/昨日成交量）合格线 %（调研共识）
+AUCTION_VOL_RATIO_EXCELLENT = 10.0  # 竞昨比优秀线 %
+AUCTION_PRE_MIN_MAX = 5            # 竞价分时走向分析只数上限（逐股请求盘前分时，控制耗时）
+# 二板 S/A/B/C 竞价分档（vault《二板打法》原文口径）
+AUCTION_SB_S_OPEN = (8.0, 15.0)    # S 级高开幅度 %
+AUCTION_SB_S_VOL = 8.0             # S 级竞昨比 %（且需板块一字/高开 15%+ 共振）
+AUCTION_SB_A_OPEN = (5.0, 8.0)     # A 级高开幅度 %
+AUCTION_SB_A_VOL = 5.0             # A 级竞昨比 %
+# 龙头 HOT-S 竞价口径（《如何识别真假龙头》第二板斧：高开 3-7% 放量执行、一字/过高不追、低开剔除）
+AUCTION_HOT_EXEC_OPEN = (3.0, 7.0)  # 执行高开幅度 % 区间
+AUCTION_POS_LOW_OPEN_ALERT = -2.0   # 持仓竞价低开 ≤-2% 或竞价跌破止损 → 警报
+
+
 # --- 候选催化分析（research/catalyst_analyzer.py，买入规则⑧事件/政策/业绩/技术突破/转型） ---
 HOT_CATALYST_ENABLED = os.getenv("HOT_CATALYST_ENABLED", "true").lower() == "true"  # 扫描时对热点候选做催化分析（联网，失败降级人工核对）
 HOT_CATALYST_MAX = 5         # 每日催化分析候选上限（按规则满足条数排序取前 N，控制耗时与 LLM 调用量）
