@@ -94,6 +94,10 @@
           <div class="card-body" id="plan-buys"><span class="muted">加载中…</span></div>
         </div>
         <div class="card">
+          <div class="card-header"><h2>⏰ 9:25 竞价结果</h2><span class="tag">竞价分级自动判定 + 持仓竞价风控</span><span style="flex:1"></span><span class="tag" id="auction-time"></span><button class="btn btn-sm btn-primary" id="btn-auction" onclick="runAuctionCheck()">▶ 刷新竞价</button></div>
+          <div class="card-body" id="auction-result"><span class="muted">加载中…</span></div>
+        </div>
+        <div class="card">
           <div class="card-header"><h2>🃏 二板观察池</h2><span class="tag">首板硬过滤 + 软评分 · 次日竞价定买卖（《二板打法》）</span></div>
           <div class="card-body" id="sb-pool"><span class="muted">加载中…</span></div>
         </div>
@@ -160,6 +164,7 @@
       <li><b>系统判定</b>（真龙头/疑似/跟风/伪龙头 + 置信度）：Kimi 推理模型综合评分、涨停归因、证据链后的判定；<b>悬浮徽章</b>可见完整判定理由与风险。</li>
       <li><b>9:25 竞价核对清单</b>：竞价定去留——高开 3-5% 放量执行、一字不追、低开剔除（龙头候选/竞价清单/关键事项均只列前 5 只，完整名单见扫描报告）。</li>
       <li><b>🃏 二板观察池</b>：《二板打法》首板→二板——首板硬条件（首封时间/封单力度/换手/市值/股价/前5日涨幅）全过 + 软评分 ≥6 分入池；表中「次日涨停价」是 S 级竞价挂单参考，「硬止损」为 -10%；竞价等级与风控铁律在卡片底部，人工执行。</li>
+      <li><b>⏰ 9:25 竞价结果</b>：竞价撮合后（9:26 定时自动跑，或点「刷新竞价」手动跑）自动判定——二板按高开幅度×竞昨比×板块共振分 S/A/B/C 级，龙头按 3-7% 放量执行/一字不追/低开剔除，持仓低开 ≤-2% 或竞价破止损出红色警报；S/A 级附 9:20→9:25 抢筹/撤单走向。</li>
       <li><b>📅 未来 30 天关键事项</b>：财报预约/解禁 + 板块政策会议事件；<b>🔍 个股证据链</b>：Top 候选的引爆点与正反证据（点行展开）。</li>
       <li><b>持仓行动</b>：止损/退出/无止损/移动止损建议逐条列出，直接点「补/改止损」「卖出」。</li>
       <li><b>force 勾选</b>：高级违规（如单笔风险超限）强制建仓，备注自动留痕——正常情况不要勾。</li>
@@ -434,6 +439,61 @@ function renderPositions(d) {
        <div class="muted" style="font-size:11px;margin-top:4px;">${heat}% / ${d.market_state || "?"} 状态上限 ${limit ?? "-"}%</div>`;
 }
 
+// 9:25 竞价结果（auction_check：二板 S/A/B/C + 龙头判定 + 持仓风控，9:26 定时/手动刷新）
+function renderAuction(d) {
+  const el = $("auction-result");
+  $("auction-time").textContent = d && d.date ? `${d.date} ${d.time || ""}` : "";
+  if (!d || !d.available) {
+    el.innerHTML = `<span class="muted">${(d && d.note) || "无竞价判定结果（交易日 9:26 后点「刷新竞价」或等定时任务）"}</span>`;
+    return;
+  }
+  const sbBadge = (g) => `<span class="badge badge-${g === "S" ? "alert" : g === "A" ? "A" : g === "B" ? "B" : "S1"}">${g}</span>`;
+  const hotBadge = (v) => `<span class="badge badge-${v === "执行" ? "A" : v === "观察" ? "B" : v === "不追" ? "C" : "D"}">${v}</span>`;
+  const pct = (v) => `<span class="num" style="color:${v > 0 ? "#c0392b" : v < 0 ? "#1a7f43" : "#4a5568"}">${v > 0 ? "+" : ""}${Number(v).toFixed(2)}%</span>`;
+  let html = "";
+  const sb = d.second_board || [];
+  if (sb.length) {
+    html += `<div style="font-size:13px;font-weight:600;margin-bottom:6px;">🃏 二板竞价分级</div>
+      <table><thead><tr><th>代码/名称</th><th>板块</th><th class="num">竞价涨幅</th><th class="num">竞昨比</th><th>等级</th><th>操作</th></tr></thead>
+      <tbody>${sb.map(w => `<tr><td><b>${w.symbol}</b> ${w.name || ""}</td><td>${w.sector || "-"}</td>
+        <td>${pct(w.open_pct)}</td><td class="num">${Number(w.vol_ratio).toFixed(1)}%</td>
+        <td>${sbBadge(w.grade)}</td><td style="font-size:12px;">${w.text}</td></tr>`).join("")}</tbody></table>`;
+  }
+  const hot = d.hot || [];
+  if (hot.length) {
+    html += `<div style="font-size:13px;font-weight:600;margin:${sb.length ? "12px" : "0"} 0 6px;">🐉 龙头竞价判定</div>
+      <table><thead><tr><th>代码/名称</th><th>板块</th><th class="num">竞价涨幅</th><th class="num">竞昨比</th><th>判定</th><th>说明</th></tr></thead>
+      <tbody>${hot.map(w => `<tr><td><b>${w.symbol}</b> ${w.name || ""}</td><td>${w.sector || "-"}</td>
+        <td>${pct(w.open_pct)}</td><td class="num">${Number(w.vol_ratio).toFixed(1)}%</td>
+        <td>${hotBadge(w.verdict)}</td><td style="font-size:12px;">${w.text}</td></tr>`).join("")}</tbody></table>`;
+  }
+  const pos = d.positions || [];
+  if (pos.length) {
+    const alerts = pos.filter(w => w.alert);
+    html += `<div style="font-size:13px;font-weight:600;margin:${sb.length || hot.length ? "12px" : "0"} 0 6px;">⚠️ 持仓竞价风控</div>` +
+      (alerts.length
+        ? alerts.map(w => `<div class="alert-box"><div class="txt"><b>${w.symbol} ${w.name}</b>（竞价 ${pct(w.open_pct)}）<br>${w.alert}</div></div>`).join("")
+        : '<span class="muted" style="font-size:12.5px;">持仓竞价无异常（无低开超阈 / 未破止损）。</span>');
+  }
+  if (!sb.length && !hot.length && !pos.length) html = '<span class="muted">无竞价观察对象。</span>';
+  if (d.note) html += `<div class="muted" style="font-size:11.5px;margin-top:8px;">备注：${d.note}</div>`;
+  el.innerHTML = html;
+}
+
+async function runAuctionCheck() {
+  const btn = $("btn-auction");
+  btn.disabled = true; btn.textContent = "⏳ 竞价判定中…";
+  try {
+    const r = await post("/auction-check", {});
+    const res = r.result || {};
+    toast(res.available
+      ? `✅ 竞价判定完成\n二板 ${res.second_board ?? 0} 只 · 龙头 ${res.hot ?? 0} 只 · 持仓 ${res.positions ?? 0} 只${res.note ? "\n" + res.note : ""}`
+      : `⚠️ 竞价判定不可用\n${res.note || "-"}`);
+  } catch (e) { toast(`⛔ 竞价判定失败：${e.message}`, true); }
+  btn.disabled = false; btn.textContent = "▶ 刷新竞价";
+  try { renderAuction(await api("/api/auction-check")); } catch (e) { /* 静默降级 */ }
+}
+
 // ---------- 操作 ----------
 
 async function buyFromScan(symbol, system) {
@@ -563,6 +623,7 @@ async function loadAll() {
   try { renderOverview(await api("/api/overview")); } catch (e) { toast("概览加载失败: " + e.message, true); }
   try { renderPlan(await api("/api/plan")); } catch (e) { toast("操作计划加载失败: " + e.message, true); }
   try { renderPositions(await api("/api/positions")); } catch (e) { toast("持仓加载失败: " + e.message, true); }
+  try { renderAuction(await api("/api/auction-check")); } catch (e) { /* 竞价结果静默降级 */ }
 }
 loadAll();
 </script>

@@ -21,6 +21,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from config import (
+    AUCTION_CHECK_TIME,
     DAILY_REPORT_OUTPUT_DIR,
     MARKET_SCAN_OUTPUT_DIR,
     MONTHLY_REVIEW_TIME,
@@ -49,6 +50,7 @@ _run_state: dict[str, Any] = {
     "last_research": None,
     "last_weekly_review": None,
     "last_monthly_review": None,
+    "last_auction_check": None,
     "running": False,
     "current_task": None,
 }
@@ -143,6 +145,20 @@ def _do_monthly_review() -> dict:
     path = generate_monthly_report()
     elapsed = round(time.time() - t0, 1)
     return {"output": str(path), "elapsed_seconds": elapsed}
+
+
+def _do_auction_check() -> dict:
+    """9:25 竞价判定（pipeline.auction_check，候选分级 + 持仓竞价风控）"""
+    from pipeline.auction_check import run_auction_check
+
+    t0 = time.time()
+    result = run_auction_check()
+    elapsed = round(time.time() - t0, 1)
+    return {"available": result.get("available"), "note": result.get("note", ""),
+            "second_board": len(result.get("second_board", [])),
+            "hot": len(result.get("hot", [])),
+            "positions": len(result.get("positions", [])),
+            "elapsed_seconds": elapsed}
 
 
 def _execute_task(task_name: str, func, state_key: str) -> dict:
@@ -249,6 +265,8 @@ def api_index():
             "GET /api/plan",
             "GET /api/positions",
             "GET /api/sell-check/{symbol}",
+            "GET /api/auction-check",
+            "POST /auction-check",
             "POST /api/trades/add",
             "POST /api/trades/from-scan",
             "POST /api/trades/add-position",
@@ -289,6 +307,25 @@ def api_sell_check(symbol: str):
     from review.trade_ops import get_sell_check_lines
 
     return get_sell_check_lines(symbol)
+
+
+@app.get("/api/auction-check")
+def api_auction_check():
+    """最新 9:25 竞价判定结果（auction_check_*.json；无结果时降级标注）"""
+    latest = _latest_file(MARKET_SCAN_OUTPUT_DIR, "auction_check_*.json")
+    if latest is None:
+        return {"available": False, "note": "无竞价判定结果（交易日 9:26 后点「刷新竞价」或等定时任务）"}
+    try:
+        return json.loads(latest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("竞价判定 JSON 读取失败: %s", e)
+        return {"available": False, "note": "竞价判定结果读取失败（已降级）"}
+
+
+@app.post("/auction-check")
+def auction_check():
+    """立即运行一次 9:25 竞价判定（9:26 后随时可刷）"""
+    return _execute_task("auction-check", _do_auction_check, "last_auction_check")
 
 
 @app.post("/api/trades/add")
@@ -422,6 +459,7 @@ def status():
         "last_research": _run_state["last_research"],
         "last_weekly_review": _run_state["last_weekly_review"],
         "last_monthly_review": _run_state["last_monthly_review"],
+        "last_auction_check": _run_state["last_auction_check"],
         "outputs": {
             "market_scans": _list_output_files(MARKET_SCAN_OUTPUT_DIR),
             "daily_reports": _list_output_files(DAILY_REPORT_OUTPUT_DIR),
@@ -431,6 +469,7 @@ def status():
             "time": SCHEDULER_TIME,
             "weekly_review_time": WEEKLY_REVIEW_TIME,
             "monthly_review_time": MONTHLY_REVIEW_TIME,
+            "auction_check_time": AUCTION_CHECK_TIME,
         },
     }
 
@@ -511,6 +550,19 @@ def _scheduled_monthly_review():
         logger.error("定时月报生成失败: %s", e.detail)
 
 
+def _scheduled_auction_check():
+    """定时任务回调：工作日 9:26 竞价判定（非交易日快照为空 → 降级标注，不报错）"""
+    logger.info("定时任务触发: 9:25 竞价判定")
+    if _run_state["running"]:
+        logger.warning("跳过竞价判定：已有任务运行中")
+        return
+    try:
+        _execute_task("scheduled-auction-check", _do_auction_check, "last_auction_check")
+        logger.info("定时竞价判定完成")
+    except HTTPException as e:
+        logger.error("定时竞价判定失败: %s", e.detail)
+
+
 def _start_scheduler():
     """启动 APScheduler 定时调度（每日盘前 + 每周五周报 + 每月末月报）"""
     global _scheduler
@@ -546,10 +598,19 @@ def _start_scheduler():
         replace_existing=True,
     )
 
+    auction_hour, auction_minute = _parse_schedule_time(AUCTION_CHECK_TIME)
+    _scheduler.add_job(
+        _scheduled_auction_check,
+        CronTrigger(day_of_week="mon-fri", hour=auction_hour, minute=auction_minute),
+        id="auction_check_workdays",
+        replace_existing=True,
+    )
+
     _scheduler.start()
     logger.info("定时调度已启动: 每日 %02d:%02d 运行盘前流程", hour, minute)
     logger.info("定时调度已启动: 每周五 %02d:%02d 生成周报", weekly_hour, weekly_minute)
     logger.info("定时调度已启动: 每月最后一天 %02d:%02d 生成月报", monthly_hour, monthly_minute)
+    logger.info("定时调度已启动: 工作日 %02d:%02d 竞价判定", auction_hour, auction_minute)
 
 
 @app.on_event("startup")
