@@ -220,12 +220,17 @@ python pipeline/database.py
 - 触发止损 → 按止损价关闭，记 −1R
 - 跌破退出通道（S1=10 日 / S2=20 日低点）→ 按收盘价关闭
 - 满 20 个交易日 → 按收盘价到期关闭（HOT-S 超短信号按 `SIGNAL_MAX_HOLDING_BY_SYSTEM` 覆盖为 5 日）
+- 超过 最大持有×1.7+宽限 自然日仍无信号日后K线 → 「数据缺失」关闭（R 置空，统计剔除并披露条数）
+
+**结算数据链（2026-09-11 起）**：掉出热点池的股票不再补抓日线，其信号会因「无新K线」永远 open——已结算样本偏向留在池内的赢家（幸存者偏差）。修复：盘前结算按 `SIGNAL_SETTLE_REFETCH` 先补抓缺K线信号日线（上限 `SIGNAL_SETTLE_REFETCH_MAX`=40 只/日，最老信号优先），超龄无数据的以「数据缺失」关闭不计入胜率。
+
+**入场形态双口径**：统计按信号日形态分层（一字板=开=收=最高，实盘无法买入 / 涨停收盘=收=最高≈封板 / 非涨停）。一字板与涨停收盘的纸面收益实盘难以复制——**决策看「非涨停」组**。
 
 HOT-S 信号不匹配任何退出通道，只有「止损」与「到期（5 日）」两种退出；统计按系统分组，并按**信号日市场状态**分层（验证 D 状态信号是否真差；老数据归入「未知」组），HOT-S 自动独立成组。
 
 ```powershell
-python pipeline/signal_tracker.py stats --days 90   # 各系统胜率/平均R/PF + 市场状态分层
-python pipeline/signal_tracker.py settle            # 手动触发结算
+python pipeline/signal_tracker.py stats --days 90   # 各系统胜率/平均R/PF + 市场状态/入场形态分层
+python pipeline/signal_tracker.py settle            # 手动触发结算（默认含缺K线补抓；--no-refetch 纯离线）
 ```
 
 统计结论同时自动写入周报/月报的「信号验证」节。
@@ -337,7 +342,7 @@ python -m pytest tests/test_monitor.py -v
 python -m pytest tests/test_signal_tracker.py -v
 ```
 
-共 231 个用例：指标 13、合规 12、持仓 8、持仓监控 23、入场合规闸门 46（含 from-scan HOT-S 与禁买板块）、信号追踪 14、策略参数 19、回测 12、热点池 9、券商导入 14、纪律审计 14、卖点检查 9、统计口径 3、热点规则 17、催化分析 18。全部离线运行，不依赖 API Key 或网络。
+共 554 个用例（34 个测试文件）：信号追踪 30（含缺K线补抓/数据缺失关闭/入场形态分层）、二板观察池 46、入场合规闸门 46、竞价判定 38、持仓监控 33、龙头评分 23、合规 23、纪律审计 22、盘前清单 20 等。全部离线运行，不依赖 API Key 或网络。
 
 ## 目录结构
 
@@ -386,7 +391,7 @@ Invest/
 │   ├── metrics.py
 │   ├── compliance_check.py
 │   └── report_generator.py
-├── tests/                 # 单元测试（231 用例）
+├── tests/                 # 单元测试（554 用例）
 ├── data/                  # 数据存储
 │   ├── market.db
 │   ├── trades.json

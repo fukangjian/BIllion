@@ -314,6 +314,174 @@ class TestFullFlow:
         assert [r["status"] for r in rows_all] == ["closed", "open"]
 
 
+# ---------- 结算数据链修复：补抓 / 数据缺失关闭 / 入场形态分层 ----------
+
+def _insert_closed_sym(
+    db: Path,
+    symbol: str,
+    system: str,
+    r: float,
+    exit_date: str,
+    signal_date: str,
+):
+    """直接写入一条指定代码/系统的已关闭信号（入场形态分层统计用）"""
+    with get_connection(db) as conn:
+        conn.execute(
+            """
+            INSERT INTO signals
+            (signal_date, symbol, system, entry_price, stop_price, channel_period,
+             status, exit_date, exit_price, exit_reason, r_multiple, created_at)
+            VALUES (?, ?, ?, 100.0, 96.0, 20, 'closed', ?, ?, '测试', ?, '2026-01-01 09:00:00')
+            """,
+            (signal_date, symbol, system, exit_date, round(100.0 + r * 4, 2), r),
+        )
+
+
+class TestSettleRefetch:
+    def test_refetch_fills_missing_then_settles(self, tmp_path):
+        """缺K线信号：注入 fetch stub 补出后续日线 → 正常到期结算；fetch 参数=（代码，信号日）"""
+        rows = _flat_rows("2026-01-01", 10)          # K线只到信号日 01-10
+        db = _make_db(tmp_path, {"600519": rows})
+        record_signals([_candidate()], "HOT-S", signal_date="2026-01-10", db_path=db)
+
+        calls = []
+
+        def fake_fetch(symbol, start_date):
+            calls.append((symbol, start_date))
+            df = pd.DataFrame([_q(d, 99.0, 100.0) for d in
+                               ["2026-01-11", "2026-01-12", "2026-01-13", "2026-01-14", "2026-01-15"]])
+            df["symbol"] = symbol
+            return df
+
+        result = settle_signals(db_path=db, settle_date="2026-01-20",
+                                refetch_missing=True, fetch_fn=fake_fetch)
+        assert calls == [("600519", "2026-01-10")]
+        assert result["refetched_symbols"] == 1
+        assert result["settled"] == 1
+        d = result["details"][0]
+        assert d["exit_reason"] == "到期"            # HOT-S 第 5 根强制结算
+        assert d["exit_date"] == "2026-01-15"
+
+    def test_refetch_failure_degrades_to_open(self, tmp_path):
+        """补抓抛异常 → 降级保持 open（不阻塞结算流程）"""
+        rows = _flat_rows("2026-01-01", 10)
+        db = _make_db(tmp_path, {"600519": rows})
+        record_signals([_candidate()], "HOT-S", signal_date="2026-01-10", db_path=db)
+
+        def boom(symbol, start_date):
+            raise ConnectionError("network down")
+
+        result = settle_signals(db_path=db, settle_date="2026-01-12",
+                                refetch_missing=True, fetch_fn=boom)
+        assert result["settled"] == 0
+        assert result["still_open"] == 1
+        assert _fetch_signals(db)[0]["status"] == "open"
+
+    def test_refetch_cap_oldest_first(self, tmp_path, monkeypatch):
+        """补抓上限：最老信号优先，超出上限的股票留待下一日"""
+        from pipeline import signal_tracker as st
+
+        monkeypatch.setattr(st, "SIGNAL_SETTLE_REFETCH_MAX", 1)
+        db = _make_db(tmp_path, {"600519": _flat_rows("2026-01-01", 10),   # K线止于信号日 01-10
+                                 "000001": _flat_rows("2026-01-01", 8)})   # K线止于信号日 01-08（更老）
+        record_signals([_candidate(symbol="600519")], "HOT-S", signal_date="2026-01-10", db_path=db)
+        record_signals([_candidate(symbol="000001")], "HOT-S", signal_date="2026-01-08", db_path=db)
+
+        fetched = []
+
+        def fake_fetch(symbol, start_date):
+            fetched.append(symbol)
+            return pd.DataFrame()
+
+        settle_signals(db_path=db, settle_date="2026-01-12",
+                       refetch_missing=True, fetch_fn=fake_fetch)
+        assert fetched == ["000001"]                 # 01-08 比 01-10 老，上限 1 只
+
+
+class TestStaleClose:
+    def test_stale_signal_closed_as_data_missing(self, tmp_path):
+        """超龄（> 最大持有×1.7+宽限 自然日）仍无信号日后K线 → 「数据缺失」关闭，R 置空"""
+        rows = _flat_rows("2026-01-01", 10)
+        db = _make_db(tmp_path, {"600519": rows})
+        record_signals([_candidate()], "HOT-S", signal_date="2026-01-10", db_path=db)
+
+        result = settle_signals(db_path=db, settle_date="2026-02-10")   # 31 天 > 18 天门槛
+        assert result["settled"] == 0
+        assert result["data_missing_closed"] == 1
+        assert result["still_open"] == 0
+        row = _fetch_signals(db)[0]
+        assert row["status"] == "closed"
+        assert row["exit_reason"] == "数据缺失"
+        assert row["r_multiple"] is None
+
+    def test_data_missing_excluded_from_stats(self, tmp_path):
+        """数据缺失关闭不进胜率/R 统计，单独计数并写入 Markdown 披露"""
+        rows = _flat_rows("2026-01-01", 10)
+        db = _make_db(tmp_path, {"600519": rows})
+        record_signals([_candidate()], "HOT-S", signal_date="2026-01-10", db_path=db)
+        settle_signals(db_path=db, settle_date="2026-02-10")
+
+        stats = signal_stats(db_path=db, days=90, as_of="2026-02-11")
+        assert stats["systems"] == {}                # 无 R 统计
+        assert stats["data_missing"] == {"HOT-S": 1}
+        md = signal_stats_to_markdown(stats)
+        assert "另有 1 条信号因数据缺失关闭" in md
+
+    def test_stale_within_grace_stays_open(self, tmp_path):
+        """宽限期内（HOT-S：5×1.7+10=18 自然日）缺数据保持 open，等待补抓"""
+        rows = _flat_rows("2026-01-01", 10)
+        db = _make_db(tmp_path, {"600519": rows})
+        record_signals([_candidate()], "HOT-S", signal_date="2026-01-10", db_path=db)
+
+        result = settle_signals(db_path=db, settle_date="2026-01-25")   # 15 天 ≤ 18
+        assert result["data_missing_closed"] == 0
+        assert result["still_open"] == 1
+        assert _fetch_signals(db)[0]["status"] == "open"
+
+    def test_s1a_grace_longer_than_hot(self, tmp_path):
+        """S1-A（20 交易日持有）宽限门槛更宽：31 天缺数据仍 open（20×1.7+10=44）"""
+        rows = _flat_rows("2026-01-01", 10)
+        db = _make_db(tmp_path, {"600519": rows})
+        record_signals([_candidate()], "S1-A", signal_date="2026-01-10", db_path=db)
+
+        result = settle_signals(db_path=db, settle_date="2026-02-10")   # 31 天 ≤ 44
+        assert result["data_missing_closed"] == 0
+        assert result["still_open"] == 1
+
+
+class TestEntryTypeStats:
+    def test_by_entry_type_groups(self, tmp_path):
+        """信号日形态分层：一字板（开=收=最高）/ 涨停收盘（收=最高）/ 非涨停 / 无K线→未知"""
+        def _bar(d, o, h, l, c):
+            return {"trade_date": d, "open": o, "high": h, "low": l, "close": c,
+                    "volume": 1000.0, "amount": 100000.0}
+
+        db = _make_db(tmp_path, {
+            "600001": [_bar("2026-01-05", 11.0, 11.0, 11.0, 11.0)],   # 一字板
+            "600002": [_bar("2026-01-06", 10.0, 11.0, 9.9, 11.0)],    # 涨停收盘
+            "600003": [_bar("2026-01-07", 10.0, 10.8, 9.9, 10.5)],    # 非涨停
+        })
+        _insert_closed_sym(db, "600001", "HOT-S", 5.0, "2026-01-10", "2026-01-05")
+        _insert_closed_sym(db, "600002", "HOT-S", 1.0, "2026-01-10", "2026-01-06")
+        _insert_closed_sym(db, "600003", "HOT-S", -1.0, "2026-01-10", "2026-01-07")
+        _insert_closed_sym(db, "600004", "HOT-S", 2.0, "2026-01-10", "2026-01-08")  # 无K线
+
+        stats = signal_stats(db_path=db, days=90, as_of="2026-02-01")
+        et = stats["by_entry_type"]
+        assert set(et) == {"一字板", "涨停收盘", "非涨停", "未知"}
+        assert et["一字板"]["HOT-S"]["closed"] == 1
+        assert et["涨停收盘"]["HOT-S"]["closed"] == 1
+        assert et["非涨停"]["HOT-S"]["closed"] == 1
+        assert et["非涨停"]["HOT-S"]["avg_r"] == pytest.approx(-1.0)
+        assert stats["board_locked_by_system"] == {"HOT-S": 2}
+
+        md = signal_stats_to_markdown(stats)
+        assert "按信号日入场形态分层" in md
+        assert "| 一字板 | HOT-S |" in md
+        assert "| 非涨停 | HOT-S |" in md
+        assert "含一字/涨停收盘 2 条" in md
+
+
 # ---------- S1-A 系统1过滤（V5.0 §4.3）：连续假突破冷却 / 上次盈利降仓 ----------
 
 def _insert_closed_v2(

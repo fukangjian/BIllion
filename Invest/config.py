@@ -137,6 +137,11 @@ SIGNAL_STATS_MIN_SAMPLE = 5   # 统计最小样本量，低于此值标注「样
 # 信号最大持有交易日数（按系统覆盖；未列出的系统沿用 SIGNAL_MAX_HOLDING_DAYS）
 SIGNAL_MAX_HOLDING_BY_SYSTEM = {"HOT-S": 5}  # 超短热点信号 5 个交易日强制结算
 
+# --- 信号结算数据链（2026-09：掉池股票无K线 → 信号永远 open，统计有幸存者偏差） ---
+SIGNAL_SETTLE_REFETCH = True     # 结算前补抓缺K线 open 信号日线（run_all/CLI 入口启用；模块函数默认离线）
+SIGNAL_SETTLE_REFETCH_MAX = 40   # 单次结算补抓股票上限（最老信号优先，防抓取雪崩，余量留待下一日）
+SIGNAL_STALE_GRACE_DAYS = 10     # 超过 最大持有交易日×1.7 + 此自然日 仍无新K线 → 「数据缺失」关闭（不产生R）
+
 # --- 超短热点池（pipeline/hot_pool.py，1-5 天超短候选来源） ---
 HOT_SECTOR_TOP_N = 3        # 板块相对强度前 N 的板块：取领涨股入池 + 报告主线摘要
 HOT_POOL_MAX = 120          # 热点池总量上限（控制日线补抓量）

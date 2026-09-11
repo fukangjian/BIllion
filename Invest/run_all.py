@@ -105,14 +105,17 @@ def run_pipeline(skip_fetch: bool = False, symbols: list[str] | None = None) -> 
         logger.error("市场扫描失败（降级继续研究日报）: %s", e)
 
     # 信号每日结算：扫描（含新信号入库）之后执行；
-    # settle 内部以 signal_date < 当天 过滤，当天新记录的信号不会被立即结算
+    # settle 内部以 signal_date < 当天 过滤，当天新记录的信号不会被立即结算。
+    # 缺K线 open 信号（掉池股票）先补抓日线再结算——修复信号永远 open 的幸存者偏差
     try:
+        from config import SIGNAL_SETTLE_REFETCH
         from pipeline.signal_tracker import settle_signals
 
-        sr = settle_signals()
+        sr = settle_signals(refetch_missing=SIGNAL_SETTLE_REFETCH)
         logger.info(
-            "信号结算完成: 检查 %d 个 open 信号，关闭 %d 个（%s）",
+            "信号结算完成: 检查 %d 个 open 信号，关闭 %d 个（%s），补抓 %d 只，数据缺失关闭 %d 个",
             sr["checked"], sr["settled"], sr["by_reason"],
+            sr.get("refetched_symbols", 0), sr.get("data_missing_closed", 0),
         )
     except Exception as e:
         logger.warning("信号结算失败（已降级，不影响盘前流程）: %s", e)

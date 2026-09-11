@@ -58,7 +58,7 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **券商导入** | `review/import_broker.py` | 券商成交明细（MD 表/CSV）FIFO 配对落库（历史事实，不过入场闸门） |
 | **纪律审计** | `review/discipline_audit.py` | 7 条行为纪律规则自动扫描（追高接回/闪电换仓/禁买板块/无止损/非系统交易/禁买新股/开盘追高） |
 | 回测 | `backtest/` | Backtrader 策略验证、权益曲线图、批量回测汇总（参数与实盘共用 config） |
-| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K2.6 推理、事件日历、证据链、行为门禁等（462 用例） |
+| 测试 | `tests/` | 指标、合规、持仓、监控、闸门、信号、参数、回测、热点池、趋势池、滤网、加仓、分批退出、热度门禁、批量回测、盘前清单、Web 控制台、龙头评分、K2.6 推理、事件日历、证据链、行为门禁等（554 用例） |
 
 ---
 
@@ -617,18 +617,22 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 #### `signal_tracker.py` — 信号追踪（可验证性）
 
-**职责**：扫描突破信号自动入库（SQLite `signals` 表），每日盘前逐根回放结算，产出各系统胜率/平均R/PF——回答"S1-A 信号最近到底灵不灵"。
+**职责**：扫描突破信号自动入库（SQLite `signals` 表），每日盘前逐根回放结算，产出各系统胜率/平均R/PF——回答"S1-A 信号最近到底灵不灵"。统计含市场状态分层与入场形态分层（一字板/涨停收盘/非涨停——前两者纸面收益实盘难以复制，决策看「非涨停」组），并披露数据缺失关闭条数（2026-09-11 可信度修复，见 13.13）。
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
 | `record_signals` | `(candidates, system, signal_date=None, db_path=None) -> int` | 候选入库；同 (symbol, system) 有 open 信号则跳过（防连续突破日重复）；候选可携带 `market_state`/`filter_passed`/`note` 附加列 |
-| `settle_signals` | `(db_path=None, settle_date=None) -> dict` | 结算 `signal_date < settle_date` 的 open 信号：逐根回放日线，先判止损（R=−1）再判退出通道，满持有天数到期关闭（默认 `SIGNAL_MAX_HOLDING_DAYS`=20，`SIGNAL_MAX_HOLDING_BY_SYSTEM` 按系统覆盖，HOT-S=5） |
+| `settle_signals` | `(db_path=None, settle_date=None, refetch_missing=False, fetch_fn=None) -> dict` | 结算 `signal_date < settle_date` 的 open 信号：逐根回放日线，先判止损（R=−1）再判退出通道，满持有天数到期关闭（默认 `SIGNAL_MAX_HOLDING_DAYS`=20，`SIGNAL_MAX_HOLDING_BY_SYSTEM` 按系统覆盖，HOT-S=5）；`refetch_missing=True` 时先补抓缺K线信号日线（run_all/CLI 按 `SIGNAL_SETTLE_REFETCH` 启用，`fetch_fn` 可注入测试，上限 `SIGNAL_SETTLE_REFETCH_MAX` 最老优先）；超龄（最大持有×1.7+`SIGNAL_STALE_GRACE_DAYS` 自然日）无数据 → 「数据缺失」关闭（R 置空不进统计） |
 | `consecutive_stop_outs` | `(symbol, system, db_path=None) -> (int, str \| None)` | 最近连续「止损」退出次数与最近一次退出日（S1-A 系统1过滤：假突破计数，V5.0 §4.3） |
 | `last_signal_won` | `(symbol, system, db_path=None) -> bool \| None` | 最近一次同标的同系统已关闭信号 R>0（上次突破是否盈利）；无历史返回 None |
 | `_max_holding_days` | `(system: str) -> int` | 按系统查 `SIGNAL_MAX_HOLDING_BY_SYSTEM`，未列出系统沿用 `SIGNAL_MAX_HOLDING_DAYS` |
-| `signal_stats` | `(db_path=None, days=90, as_of=None) -> dict` | 近 N 天已关闭信号按系统分组：样本数/胜率/平均R/期望值/PF；<`SIGNAL_STATS_MIN_SAMPLE`(5) 标注「样本不足」；`by_state` 按信号日市场状态分层（无状态归入「未知」） |
-| `signal_stats_to_markdown` | `(stats: dict) -> str` | 表格 + 市场状态分层表 + 自动解读（周报/月报/CLI 共用） |
-| `main` | `() -> None` | CLI：`settle [--date]` / `stats [--days 90]` |
+| `_stale_threshold_days` | `(system: str) -> int` | 「数据缺失」关闭的自然日门槛（最大持有 ×1.7 + `SIGNAL_STALE_GRACE_DAYS`） |
+| `_symbol_max_dates` | `(conn, symbols) -> dict[str, str \| None]` | 批量取每只股票 daily_quotes 最新交易日（判定信号是否缺新K线） |
+| `_refetch_missing_bars` | `(stale_signals, db_path, fetch_fn=None, refetch_max=None) -> int` | 缺K线信号按股去重补抓日线（最老信号优先、上限截断、单股失败降级）；返回成功股票数 |
+| `_entry_barrier_type` | `(open_, high, close) -> str` | 信号日入场形态纯函数：一字板（开=收=最高）/ 涨停收盘（收=最高）/ 非涨停 / 未知（无K线） |
+| `signal_stats` | `(db_path=None, days=90, as_of=None) -> dict` | 近 N 天已关闭信号按系统分组：样本数/胜率/平均R/期望值/PF；<`SIGNAL_STATS_MIN_SAMPLE`(5) 标注「样本不足」；`by_state` 按信号日市场状态分层（无状态归入「未知」）；`by_entry_type` 按信号日入场形态分层（LEFT JOIN daily_quotes 信号日K线判定）+ `board_locked_by_system`（一字/涨停收盘条数）+ `data_missing`（数据缺失关闭条数，均不进 R 统计） |
+| `signal_stats_to_markdown` | `(stats: dict) -> str` | 表格 + 市场状态分层表 + 入场形态分层表 + 自动解读（周报/月报/CLI 共用） |
+| `main` | `() -> None` | CLI：`settle [--date] [--no-refetch]` / `stats [--days 90]` |
 
 **结算口径**：入场价=信号日收盘价，止损=入场价−`ATR_STOP_MULT`×ATR(20)，退出通道 S1=10 日/S2=20 日低点（shift(1) 无未来函数，与 monitor、回测同口径）。HOT-S 超短信号不匹配任何退出通道（`_exit_channel_period` 返回 None），只有「止损」与「到期（5 日）」两种退出；`signal_stats` 按 system 分组，HOT-S 自动独立成组。
 
@@ -1475,6 +1479,19 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | 9 | **Kimi $web_search 逐股查证扩展**（证据链向全部 S/A 级候选铺开） | 当前限 Top3（DRAGON_EVIDENCE_MAX），扩大需评估调用成本 | 小 |
 | 10 | **QMT/券商实盘对接** | 当前为人工执行；对接即半自动 | 大 |
 
+### 13.13 信号统计可信度修复（2026-09-11 ✅）
+
+**背景**：审计发现信号统计存在两个系统性偏差，导致 HOT-S 纸面 +0.50R/PF 2.14 严重失真：① **幸存者偏差**——掉出热点池的股票不再补抓日线，其信号因「无新K线」永远 open（438 个 open 中 378 个无信号日后K线），能结算的恰恰是留在池内继续上涨的赢家；② **纸面收益不可实现**——Top 盈利单几乎全部为信号日一字板/涨停封板（close=high），实盘无法按信号价（收盘价）买入。修复后诚实口径：HOT-S 346 样本期望 +0.04R（PF 1.09），其中**非涨停入场组 253 样本 −0.36R（PF 0.33，负期望）**；一字板组 +2.07R/涨停收盘组 +0.81R 实盘难以复制。S1-A/S2-A 修复后 −0.68R/−0.50R，与批量回测互相印证。
+
+| # | 方向 | 实现方式 |
+|---|------|----------|
+| 1 | 缺K线信号补抓 | `settle_signals(refetch_missing=True, fetch_fn=None)`：结算前对「最新K线 ≤ 信号日」的 open 信号按股去重补抓日线（`_refetch_missing_bars`，最老信号优先、`SIGNAL_SETTLE_REFETCH_MAX`=40 只/日上限防雪崩、单股失败降级）；`fetch_fn` 可注入（测试离线）；run_all/CLI 按 `SIGNAL_SETTLE_REFETCH` 启用，模块函数默认 False 保持离线语义 |
+| 2 | 超龄僵尸信号关闭 | 超过 最大持有交易日×1.7+`SIGNAL_STALE_GRACE_DAYS`(10) 自然日仍无信号日后K线 → exit_reason='数据缺失' 关闭（R 置空）——不进胜率/平均R 统计，`signal_stats.data_missing` 单独计数并写入 Markdown 披露（「另有 N 条信号因数据缺失关闭」） |
+| 3 | 入场形态双口径 | `signal_stats` LEFT JOIN daily_quotes 信号日K线 → `_entry_barrier_type` 分层：一字板（开=收=最高，实盘无法买入）/ 涨停收盘（收=最高≈封板）/ 非涨停 / 未知（无K线）；`by_entry_type` 分层统计 + `board_locked_by_system` 条数 + Markdown 分层表与「纸面口径偏乐观」附注——**决策看「非涨停」组** |
+| 4 | 入口接线 | `run_all.run_pipeline` 结算传 `refetch_missing=SIGNAL_SETTLE_REFETCH` 并记录补抓/数据缺失数；CLI `settle --no-refetch` 可跳过；周报/月报「信号验证」节自动携带新分层与披露 |
+| 5 | 存量数据清洗 | 2026-09-11 对真实 market.db 执行 8 轮结算：补抓 ~260 只、真实结算 265 个（隐藏数据中止损占比显著高于原样本——偏差实锤）、数据缺失关闭 155 个 |
+| 6 | 测试 | `test_signal_tracker.py` 新增 TestSettleRefetch / TestStaleClose / TestEntryTypeStats 三类 8 用例（fetch stub 注入、宽限边界、S1-A 与 HOT-S 门槛差异、形态真值表、统计剔除），全量 554 passed |
+
 ---
 
 ## 14. 附录
@@ -1706,7 +1723,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 </details>
 
 <details>
-<summary>tests/（462 用例，全部离线）</summary>
+<summary>tests/（554 用例，全部离线）</summary>
 
 - `test_indicators.py` — 16 用例（含市场宽度取最新日回归、板块相对强度差值法）
 - `test_compliance.py` — 23 用例（含六条硬规则单笔检查 11）
@@ -1714,7 +1731,7 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 - `test_monitor.py` — 33 用例（止损/退出通道/回撤推导/移动止损建议/移动止盈）
 - `test_behavior_guards.py` — 14 用例（持仓只数去重/连亏停手窗口/周频率含加仓子单豁免）
 - `test_compliance_gate.py` — 46 用例（口径统一/闸门/force 留痕/from-scan --execute 含 HOT-S/买入卡/禁买板块）
-- `test_signal_tracker.py` — 22 用例（入库去重/回放结算/统计/系统1过滤查询/扫描附注集成）
+- `test_signal_tracker.py` — 30 用例（入库去重/回放结算/统计/系统1过滤查询/扫描附注集成/缺K线补抓/数据缺失关闭/入场形态分层）
 - `test_strategy_params.py` — 19 用例（config 单一来源/枚举/簇映射）
 - `test_backtest.py` — 12 用例（加仓间距/单位 R/合成行情全流程）
 - `test_backtest_stop_fix.py` — 3 用例（止损锁定口径回归/单位级 exit_price）
@@ -1843,6 +1860,9 @@ _PROVIDER_KEYS["newprovider"] = NEWPROVIDER_API_KEY
 | `MONTHLY_DRAWDOWN_LIMITS` | −4% 停事件 / −6% 停开仓 | 月度轨道 |
 | `SIGNAL_MAX_HOLDING_DAYS` | 20 | 信号到期强制结算（交易日） |
 | `SIGNAL_MAX_HOLDING_BY_SYSTEM` | `{"HOT-S": 5}` | 按系统覆盖持有天数；未列出系统沿用 20 日 |
+| `SIGNAL_SETTLE_REFETCH` | True | 结算前补抓缺K线 open 信号日线（run_all/CLI 入口启用；模块函数默认离线） |
+| `SIGNAL_SETTLE_REFETCH_MAX` | 40 | 单次结算补抓股票上限（最老信号优先，防雪崩） |
+| `SIGNAL_STALE_GRACE_DAYS` | 10 | 超过 最大持有×1.7+此自然日 无新K线 → 「数据缺失」关闭（不产生R） |
 | `SIGNAL_STATS_MIN_SAMPLE` | 5 | 统计最小样本量 |
 
 #### 六条硬规则（2026-08 实盘复盘定制）
