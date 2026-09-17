@@ -254,6 +254,16 @@ function renderPlan(d) {
     return `<span class="badge badge-${cls}" title="${tip.replace(/"/g, "'")}">${b.verdict}${b.confidence != null ? " " + b.confidence + "%" : ""}</span>`;
   };
   let html = "";
+  // 情绪周期相位横幅（超短生态口径：冰点/退潮禁开新仓，修复/高潮风险减半）
+  const senti = d.sentiment || {};
+  if (senti.phase && senti.phase !== "未知") {
+    const sentiColor = { "冰点": "#3b6fd4", "修复": "#1a7f43", "发酵": "#c0392b", "高潮": "#b4690e", "退潮": "#6b7280" };
+    const bg = (senti.phase === "冰点" || senti.phase === "退潮") ? "#eef1f6" : "#f4faf5";
+    html += `<div style="background:${bg};border:1px solid #d8dee9;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:13px;">
+      🌡️ 情绪相位：<b style="color:${sentiColor[senti.phase] || "#4a5568"};">${senti.phase}</b>
+      ${senti.metrics ? `<span class="muted">（涨停 ${senti.metrics.limit_up ?? "-"} · 炸板率 ${senti.metrics.broken_rate ?? "-"}% · 高度 ${senti.metrics.max_lbc ?? "-"}板 · 晋级率 ${senti.metrics.promotion_rate ?? "-"}%）</span>` : ""}
+      ${senti.advice ? `<br><span class="muted">${senti.advice}</span>` : ""}</div>`;
+  }
   if (d.dragon_note) {
     html += `<div style="background:#fdeceb;border:1px solid #f5c6c2;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:13px;color:#c0392b;">
       <b>${d.dragon_note}</b><br><span style="color:#8a919e;">龙头辨识依赖 Kimi K3 深度推理（系统核心功能）；请检查 KIMI_API_KEY 配置或稍后重跑盘前流程。</span></div>`;
@@ -326,6 +336,22 @@ function renderPlan(d) {
         }).join("") + `</div>`;
     }
   }
+  const events = d.event_buys || [];
+  if (events.length) {
+    const evRows = events.map(b => `
+      <tr>
+        <td><b>${b.symbol}</b> ${b.name || ""}</td>
+        <td><span class="badge badge-C">${b.event_score}</span></td>
+        <td>${b.strength || "-"}·${b.catalyst_type || "-"}<span class="muted">（${b.days_since != null ? b.days_since + "日前" : "日期未知"}，${b.wave || "未知"}）</span></td>
+        <td class="num">${b.close.toFixed(2)}</td>
+        <td class="num">${b.stop.toFixed(2)}</td>
+        <td class="num">${b.shares}</td>
+        <td>${b.gate === "通过" ? "✅" : b.gate}</td>
+        <td><button class="btn btn-buy btn-sm" onclick="buyFromScan('${b.symbol}','EVT-S')">建仓</button></td>
+      </tr>`).join("");
+    html += `<div style="font-size:13px;font-weight:600;margin:${dragons.length ? "14px" : "0"} 0 6px;">⚡ 事件驱动候选（EVT-S · 2-5 日 · 影子验证期）<span class="muted" style="font-weight:400;">（先纸面验证 ≥30 笔再实盘）</span></div>
+      <table><thead><tr><th>代码/名称</th><th>事件分</th><th>力度·类型（时效/波次）</th><th class="num">参考价</th><th class="num">止损</th><th class="num">股数</th><th>闸门预检</th><th></th></tr></thead><tbody>${evRows}</tbody></table>`;
+  }
   if (trends.length) {
     const rows = trends.map(b => `
       <tr>
@@ -341,8 +367,8 @@ function renderPlan(d) {
     html += `<div style="font-size:13px;font-weight:600;margin:${dragons.length ? "14px" : "0"} 0 6px;">📈 趋势候选（S1-A/S2-A 滤网全过）</div>
       <table><thead><tr><th>代码/名称</th><th>系统</th><th class="num">参考价</th><th class="num">止损</th><th class="num">股数</th><th class="num">风险率</th><th>闸门预检</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
-  if (!dragons.length && !trends.length) {
-    html = '<span class="muted">明日无滤网全过的突破候选、无达标龙头——不交易也是操作。</span>';
+  if (!dragons.length && !trends.length && !events.length) {
+    html += '<span class="muted">明日无滤网全过的突破候选、无达标龙头——不交易也是操作。</span>';
   }
   $("plan-buys").innerHTML = html;
   const acts = d.position_actions || [];

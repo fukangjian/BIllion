@@ -92,6 +92,23 @@ def _build_daily_plan_safe(scan_json: dict, monitor_result: dict | None) -> dict
         return None
 
 
+def _compute_sentiment_safe(trade_date: str) -> dict | None:
+    """情绪周期相位计算（pipeline/sentiment_regime），失败降级返回 None，不拖垮扫描"""
+    try:
+        from pipeline.sentiment_regime import current_context, compute_and_save
+
+        row = compute_and_save(trade_date)
+        if row is None:
+            return {"date": trade_date, "phase": "未知",
+                    "advice": "情绪数据缺失，按原有口径执行（不触发情绪门禁）"}
+        ctx = current_context()
+        return ctx or {"date": trade_date, "phase": row.get("phase", "未知"),
+                       "advice": row.get("advice", "")}
+    except Exception as e:
+        logger.warning("情绪周期判定失败（已降级，报告不含情绪相位）: %s", e)
+        return None
+
+
 def _sector_rank_pct_map(sector_rank: pd.DataFrame) -> dict[str, float]:
     """板块名 → 强度排名百分位（rank/总数，供三重滤网「板块共振」判定）"""
     if sector_rank is None or sector_rank.empty:
@@ -237,16 +254,20 @@ def run_scan(
             "notes": "; ".join(state_info["notes"]),
         })
 
+    # 情绪周期相位（超短生态口径，写 emotion_state 表；与 market_state 指数口径互补）
+    sentiment = _compute_sentiment_safe(today)
+
     monitor_result = _run_position_monitor(output_dir)
     hot_section = _build_hot_section(today, sector_rank, state_info.get("state", ""))
 
     scan_json = _build_scan_json(today, state_info, breakout_20, breakout_55, sector_rank, hot_section)
     scan_json["position_monitor"] = monitor_result  # None 表示监控已降级
+    scan_json["sentiment"] = sentiment  # None 表示情绪数据缺失（按未知处理，不触发门禁）
     daily_plan = _build_daily_plan_safe(scan_json, monitor_result)
     scan_json["daily_plan"] = daily_plan
 
     md = _format_report(today, state_info, breakout_20, breakout_55, sector_rank, symbols,
-                        monitor_result, hot_section, daily_plan)
+                        monitor_result, hot_section, daily_plan, sentiment)
     report_path.write_text(md, encoding="utf-8")
 
     json_path = output_dir / f"market_scan_{today}.json"
@@ -288,8 +309,18 @@ def _record_breakout_signals(scan_json: dict, signal_date: str) -> None:
             system=HOT_SIGNAL_SYSTEM,
             signal_date=signal_date,
         )
-        if n1 or n2 or n3:
-            logger.info("信号入库: S1-A +%d, S2-A +%d, %s +%d", n1, n2, HOT_SIGNAL_SYSTEM, n3)
+        n4 = record_signals(
+            [
+                {**c, "market_state": state}
+                for c in scan_json.get("hot_pool", {}).get("event_candidates", [])
+                if c.get("record", True)
+            ],
+            system="EVT-S",
+            signal_date=signal_date,
+        )
+        if n1 or n2 or n3 or n4:
+            logger.info("信号入库: S1-A +%d, S2-A +%d, %s +%d, EVT-S +%d",
+                        n1, n2, HOT_SIGNAL_SYSTEM, n3, n4)
     except Exception as e:
         logger.warning("信号入库失败（已降级，不影响扫描结果）: %s", e)
 
@@ -366,6 +397,7 @@ def _build_scan_json(
             "event_calendar": hot.get("event_calendar", {}),
             "evidence_chains": hot.get("evidence_chains", {}),
             "second_board": hot.get("second_board", {}),
+            "event_candidates": hot.get("event_candidates", []),
             "note": hot.get("note", ""),
         },
     }
@@ -555,6 +587,7 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
         "event_calendar": {},
         "evidence_chains": {},
         "second_board": {},
+        "event_candidates": [],
         "note": "热点池未构建（需先运行 run_all 取数流程构建热点池）",
     }
     try:
@@ -754,6 +787,17 @@ def _build_hot_section(today: str, sector_rank: pd.DataFrame | None = None, mark
                     logger.warning("龙头评分失败（已降级，候选不含龙头字段）: %s", e)
                     result["dragon_candidates"] = []
 
+                # 事件驱动候选（EVT-S，2026-09：catalyst dict 已由龙头评分块附加到 records；
+                # 事件分×量能×突破排序，纯过滤排序无 LLM 调用；失败降级空列表不阻塞）
+                try:
+                    from pipeline.event_pool import build_event_candidates
+
+                    result["event_candidates"] = build_event_candidates(
+                        records, symbols_data, today)
+                except Exception as e:
+                    logger.warning("事件驱动候选构建失败（已降级）: %s", e)
+                    result["event_candidates"] = []
+
         result["available"] = True
         result["note"] = ""
     except Exception as e:
@@ -789,6 +833,7 @@ def _format_report(
     monitor_result: dict | None = None,
     hot_section: dict | None = None,
     daily_plan: dict | None = None,
+    sentiment: dict | None = None,
 ) -> str:
     lines = [
         "# 每日市场扫描报告",
@@ -824,6 +869,24 @@ def _format_report(
         f"| 20周均线 | {state_info.get('hs300_ma20w', 'N/A')} |",
         f"| 成交额/中位数 | {state_info.get('volume_ratio', 1.0):.2f} |",
         f"| 上涨/下跌比 | {state_info.get('breadth_ratio', 1.0):.2f} |",
+    ])
+
+    # 情绪周期相位（超短生态口径；None=判定失败降级，未知=数据缺失——均不触发门禁）
+    if sentiment:
+        phase = sentiment.get("phase", "未知")
+        m = sentiment.get("metrics") or {}
+        if m:
+            metrics_text = (f"涨停 {m.get('limit_up')} / 跌停 {m.get('limit_down')} / "
+                            f"炸板率 {m.get('broken_rate')}% / 高度 {m.get('max_lbc')} 板 / "
+                            f"晋级率 {m.get('promotion_rate')}%")
+        else:
+            metrics_text = "指标缺失"
+        lines.extend([
+            f"| **情绪相位（超短）** | **{phase}**（{metrics_text}） |",
+            f"| 情绪操作指引 | {sentiment.get('advice', '')} |",
+        ])
+
+    lines.extend([
         "",
         f"**判断依据**: {'; '.join(state_info.get('notes', []))}",
         "",
@@ -833,6 +896,9 @@ def _format_report(
         "- **B** (40%-70%): 结构性行情",
         "- **C** (20%-50%): 震荡轮动",
         "- **D** (0%-30%): 系统性下跌",
+        "",
+        "> 情绪相位为超短打板生态口径（冰点/修复/发酵/高潮/退潮，与指数 A/B/C/D 互补）：",
+        "> 冰点/退潮 禁开新超短仓（HOT-S/二板/EVT-S，闸门高级违规）；修复/高潮 风险减半；发酵 正常开仓。",
         "",
         "---",
         "",
@@ -934,6 +1000,32 @@ def _format_report(
                 lines.extend(["", "**候选⑧催化依据（公告事实 / LLM 判定）**：", ""])
                 for nm, b in basis_items[:10]:
                     lines.append(f"- {nm}：{b}")
+
+            # 事件驱动候选（EVT-S：事件分排序的 2-5 日策略线，影子验证期）
+            evts = hot.get("event_candidates", []) or []
+            if evts:
+                lines.extend([
+                    "",
+                    "### ⚡ 事件驱动候选（EVT-S，2-5 日，影子验证期）",
+                    "",
+                    "| 代码 | 名称 | 板块 | 事件分 | 力度·类型 | 时效 | 波次 | 量比 | 收盘价 | 突破幅度% | 备注 |",
+                    "|------|------|------|--------|-----------|------|------|------|--------|-----------|------|",
+                ])
+                for c in evts:
+                    fresh = f"{c.get('days_since')}日前" if c.get("days_since") is not None else "未知"
+                    vr = f"{c['volume_ratio']:.1f}" if c.get("volume_ratio") is not None else "—"
+                    lines.append(
+                        f"| {c['symbol']} | {c.get('name', '')} | {c.get('sector', '')} "
+                        f"| **{c.get('event_score', 0)}** | {c.get('strength', '')}·{c.get('catalyst_type', '')} "
+                        f"| {fresh} | {c.get('wave', '')} | {vr} | {c['close']:.2f} "
+                        f"| {c['breakout_pct']:.2f} | {c.get('note', '') or '—'} |"
+                    )
+                lines.extend([
+                    "",
+                    "> EVT-S 口径：⑧催化确认（基础 20）+ 事件力度（重磅40/中等24/轻微10）+ 时效（≤1日25/≤3日18/≤5日8）"
+                    "+ 波次（首次12/第二波3），≥70 分且非一字板入选；持有 5 个交易日强制结算。"
+                    "买点为「事件+初动」逻辑前置（点火阶段），不死守封板瞬间。",
+                ])
 
             # 龙头候选子表（三维验证评分：身位/梯队/强度/逻辑/情绪，S/A/B 级 + K3 系统判定）
             dragons = hot.get("dragon_candidates", [])

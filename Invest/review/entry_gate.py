@@ -48,6 +48,20 @@ def get_latest_market_state(db_path: Path | None = None) -> str | None:
         return None
 
 
+def get_latest_sentiment_phase(db_path: Path | None = None) -> str | None:
+    """最新情绪周期相位（emotion_state 表，离线）；无数据/未知/读取失败返回 None（降级跳过情绪闸门）"""
+    try:
+        from pipeline.sentiment_regime import get_latest_phase
+
+        row = get_latest_phase(db_path=db_path)
+        if not row or not row.get("phase") or row.get("phase") == "未知":
+            return None
+        return row["phase"]
+    except Exception as e:
+        logger.warning("情绪相位读取失败（跳过情绪闸门）: %s", e)
+        return None
+
+
 def check_entry(
     trade: Trade,
     trade_log: TradeLog | None = None,
@@ -55,10 +69,12 @@ def check_entry(
     drawdown_state: str | None = None,
     market_state: str | None = None,
     db_path: Path | None = None,
+    sentiment_phase: str | None = None,
 ) -> tuple[list[Violation], str]:
     """
     建仓合规闸门：单笔检查 + 含本笔假设建仓的组合级风险簇检查
     + 组合总热度/市场状态门禁（V5.0 §5.6，market_state 显式传入可跳过 DB 读取）
+    + 情绪周期门禁（冰点/退潮禁开超短仓，sentiment_phase 显式传入可跳过 DB 读取）
     + 六条硬规则行为门禁（持仓只数/连亏停手/周频率）。
 
     返回 (违规列表, 实际使用的回撤状态)。
@@ -76,7 +92,10 @@ def check_entry(
 
     if market_state is None:
         market_state = get_latest_market_state(db_path)
-    violations.extend(check_market_conditions(trade, open_trades, market_state, account_equity))
+    if sentiment_phase is None:
+        sentiment_phase = get_latest_sentiment_phase(db_path)
+    violations.extend(check_market_conditions(
+        trade, open_trades, market_state, account_equity, sentiment_phase=sentiment_phase))
     return violations, state
 
 

@@ -94,6 +94,13 @@ def build_daily_plan(
     state = dd.get("state") or "Normal"
     names = _name_lookup(db_path)
 
+    # 情绪周期相位（超短生态口径；None/未知 → 不干预，乘数 1.0）
+    from pipeline.sentiment_regime import is_banned, phase_advice, risk_multiplier
+
+    sentiment = scan_json.get("sentiment") or {}
+    phase = sentiment.get("phase") if sentiment.get("phase") not in (None, "未知") else None
+    senti_mult = risk_multiplier(phase)
+
     # ---- 买入候选：滤网全过且未冷却的突破信号，按突破幅度降序取前 N ----
     pool: list[tuple[str, dict]] = []
     for key, system in (("breakout_s1a", "S1-A"), ("breakout_s2a", "S2-A")):
@@ -165,11 +172,17 @@ def build_daily_plan(
             equity=equity, entry=close, stop=stop, account_type=account,
             drawdown_state=state, atr=atr or None,
         )
+        # 情绪相位风险乘数：修复/高潮减半，冰点/退潮归零（禁开新仓，闸门同步拦截）
+        shares = int(calc["股数"] * senti_mult) // 100 * 100 if senti_mult < 1.0 else calc["股数"]
         gate = _gate_precheck(symbol, "HOT-S", account, close, stop, calc,
                               equity, state, trade_log, db_path)
+        if is_banned(phase):
+            prefix = f"⛔ 情绪{phase}禁开新仓"
+            gate = f"{prefix}；{gate}" if gate != "通过" else prefix
         reason_text = str(rec.get("reason", "") or "").strip()
+        senti_note = f"情绪{phase}风险×{senti_mult}" if phase and senti_mult < 1.0 else ""
         note_parts = [p for p in (f"归因：{reason_text}" if reason_text else "",
-                                  rec.get("analysis"), *calc.get("备注", [])) if p]
+                                  rec.get("analysis"), senti_note, *calc.get("备注", [])) if p]
         dragon_buys.append({
             "symbol": symbol,
             "name": str(rec.get("name", "") or ""),
@@ -186,13 +199,67 @@ def build_daily_plan(
             "sector": rec.get("sector", ""),
             "close": round(close, 2),
             "stop": stop,
-            "shares": calc["股数"],
+            "shares": shares,
             "risk_pct": calc["风险率"],
             "position_pct": round(calc.get("仓位比例", 0), 1),
             "account": account,
             "gate": gate,
             "note": "；".join(note_parts),
         })
+
+    # ---- 事件驱动候选（EVT-S，2-5 日，影子验证期）：事件分排序的突破候选 ----
+    event_buys: list[dict] = []
+    for rec in (scan_json.get("hot_pool") or {}).get("event_candidates", []) or []:
+        if not rec.get("record", True):
+            continue
+        symbol = str(rec.get("symbol", "")).zfill(6)[-6:]
+        if not symbol or not rec.get("close"):
+            continue
+        close = float(rec["close"])
+        atr = float(rec.get("atr_20") or 0)
+        stop = round(close - atr * ATR_STOP_MULT, 2) if atr > 0 else round(close * 0.95, 2)
+        account = "事件"  # EVT-S 事件驱动短线默认事件账户（与 HOT-S 一致）
+        calc = calc_position(
+            equity=equity, entry=close, stop=stop, account_type=account,
+            drawdown_state=state, atr=atr or None,
+        )
+        shares = int(calc["股数"] * senti_mult) // 100 * 100 if senti_mult < 1.0 else calc["股数"]
+        gate = _gate_precheck(symbol, "EVT-S", account, close, stop, calc,
+                              equity, state, trade_log, db_path)
+        if is_banned(phase):
+            prefix = f"⛔ 情绪{phase}禁开新仓"
+            gate = f"{prefix}；{gate}" if gate != "通过" else prefix
+        fresh = f"事件{rec.get('days_since')}日前" if rec.get("days_since") is not None else "事件日期未知"
+        senti_note = f"情绪{phase}风险×{senti_mult}" if phase and senti_mult < 1.0 else ""
+        note_parts = [p for p in (
+            f"{rec.get('strength', '')}·{rec.get('catalyst_type', '')}（{fresh}，{rec.get('wave', '')}）",
+            rec.get("sustainability"), rec.get("note"), senti_note, *calc.get("备注", [])) if p]
+        event_buys.append({
+            "symbol": symbol,
+            "name": str(rec.get("name", "") or ""),
+            "system": "EVT-S",
+            "event_score": rec.get("event_score", 0),
+            "event_breakdown": rec.get("event_breakdown", ""),
+            "catalyst_type": rec.get("catalyst_type", ""),
+            "strength": rec.get("strength", ""),
+            "days_since": rec.get("days_since"),
+            "wave": rec.get("wave", ""),
+            "sustainability": rec.get("sustainability", ""),
+            "close": round(close, 2),
+            "stop": stop,
+            "shares": shares,
+            "risk_pct": calc["风险率"],
+            "position_pct": round(calc.get("仓位比例", 0), 1),
+            "account": account,
+            "gate": gate,
+            "note": "；".join(note_parts),
+        })
+
+    # 趋势候选与事件候选同股交叉标注（趋势买点叠加事件催化 = 逻辑前置确认，人工加权参考）
+    evt_symbols = {b["symbol"] for b in event_buys}
+    for t in trend_buys:
+        if t["symbol"] in evt_symbols:
+            t["note"] = (f"{t['note']}；" if t.get("note") else "") + "⚡ 同为 EVT-S 事件候选（催化确认）"
 
     # ---- 持仓行动：监控警报逐条转行动 ----
     position_actions: list[dict] = []
@@ -206,12 +273,19 @@ def build_daily_plan(
             "行动": a.get("建议动作", ""),
         })
 
-    # ---- 不交易条件（市场状态 + 体系冷却规则） ----
+    # ---- 不交易条件（市场状态 + 情绪相位 + 体系冷却规则） ----
     no_trade: list[str] = []
     if market_state == "D":
         no_trade.append("市场状态 D（系统性下跌）：禁止新开趋势仓（闸门高级违规），只保留核心仓和极小验证仓")
     elif market_state == "C":
         no_trade.append("市场状态 C（震荡轮动）：只做滤网全过的 A 级信号，趋势仓建议风险减半")
+    if is_banned(phase):
+        no_trade.append(f"情绪相位「{phase}」（超短生态）：禁止新开 HOT-S/二板/EVT-S 超短仓"
+                        f"（闸门高级违规）——{phase_advice(phase)}")
+    elif phase == "修复":
+        no_trade.append("情绪修复期：超短单笔风险减半，只做最强主线龙头")
+    elif phase == "高潮":
+        no_trade.append("情绪高潮期：只持有不加仓，挂移动止盈，不追高位一致")
     no_trade.extend([
         "临时发现的热点：先写下来源/催化/失效条件/止损/仓位，等 30 分钟再决定（30 分钟规则）",
         "连续 2 笔 −1R 后下一笔风险减半；连续 3 笔亏损暂停两天复盘（V5.0 §6.3）",
@@ -242,6 +316,7 @@ def build_daily_plan(
         "date": scan_json.get("date", ""),
         "market_state": market_state,
         "drawdown_state": state,
+        "sentiment": sentiment or {"phase": "未知"},
         "dragon_primary": (scan_json.get("hot_pool") or {}).get("dragon_primary", ""),
         "dragon_market_comment": (scan_json.get("hot_pool") or {}).get("dragon_market_comment", ""),
         "dragon_note": (scan_json.get("hot_pool") or {}).get("dragon_note", ""),
@@ -250,6 +325,7 @@ def build_daily_plan(
         "evidence_chains": evidence_chains,
         "second_board": (scan_json.get("hot_pool") or {}).get("second_board", {}) or {},
         "dragon_buys": dragon_buys,
+        "event_buys": event_buys,
         "trend_buys": trend_buys,
         "bid_checklist": bid_checklist,
         "position_actions": position_actions,
@@ -267,9 +343,21 @@ def daily_plan_to_markdown(plan: dict) -> list[str]:
         "",
     ]
 
+    # 情绪周期相位提示（超短生态口径；未知/缺失不展示，避免噪音）
+    senti = plan.get("sentiment") or {}
+    if senti.get("phase") and senti.get("phase") != "未知":
+        m = senti.get("metrics") or {}
+        metrics_text = (
+            f"（涨停 {m.get('limit_up')} / 炸板率 {m.get('broken_rate')}% / "
+            f"高度 {m.get('max_lbc')} 板 / 晋级率 {m.get('promotion_rate')}%）" if m else ""
+        )
+        lines.append(f"> 🌡️ **情绪相位：{senti['phase']}**{metrics_text} —— {senti.get('advice', '')}")
+        lines.append("")
+
     dragons = plan.get("dragon_buys", [])
+    events = plan.get("event_buys", [])
     trends = plan.get("trend_buys", [])
-    total = len(dragons) + len(trends)
+    total = len(dragons) + len(events) + len(trends)
     lines.append(f"### 买入候选（{total}）")
     lines.append("")
     if not total:
@@ -341,6 +429,29 @@ def daily_plan_to_markdown(plan: dict) -> list[str]:
                 for e in b.get("events", []):
                     lines.append(f"- **{b['symbol']} {b.get('name', '')}**｜{e['date']}｜{e['type']}：{e['title']}")
             lines.append("")
+
+        # 事件驱动候选（EVT-S，2-5 日，影子验证期）
+        if events:
+            lines.extend([
+                f"#### ⚡ 事件驱动候选（EVT-S，事件分排序，影子验证期，{len(events)} 只）",
+                "",
+                "| 代码 | 名称 | 事件分 | 力度·类型 | 时效 | 参考买入价 | 建议止损 | 建议股数 | 风险率% | 闸门预检 | 备注 |",
+                "|------|------|--------|-----------|------|-----------|----------|----------|---------|----------|------|",
+            ])
+            for b in events:
+                fresh = f"{b.get('days_since')}日前" if b.get("days_since") is not None else "未知"
+                lines.append(
+                    f"| {b['symbol']} | {b.get('name') or '-'} | **{b['event_score']}** "
+                    f"| {b.get('strength') or '-'}·{b.get('catalyst_type') or '-'} | {fresh} "
+                    f"| {b['close']:.2f} | {b['stop']:.2f} | {b['shares']} | {b['risk_pct']} "
+                    f"| {b['gate']} | {b.get('note') or '—'} |"
+                )
+            lines.extend([
+                "",
+                "> EVT-S 影子验证期：先只记 signals 纸面验证（5 日强制结算），"
+                "按策略评估框架 ≥30 笔样本达标后再实盘；实盘入口 `from-scan --system EVT-S`（事件账户）。",
+                "",
+            ])
 
         if trends:
             lines.extend([

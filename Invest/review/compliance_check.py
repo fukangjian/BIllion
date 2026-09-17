@@ -23,6 +23,7 @@ from config import (
     RISK_CLUSTER_LIMITS,
     RISK_LIMITS_DRAWDOWN,
     RISK_LIMITS_NORMAL,
+    SENTIMENT_BAN_PHASES,
     STOP_SUGGEST_MAX_PCT,
     STRATEGY_CODES,
 )
@@ -373,21 +374,23 @@ def check_market_conditions(
     open_trades: list[Trade],
     market_state: str | None,
     account_equity: float = ACCOUNT_EQUITY,
+    sentiment_phase: str | None = None,
 ) -> list[Violation]:
     """
-    组合总热度 + 市场状态门禁（V5.0 §5.6/§1.2，建仓闸门专用；纯函数）。
+    组合总热度 + 市场状态门禁 + 情绪周期门禁（V5.0 §5.6/§1.2，建仓闸门专用；纯函数）。
 
     - 账户热度：未平仓风险率合计 + 本笔风险率 > PORTFOLIO_HEAT_LIMITS[市场状态] → 高级违规
     - 市场状态 D：禁止新开趋势仓（入场系统含 S1/S2）→ 高级违规
     - 市场状态 C：趋势仓中级警告（震荡市建议风险减半）
-    - market_state 为 None/未知：跳过（降级，不阻塞建仓）
+    - 情绪相位 冰点/退潮：禁止新开超短仓（入场系统含 HOT/EVT）→ 高级违规（2026-09 情绪闸门）
+    - market_state/sentiment_phase 为 None/未知：跳过对应检查（降级，不阻塞建仓）
     """
     violations = []
     if not market_state:
-        return violations
+        return _check_sentiment_gate(trade, sentiment_phase)
     limit = PORTFOLIO_HEAT_LIMITS.get(str(market_state).upper())
     if limit is None:
-        return violations
+        return _check_sentiment_gate(trade, sentiment_phase)
 
     total_heat = sum(t.风险率 for t in open_trades if t.风险率 > 0) + max(trade.风险率, 0)
     if total_heat > limit:
@@ -421,7 +424,26 @@ def check_market_conditions(
             描述="市场状态 C（震荡轮动），趋势信号胜率偏低，建议风险减半",
             建议="降低单笔风险率或等更好的市场状态",
         ))
+    violations.extend(_check_sentiment_gate(trade, sentiment_phase))
     return violations
+
+
+def _check_sentiment_gate(trade: Trade, sentiment_phase: str | None) -> list[Violation]:
+    """情绪周期门禁：冰点/退潮 禁止新开超短仓（HOT-S/二板/EVT-S 等含 HOT/EVT 系统）"""
+    if not sentiment_phase or sentiment_phase not in SENTIMENT_BAN_PHASES:
+        return []
+    s = (trade.入场系统 or "").upper()
+    if not ("HOT" in s or "EVT" in s):
+        return []
+    return [Violation(
+        交易编号=trade.交易编号,
+        股票代码=trade.股票代码,
+        违规类型="情绪相位禁止建仓",
+        严重程度="高",
+        描述=f"情绪周期「{sentiment_phase}」（超短生态：涨停/连板/炸板/晋级恶化），"
+             f"禁止新开超短仓（{trade.入场系统}）",
+        建议="冰点/退潮只管理已有持仓；等修复/发酵相位再开新仓（情绪闸门，2026-09）",
+    )]
 
 
 def run_compliance_check(

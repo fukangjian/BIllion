@@ -35,13 +35,15 @@ E:/Billion/                     # Obsidian vault 根
     │   ├── llm_client.py       # 多 LLM 路由（Kimi→DeepSeek→Custom）+ 24h 缓存
     │   └── prompts.py          # 提示词模板（纯字符串常量）
     ├── pipeline/               # 数据管道
-    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert，含 signals/limit_pool（封板资金/首封时间/换手/炸板数/最新价/流通市值）/hot_pool/trend_pool 表）
+    │   ├── database.py         # SQLite 缓存（REPLACE INTO upsert，含 signals/limit_pool（封板资金/首封时间/换手/炸板数/最新价/流通市值）/hot_pool/trend_pool/emotion_state 表）
     │   ├── indicators.py       # Donchian 通道、ATR、市场状态 A/B/C/D、板块相对强度（差值法）
     │   ├── market_scanner.py   # 市场扫描（池=WATCHLIST∪趋势池，突破×三重滤网×系统1过滤）+ 持仓监控区块 + 超短热点区块，同写 MD + JSON
     │   ├── hot_pool.py         # 超短热点池：涨停/连板/炸板+强板块领涨股，构建与日线补抓
     │   ├── dragon_head.py      # 龙头识别评分：身位/梯队/强度/逻辑/情绪五维（S/A/B/C 等级）
-    │   ├── second_board.py     # 二板观察池：首板硬过滤（首封/封单/换手/市值/股价/前5日涨幅）+ 软评分（《二板打法》，扫描时离线生成，Web 控制台「二板观察池」卡片）
-    │   ├── auction_check.py    # 9:25 竞价判定：二板 S/A/B/C 分级 + 龙头执行/不追/剔除 + 持仓竞价风控（快照联网，9:26 定时/手动，Web 控制台「9:25 竞价结果」卡片）
+    │   ├── second_board.py     # 二板观察池：首板硬过滤（首封/封单/换手/市值/股价/前5日涨幅）+ 软评分（《二板打法》，扫描时离线生成，Web 控制台「二板观察池」卡片；情绪冰点/退潮自动缩池）
+    │   ├── auction_check.py    # 9:25 竞价判定：二板 S/A/B/C 分级 + 龙头执行/不追/剔除 + 持仓竞价风控（快照联网，9:26 定时/手动，Web 控制台「9:25 竞价结果」卡片；情绪退潮/冰点自动收紧口径）
+    │   ├── sentiment_regime.py # 情绪周期状态机：冰点/修复/发酵/高潮/退潮投票判定（涨停/炸板率/连板高度/晋级率），写 emotion_state 表，驱动超短开仓闸门/仓位乘数/竞价收紧/信号分层（2026-09）
+    │   ├── event_pool.py       # 事件驱动短线 EVT-S（2-5 日）：⑧催化事件分（力度×时效×波次 ≥70）×通道初动×量能，「事件+初动」逻辑前置买点；影子验证期只入 signals（5 日强制结算）（2026-09）
     │   ├── trend_pool.py       # 趋势动态池：强势板块 Top5 成分股（双源：同花顺直连优先/东财备用）→ 入池补抓
     │   ├── trend_filters.py    # 三重滤网量化纯函数（周线/板块前20%/量能/S2-A 加 MA20>MA60）
     │   ├── daily_plan.py       # 盘前操作清单：滤网全过候选带止损/股数/闸门预检 + 持仓行动 + 不交易条件

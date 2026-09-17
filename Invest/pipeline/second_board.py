@@ -338,8 +338,36 @@ def build_second_board_pool(trade_date: Optional[str] = None, db_path: Optional[
     result["excluded_reasons"] = excluded_reasons
     result["excluded_count"] = int(len(first) - len(candidates) - below_score)
     result["below_score_count"] = below_score
-    result["candidates"] = candidates[:SECOND_BOARD_TOP_N]
+
+    # 情绪周期相位调制观察池（2026-09：冰点/退潮缩池至 3 只并标注禁开新仓；修复/高潮缩至 5 只风险减半；
+    # 发酵按 SECOND_BOARD_TOP_N 正常。判定失败/数据缺失按未知处理，不干预）
+    top_n = SECOND_BOARD_TOP_N
+    sentiment_note = ""
+    try:
+        from pipeline.sentiment_regime import get_latest_phase, phase_advice
+
+        senti = get_latest_phase(db_path=db_path)
+        if senti:
+            phase = senti.get("phase")
+            result["sentiment"] = {
+                "phase": phase,
+                "trading_allowed": senti.get("trading_allowed", True),
+                "risk_mult": senti.get("risk_mult", 1.0),
+                "advice": senti.get("advice", ""),
+            }
+            if phase in ("冰点", "退潮"):
+                top_n = min(top_n, 3)
+                sentiment_note = f"情绪{phase}：观察池缩至前 3 只，明日禁开新仓（{phase_advice(phase)}）"
+            elif phase in ("修复", "高潮"):
+                top_n = min(top_n, 5)
+                sentiment_note = f"情绪{phase}：观察池缩至前 5 只，风险减半（{phase_advice(phase)}）"
+    except Exception as e:
+        logger.debug("情绪相位读取失败（二板池按默认上限）: %s", e)
+
+    result["candidates"] = candidates[:top_n]
     result["available"] = True
+    if sentiment_note:
+        result["note"] = sentiment_note if not result.get("note") else f"{result['note']}；{sentiment_note}"
     if not candidates:
         result["note"] = (
             f"今日 {len(first)} 只首板股无一进池：硬过滤淘汰 {result['excluded_count']} 只，"

@@ -505,9 +505,10 @@ def signal_stats(
     with get_connection(db_path) as conn:
         cur = conn.execute(
             """
-            SELECT s.system, s.r_multiple, s.market_state, q.open, q.high, q.close
+            SELECT s.system, s.r_multiple, s.market_state, q.open, q.high, q.close, e.phase
             FROM signals s
             LEFT JOIN daily_quotes q ON q.symbol = s.symbol AND q.trade_date = s.signal_date
+            LEFT JOIN emotion_state e ON e.trade_date = s.signal_date
             WHERE s.status = 'closed' AND s.exit_date >= ? AND s.r_multiple IS NOT NULL
             """,
             (cutoff,),
@@ -528,13 +529,15 @@ def signal_stats(
     groups: dict[str, list[float]] = {}
     state_groups: dict[str, dict[str, list[float]]] = {}
     entry_groups: dict[str, dict[str, list[float]]] = {}
+    senti_groups: dict[str, dict[str, list[float]]] = {}
     board_locked: dict[str, int] = {}
-    for system, r, mstate, q_open, q_high, q_close in closed_rows:
+    for system, r, mstate, q_open, q_high, q_close, senti in closed_rows:
         r = float(r)
         groups.setdefault(system, []).append(r)
         state_groups.setdefault(mstate or "未知", {}).setdefault(system, []).append(r)
         etype = _entry_barrier_type(q_open, q_high, q_close)
         entry_groups.setdefault(etype, {}).setdefault(system, []).append(r)
+        senti_groups.setdefault(senti or "未知", {}).setdefault(system, []).append(r)
         if etype in ("一字板", "涨停收盘"):
             board_locked[system] = board_locked.get(system, 0) + 1
 
@@ -547,6 +550,13 @@ def signal_stats(
         etype: {system: _group_stats(rs) for system, rs in sorted(sys_map.items())}
         for etype, sys_map in sorted(entry_groups.items())
     }
+    by_sentiment = {
+        phase: {system: _group_stats(rs) for system, rs in sorted(sys_map.items())}
+        for phase, sys_map in sorted(senti_groups.items())
+    }
+    # 「未知」全空时（情绪数据未回填）不输出该分层，避免空表噪音
+    if set(by_sentiment) == {"未知"}:
+        by_sentiment = {}
     return {
         "as_of": as_of,
         "days": days,
@@ -555,6 +565,7 @@ def signal_stats(
         "systems": systems,
         "by_state": by_state,
         "by_entry_type": by_entry_type,
+        "by_sentiment": by_sentiment,
         "board_locked_by_system": board_locked,
         "data_missing": data_missing,
     }
@@ -603,6 +614,23 @@ def signal_stats_to_markdown(stats: dict) -> str:
                 pf = f"{s['profit_factor']:.2f}" if s["profit_factor"] != float("inf") else "∞"
                 lines.append(
                     f"| {etype} | {system} | {s['closed']} | {s['win_rate']}% "
+                    f"| {s['avg_r']:+.2f} | {pf} |"
+                )
+
+    by_senti = stats.get("by_sentiment", {})
+    if by_senti:
+        lines.extend([
+            "",
+            "**按信号日情绪相位分层（冰点/修复/发酵/高潮/退潮；验证禁开仓相位是否真差、发酵期是否真强）**：",
+            "",
+        ])
+        lines.append("| 情绪相位 | 系统 | 样本数 | 胜率 | 平均R | PF |")
+        lines.append("|----------|------|--------|------|-------|-----|")
+        for phase, sys_map in by_senti.items():
+            for system, s in sys_map.items():
+                pf = f"{s['profit_factor']:.2f}" if s["profit_factor"] != float("inf") else "∞"
+                lines.append(
+                    f"| {phase} | {system} | {s['closed']} | {s['win_rate']}% "
                     f"| {s['avg_r']:+.2f} | {pf} |"
                 )
 

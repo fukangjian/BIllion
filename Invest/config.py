@@ -135,7 +135,7 @@ SIGNAL_MAX_HOLDING_DAYS = 20  # 信号最大持有交易日数，到期按收盘
 SIGNAL_STATS_MIN_SAMPLE = 5   # 统计最小样本量，低于此值标注「样本不足」
 
 # 信号最大持有交易日数（按系统覆盖；未列出的系统沿用 SIGNAL_MAX_HOLDING_DAYS）
-SIGNAL_MAX_HOLDING_BY_SYSTEM = {"HOT-S": 5}  # 超短热点信号 5 个交易日强制结算
+SIGNAL_MAX_HOLDING_BY_SYSTEM = {"HOT-S": 5, "EVT-S": 5}  # 超短热点/事件驱动信号 5 个交易日强制结算
 
 # --- 信号结算数据链（2026-09：掉池股票无K线 → 信号永远 open，统计有幸存者偏差） ---
 SIGNAL_SETTLE_REFETCH = True     # 结算前补抓缺K线 open 信号日线（run_all/CLI 入口启用；模块函数默认离线）
@@ -198,6 +198,35 @@ AUCTION_SB_A_VOL = 5.0             # A 级竞昨比 %
 AUCTION_HOT_EXEC_OPEN = (3.0, 7.0)  # 执行高开幅度 % 区间
 AUCTION_POS_LOW_OPEN_ALERT = -2.0   # 持仓竞价低开 ≤-2% 或竞价跌破止损 → 警报
 
+
+# --- 情绪周期状态机（pipeline/sentiment_regime.py，2026-09：游资情绪周期「冰点/修复/发酵/高潮/退潮」量化） ---
+# 与 market_state（指数/量能/宽度 → A/B/C/D）互补：本口径只描述超短打板生态（涨停/连板/炸板/晋级），
+# 驱动 HOT-S/二板/EVT-S 超短线的开仓闸门、仓位乘数与竞价收紧；数据缺失降级为「未知」不阻塞链路。
+# 阈值来源：短线社区共识口径（涨停<30/跌停>50/炸板率>60% = 冰点等），可在样本积累后按 signal_stats 分层校准。
+SENTIMENT_PHASES = ("冰点", "修复", "发酵", "高潮", "退潮")
+SENTIMENT_BAN_PHASES = ("冰点", "退潮")   # 禁止新开超短仓的相位（建仓闸门高级违规）
+SENTIMENT_UNKNOWN = "未知"               # 数据缺失/样本不足时的降级标签（不触发任何门禁）
+# 各相位投票阈值
+SENTIMENT_LIMIT_UP_ICEPOINT = 30     # 涨停家数 < 此值 → 冰点票
+SENTIMENT_LIMIT_UP_CLIMAX = 80       # 涨停家数 ≥ 此值 → 高潮票
+SENTIMENT_LIMIT_DOWN_ICEPOINT = 50   # 跌停家数 > 此值 → 冰点票
+SENTIMENT_BROKEN_RATE_ICEPOINT = 60.0  # 炸板率 % ≥ 此值 → 冰点票
+SENTIMENT_BROKEN_RATE_EBB = 40.0       # 炸板率 % ≥ 此值 → 退潮票
+SENTIMENT_BROKEN_RATE_SAFE = 40.0      # 炸板率 % < 此值 → 发酵/高潮安全票
+SENTIMENT_MAX_LBC_CLIMAX = 6          # 最高连板 ≥ 此值 → 高潮票
+SENTIMENT_MAX_LBC_FERMENT = 4         # 最高连板 ≥ 此值 → 发酵票
+SENTIMENT_PROMOTION_FERMENT = 30.0    # 连板晋级率 % ≥ 此值 → 发酵票（今日连板数/昨日涨停数）
+SENTIMENT_PROMOTION_EBB = 15.0        # 晋级率 % < 此值 → 退潮票
+SENTIMENT_LIMIT_UP_DROP_EBB = 20.0    # 涨停家数较前日缩幅 ≥ 此值 % → 退潮票
+# 相位 → 超短单笔风险乘数（作用于建议股数；0 = 禁开新仓，仅观察名单）
+SENTIMENT_RISK_MULT = {"冰点": 0.0, "修复": 0.5, "发酵": 1.0, "高潮": 0.5, "退潮": 0.0}
+# 退潮/冰点相位下竞价判定收紧口径（覆盖 AUCTION_* 默认值；仅作用于超短分级，持仓警报一并收紧）
+SENTIMENT_AUCTION_TIGHTEN = {
+    "hot_exec_open": (4.0, 6.0),   # 龙头执行档高开区间 3-7% → 4-6%
+    "vol_ratio_good": 8.0,         # 竞昨比合格线 5% → 8%
+    "sb_s_vol": 10.0,              # 二板 S 级竞昨比 8% → 10%
+    "pos_low_open_alert": -1.0,    # 持仓低开警报线 -2% → -1%
+}
 
 # --- 候选催化分析（research/catalyst_analyzer.py，买入规则⑧事件/政策/业绩/技术突破/转型） ---
 HOT_CATALYST_ENABLED = os.getenv("HOT_CATALYST_ENABLED", "true").lower() == "true"  # 扫描时对热点候选做催化分析（联网，失败降级人工核对）
@@ -286,7 +315,7 @@ FORBIDDEN_IN_DRAWDOWN = {
 # --- 建仓链路（仓位计算 / from-scan 落库） ---
 # 策略代码枚举（【11】统一体系/策略评估筛选框架.md §1.1 五策略清单，与投资体系 V5.0 对应）：
 # 建仓 --system 校验与「非系统内交易」合规检查共用；list/show 等展示场景不校验历史值
-STRATEGY_CODES = ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C", "HOT-S"]
+STRATEGY_CODES = ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C", "HOT-S", "EVT-S"]
 
 STRATEGY_INFO = {
     "S1-A":  {"名称": "20日突破（快速系统）", "适用账户": "产业/事件", "典型持有期": "2—8周"},
@@ -295,7 +324,18 @@ STRATEGY_INFO = {
     "STR-B": {"名称": "事件驱动第二波",       "适用账户": "事件",      "典型持有期": "1—4周"},
     "STR-C": {"名称": "核心复利",             "适用账户": "核心",      "典型持有期": "1—5年"},
     "HOT-S": {"名称": "超短热点池",           "适用账户": "事件",      "典型持有期": "1—5天"},
+    "EVT-S": {"名称": "事件驱动短线",         "适用账户": "事件",      "典型持有期": "2—5天"},
 }
+
+# --- 事件驱动短线 EVT-S（pipeline/event_pool.py，2026-09：催化因子×量价×板块强度的 2-5 日策略线） ---
+# 定位（2026-04 基金报调研共识）：打板生态机构化后，Alpha 来自「选股逻辑×短线时机」而非执行速度；
+# 买点逻辑前置（点火/初动阶段介入，不死守封板瞬间），持仓 2-5 日，事件账户口径。
+# 影子验证起步：先只记 signals 纸面验证（结算引擎现成），按策略评估框架 ≥30 笔样本达标后再实盘。
+EVT_ENABLED = os.getenv("EVT_ENABLED", "true").lower() == "true"   # false 时跳过事件池构建
+EVT_MAX_CANDIDATES = 5        # 每日事件驱动候选上限（入计划与 signals）
+EVT_MIN_EVENT_SCORE = 70      # 事件分下限（基础20+力度0-40+时效0-25+波次0-12；重磅新鲜事件可达 97）
+EVT_MAX_EVENT_AGE_DAYS = 5    # 事件发生日距今日超过 N 个自然日视为过期（时效因子衰减为 0）
+EVT_VOLUME_RATIO_MIN = 1.5    # 量能确认：当日成交量/前 20 日均量下限（点火初动要件）
 
 # 账户类型中文枚举（投资体系 V5.0，仓位计算器 CLI 与合规检查共用）
 ACCOUNT_TYPES = ["核心", "产业", "事件", "实验"]

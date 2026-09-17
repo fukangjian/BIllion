@@ -43,11 +43,13 @@ Invest 是一个面向 **Obsidian 投资知识库** 的本地 Python 工具集�
 | **超短热点池** | `pipeline/hot_pool.py` | 涨停/连板/炸板名单 + 强板块领涨股，热点池构建与日线补抓（HOT-S，1-5 天） |
 | **龙头识别** | `pipeline/dragon_head.py` | 龙头评分（身位/梯队/强度/逻辑/情绪五维，S/A/B/C 等级），《如何识别真假龙头》可量化落地 |
 | **二板观察池** | `pipeline/second_board.py` | 《二板打法》首板硬过滤（首封时间/封单力度/换手/市值/股价/前5日涨幅）+ 软评分 ≥6 入池，离线生成并入扫描 JSON，Web 控制台「二板观察池」卡片展示 |
-| **竞价判定** | `pipeline/auction_check.py` | 9:25 竞价自动判定：二板 S/A/B/C（高开幅度×竞昨比×板块共振）+ 龙头执行/不追/剔除 + 持仓竞价风控（低开/破止损警报）；全市场快照一次调用 + 盘前分时走向（Top N），工作日 9:26 定时/手动，Web 控制台「9:25 竞价结果」卡片 |
+| **竞价判定** | `pipeline/auction_check.py` | 9:25 竞价自动判定：二板 S/A/B/C（高开幅度×竞昨比×板块共振）+ 龙头执行/不追/剔除 + 持仓竞价风控（低开/破止损警报）；全市场快照一次调用 + 盘前分时走向（Top N），工作日 9:26 定时/手动，Web 控制台「9:25 竞价结果」卡片；情绪退潮/冰点相位自动收紧量能与执行口径（2026-09） |
+| **情绪周期状态机** | `pipeline/sentiment_regime.py` | 游资情绪周期「冰点/修复/发酵/高潮/退潮」量化判定（涨停/跌停/炸板率/连板高度/晋级率投票制），写 `emotion_state` 表；驱动超短开仓闸门（冰点/退潮禁开 HOT-S/EVT-S，高级违规）、二板池缩池、竞价收紧与信号分层统计；支持历史回填 CLI（2026-09） |
+| **事件驱动短线** | `pipeline/event_pool.py` | EVT-S（2-5 日）事件驱动候选：⑧催化确认（事件力度×时效×波次评分 ≥70）× 20 日通道初动 × 量能确认，「事件+初动」逻辑前置买点；影子验证期只入 signals 纸面验证（5 日强制结算），≥30 笔样本达标后再实盘（2026-09） |
 | **趋势动态池** | `pipeline/trend_pool.py` | 强势板块 Top N → 东财成分股（名称模糊匹配）→ 剔除创业板 → 入池补抓日线（趋势候选来源） |
 | **三重滤网** | `pipeline/trend_filters.py` | 周线 20 周均线 / 板块强度前 20% / 成交额≥20 日中位数 /（S2-A）MA20>MA60，纯函数 |
 | **盘前操作清单** | `pipeline/daily_plan.py` | 明日操作计划：滤网全过候选带止损/股数/闸门预检 + 持仓行动 + 不交易条件 |
-| **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库（含市场状态/滤网/系统1附注）、逐根回放结算、胜率/平均R 统计 + 市场状态分层（持有天数按系统分：HOT-S=5） |
+| **信号追踪** | `pipeline/signal_tracker.py` | 突破信号入库（含市场状态/滤网/系统1附注）、逐根回放结算、胜率/平均R 统计 + 市场状态/入场形态/情绪相位分层（持有天数按系统分：HOT-S/EVT-S=5） |
 | 研究助手 | `research/` | 日报、公告（fallback 链 + 防编造护栏 + PDF 提取）、财报、产业链、热点候选⑧催化判定 |
 | 交易复盘 | `review/` | 交易日志、合规、周报月报（含纪律审计节） |
 | **持仓监控** | `review/monitor.py` | 止损/无止损/退出通道警报、移动止损建议（+1R 保本 / +2R 兑现 1/3）、移动止盈建议（最高点回落 3%，六条硬规则）、回撤状态自动推导 |
@@ -677,10 +679,10 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 
 | 函数 | 签名 | 返回值 |
 |------|------|--------|
-| `run_auction_check` | `(db_path=None, trade_log=None, scan=None, snapshot=None) -> dict` | 编排：名单→快照→分级→Top N 分时走向→落盘；scan/snapshot 可注入（测试离线） |
-| `grade_second_board` | `(open_pct, vol_ratio, sector_resonance) -> (grade, text)` | 二板 S/A/B/C：S=高开 8-15% 且竞昨比 ≥8% 且板块共振（无共振降级 A）；A=5-8% 且 ≥5%；C=低开/平开；>15% 透支归 B |
-| `grade_hot_candidate` | `(open_pct, vol_ratio, is_yizi) -> (verdict, text)` | 龙头：一字/高开 >7% 不追、低开/平开剔除、高开 3-7% 且竞昨比 ≥5% 执行、其余观察 |
-| `grade_position` | `(open_pct, auction_price, stop) -> str|None` | 持仓：竞价破止损 → 开盘执行止损警报；低开 ≤-2% → 盯防警报 |
+| `run_auction_check` | `(db_path=None, trade_log=None, scan=None, snapshot=None) -> dict` | 编排：名单→快照→分级→Top N 分时走向→落盘；scan/snapshot 可注入（测试离线）；相位取 scan JSON `sentiment.phase`，缺省回读 emotion_state 表 |
+| `grade_second_board` | `(open_pct, vol_ratio, sector_resonance, phase=None) -> (grade, text)` | 二板 S/A/B/C：S=高开 8-15% 且竞昨比 ≥8% 且板块共振（无共振降级 A）；A=5-8% 且 ≥5%；C=低开/平开；>15% 透支归 B；退潮/冰点收紧（S 竞昨比 10%、A 8%） |
+| `grade_hot_candidate` | `(open_pct, vol_ratio, is_yizi, phase=None) -> (verdict, text)` | 龙头：一字/高开 >7% 不追、低开/平开剔除、高开 3-7% 且竞昨比 ≥5% 执行、其余观察；退潮/冰点收紧（执行档 4-6%、竞昨比 8%） |
+| `grade_position` | `(open_pct, auction_price, stop, phase=None) -> str|None` | 持仓：竞价破止损 → 开盘执行止损警报；低开 ≤-2% → 盯防警报（退潮/冰点收紧至 -1%） |
 | `auction_metrics` | `(spot, yesterday_volume) -> (open_pct, vol_ratio, is_yizi)` | 竞价涨幅/竞昨比/一字板（开盘=涨停价，幅度按 second_board.limit_up_pct） |
 | `pre_min_trend_from_df` | `(df) -> dict|None` | 盘前分时走向纯函数：9:20→9:25 价变 >+0.5% 且末段量占比 ≥40% → 抢筹；<-0.5% → 撤单；否则平淡 |
 | `fetch_spot_snapshot` | `() -> dict` | 全市场快照（东财→新浪降级链）；{symbol: {open/prev_close/volume/amount}} |
@@ -689,6 +691,43 @@ uvicorn server:app --host 127.0.0.1 --port 8900
 | `main` | `() -> None` | CLI：`python pipeline/auction_check.py` |
 
 **口径依据**（2026-08-24 联网调研）：竞昨比合格线 5%/优秀线 10%（`AUCTION_VOL_RATIO_GOOD/EXCELLENT`）；二板分档为 vault《二板打法》原文（`AUCTION_SB_*`）；龙头口径为《如何识别真假龙头》第二板斧（`AUCTION_HOT_EXEC_OPEN`）。
+
+#### `sentiment_regime.py` — 情绪周期状态机（2026-09 新增）
+
+**职责**：把游资「冰点/修复/发酵/高潮/退潮」情绪周期量化为每日相位判定，与指数级 market_state（A/B/C/D）互补——本口径只描述超短打板生态。指标全部来自本地 DB：涨停/跌停/炸板家数（limit_stats）、炸板率（炸板/涨停+炸板）、连板高度与连板家数（limit_pool lbc）、晋级率（今日连板家数/昨日涨停家数）、涨停家数与高度较前日变化；各相位按 `config.SENTIMENT_*` 阈值投票（平票按 退潮>冰点>高潮>发酵>修复 保守优先），写入 `emotion_state` 表（每日一行）并携带 prev_phase（冰点后回暖判定修复用）。
+
+**作用链（超短生态全覆盖）**：
+- 建仓闸门：冰点/退潮 禁止新开 HOT-S/EVT-S 超短仓（`compliance_check._check_sentiment_gate` 高级违规；趋势仓不受影响，仍由 market_state D/C 管）
+- 仓位乘数：`SENTIMENT_RISK_MULT`（冰点/退潮 0，修复/高潮 0.5，发酵 1.0）作用于 daily_plan 龙头/事件候选建议股数
+- 二板池：冰点/退潮缩至前 3 只并标注禁开新仓，修复/高潮缩至前 5 只
+- 竞价收紧：退潮/冰点自动收紧量能与执行口径（`SENTIMENT_AUCTION_TIGHTEN`，见 auction_check）
+- 信号分层：signal_stats 新增 by_sentiment（信号日相位 JOIN emotion_state），验证禁开仓相位是否真差
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `metrics_from_rows` | `(stats_row, pool_rows_today, pool_rows_prev) -> dict|None` | 指标纯函数；涨停池与 stats 双缺（抓取失败日存 0）返回 None → 相位「未知」不触发门禁 |
+| `classify_phase` | `(metrics, prev_phase=None) -> (phase, votes, reasons)` | 相位投票纯函数（阈值 config.SENTIMENT_*） |
+| `compute_and_save` | `(trade_date=None, db_path=None) -> dict|None` | DB 编排：算指标→判相位→写 emotion_state（数据缺失不写库） |
+| `get_latest_phase` / `current_context` | `(db_path=None) -> dict|None` | 最新相位/完整上下文（含 advice/risk_mult/trading_allowed），供闸门与展示消费 |
+| `risk_multiplier` / `is_banned` / `tightened_auction_params` | `(phase) -> float/bool/dict|None` | 相位→乘数/禁令/收紧口径 |
+| `backfill` | `(days=28, db_path=None) -> int` | 联网回填历史 limit_stats/limit_pool 并逐日判相位（东财涨停/炸板池接口仅支持最近约 30 自然日，超出部分自动跳过） |
+| `main` | `() -> None` | CLI：`run` / `backfill --days N` / `show` |
+
+**设计要点**：阈值取短线社区共识口径（涨停<30/跌停>50/炸板率≥60% = 冰点等），后续可按 signal_stats by_sentiment 分层实测校准；历史数据缺口用 `backfill` 补（受数据源限制最多回看约 30 自然日，更早历史无池数据）；扫描层 `market_scanner._compute_sentiment_safe` 每日随 run_scan 重算，全链路降级不阻塞。
+
+#### `event_pool.py` — 事件驱动短线 EVT-S（2026-09 新增）
+
+**职责**：EVT-S（2-5 日）事件驱动候选构建。定位（2026-04 基金报调研共识）：打板生态机构化后，Alpha 来自「选股逻辑 × 短线时机」而非执行速度——买点为「事件催化确认 + 20 日通道初动」的点火阶段（逻辑前置），不死守封板瞬间。输入为热点池突破候选（catalyst dict 由龙头评分块附加），评分 = `catalyst_analyzer.event_factor`（基础 20：⑧判定满足；力度 0-40：重磅/中等/轻微；时效 0-25：事件日期距今分档；波次 0-12：首次/第二波），≥`EVT_MIN_EVENT_SCORE`(70) 且非一字板入选，按（事件分, 突破幅度）降序取前 `EVT_MAX_CANDIDATES`(5)；量能确认（量比 ≥1.5）标注不剔除。
+
+**验证路径（影子模式）**：候选经 `_record_breakout_signals` 以 system=EVT-S 入 signals 表（5 个交易日强制结算，`SIGNAL_MAX_HOLDING_BY_SYSTEM`），复用 signal_tracker 全套 R 口径结算与分层统计；daily_plan `event_buys` 段展示参数（止损/股数/闸门预检，情绪相位乘数同龙头），趋势候选同股交叉标注；按策略评估框架 ≥30 笔样本达标后再实盘（`from-scan --system EVT-S`，事件账户）。
+
+| 函数 | 签名 | 返回值 |
+|------|------|--------|
+| `build_event_candidates` | `(hot_records, symbols_data=None, today="") -> list[dict]` | 纯函数：过滤（事件分门槛/一字板 record=False）+ 排序 + 截断 |
+| `build_from_latest_scan` | `() -> list[dict]` | 读最新扫描 JSON 的事件候选（调试/复盘） |
+| `main` | `() -> None` | CLI：`python pipeline/event_pool.py` |
+
+**配套改动**：catalyst_analyzer LLM 输出扩展七行格式（新增 事件日期/事件力度/炒作波次，旧四行格式向后兼容走回退评分）；dragon_head 逻辑维度按力度分档（重磅 20/中等 16/轻微 12，未标注回退 20）。
 
 #### `run_daily.py`
 
@@ -933,6 +972,24 @@ CREATE TABLE IF NOT EXISTS signals (
     PRIMARY KEY (signal_date, symbol, system)
 );
 -- 老库由 init_database() 内 _migrate_signals_columns 幂等 ALTER TABLE 补列
+```
+
+**新增 `emotion_state` 表**（情绪周期状态机，2026-09，`init_database()` 幂等建表）：
+
+```sql
+CREATE TABLE IF NOT EXISTS emotion_state (
+    trade_date      TEXT PRIMARY KEY,   -- 交易日（每日一行，REPLACE 幂等）
+    phase           TEXT,               -- 冰点 / 修复 / 发酵 / 高潮 / 退潮（数据缺失不写行）
+    limit_up_count  INTEGER,            -- 涨停家数（池优先，stats 兜底）
+    limit_down_count INTEGER,           -- 跌停家数
+    broken_count    INTEGER,            -- 炸板家数
+    broken_rate     REAL,               -- 炸板率 % = 炸板/(涨停+炸板)
+    max_lbc         INTEGER,            -- 最高连板
+    lianban_count   INTEGER,            -- 连板家数
+    promotion_rate  REAL,               -- 晋级率 % = 今日连板家数/昨日涨停家数
+    prev_phase      TEXT,               -- 前一交易日相位（冰点后回暖判修复用）
+    notes           TEXT                -- 当选相位触发原因（分号连接）
+);
 ```
 
 **新增 `limit_pool` / `hot_pool` 表**（超短热点池，同 `init_database()` 幂等建表，均附 `trade_date` 索引）：

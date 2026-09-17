@@ -53,42 +53,77 @@ logger = logging.getLogger(__name__)
 
 # ---------- 纯函数：分级判定 ----------
 
-def grade_second_board(open_pct: float, vol_ratio: float, sector_resonance: bool) -> tuple[str, str]:
+def _tight_params(phase: Optional[str]) -> Optional[dict]:
+    """情绪退潮/冰点相位下的竞价收紧口径（None = 默认口径）"""
+    try:
+        from pipeline.sentiment_regime import tightened_auction_params
+
+        return tightened_auction_params(phase)
+    except Exception:
+        return None
+
+
+def grade_second_board(open_pct: float, vol_ratio: float, sector_resonance: bool,
+                       phase: Optional[str] = None) -> tuple[str, str]:
     """
     二板竞价 S/A/B/C 分级（《二板打法》原文口径）。
     open_pct：竞价高开幅度 %（今开/昨收-1）；vol_ratio：竞昨比 %；sector_resonance：同板块有一字板或高开 ≥15%。
+    phase：情绪周期相位（退潮/冰点时收紧量能口径：S 级竞昨比 8%→10%、A 级 5%→8%）。
     """
+    tight = _tight_params(phase)
+    s_vol = tight["sb_s_vol"] if tight else AUCTION_SB_S_VOL
+    a_vol = tight["vol_ratio_good"] if tight else AUCTION_SB_A_VOL
+    tight_note = "（情绪收紧）" if tight else ""
     if open_pct <= 0:
         return "C", "低开/平开 → 坚决放弃（低开=核按钮）"
     if open_pct > AUCTION_SB_S_OPEN[1]:
         return "B", f"高开 {open_pct:.1f}% 透支空间 → 不追，等盘中回封，不回封不看"
-    if AUCTION_SB_S_OPEN[0] <= open_pct and vol_ratio >= AUCTION_SB_S_VOL and sector_resonance:
-        return "S", f"高开 {open_pct:.1f}% + 竞昨比 {vol_ratio:.1f}% + 板块共振 → 9:24:50 挂涨停价抢筹"
-    if open_pct >= AUCTION_SB_A_OPEN[0] and vol_ratio >= AUCTION_SB_A_VOL:
-        reason = "板块无共振降级" if AUCTION_SB_S_OPEN[0] <= open_pct and vol_ratio >= AUCTION_SB_S_VOL else ""
-        return "A", f"高开 {open_pct:.1f}% + 竞昨比 {vol_ratio:.1f}%{('（' + reason + '）') if reason else ''} → 9:30 后观察，秒板则排板"
-    return "B", f"高开 {open_pct:.1f}% / 竞昨比 {vol_ratio:.1f}% 量不足 → 放弃主动买，等回封，不回封不看"
+    if AUCTION_SB_S_OPEN[0] <= open_pct and vol_ratio >= s_vol and sector_resonance:
+        return "S", (f"高开 {open_pct:.1f}% + 竞昨比 {vol_ratio:.1f}%≥{s_vol:.0f}%{tight_note} + 板块共振"
+                     " → 9:24:50 挂涨停价抢筹")
+    if open_pct >= AUCTION_SB_A_OPEN[0] and vol_ratio >= a_vol:
+        reason = "板块无共振降级" if AUCTION_SB_S_OPEN[0] <= open_pct and vol_ratio >= s_vol else ""
+        return "A", (f"高开 {open_pct:.1f}% + 竞昨比 {vol_ratio:.1f}%≥{a_vol:.0f}%{tight_note}"
+                     f"{('（' + reason + '）') if reason else ''} → 9:30 后观察，秒板则排板")
+    return "B", f"高开 {open_pct:.1f}% / 竞昨比 {vol_ratio:.1f}% 量不足（需 ≥{a_vol:.0f}%{tight_note}） → 放弃主动买，等回封，不回封不看"
 
 
-def grade_hot_candidate(open_pct: float, vol_ratio: float, is_yizi: bool) -> tuple[str, str]:
-    """龙头 HOT-S 竞价判定：一字/过高不追、低开剔除、高开 3-7% 放量执行、其余观察"""
+def grade_hot_candidate(open_pct: float, vol_ratio: float, is_yizi: bool,
+                        phase: Optional[str] = None) -> tuple[str, str]:
+    """
+    龙头 HOT-S 竞价判定：一字/过高不追、低开剔除、高开 3-7% 放量执行、其余观察。
+    phase：情绪退潮/冰点时收紧（执行高开区间 3-7%→4-6%、竞昨比合格线 5%→8%）。
+    """
+    tight = _tight_params(phase)
+    exec_open = tight["hot_exec_open"] if tight else AUCTION_HOT_EXEC_OPEN
+    vol_good = tight["vol_ratio_good"] if tight else AUCTION_VOL_RATIO_GOOD
     if is_yizi:
         return "不追", "一字板 → 不追（看同板块龙二）"
     if open_pct <= 0:
         return "剔除", f"低开 {open_pct:.1f}% → 不及预期，剔除"
-    if open_pct > AUCTION_HOT_EXEC_OPEN[1]:
-        return "不追", f"高开 {open_pct:.1f}% 过大 → 防高开低走，不追"
-    if open_pct >= AUCTION_HOT_EXEC_OPEN[0] and vol_ratio >= AUCTION_VOL_RATIO_GOOD:
-        return "执行", f"高开 {open_pct:.1f}% 且竞昨比 {vol_ratio:.1f}% 放量 → 超预期，按计划执行"
-    return "观察", f"高开 {open_pct:.1f}% / 竞昨比 {vol_ratio:.1f}% → 未达执行口径，观察"
+    if open_pct > exec_open[1]:
+        return "不追", f"高开 {open_pct:.1f}% 过大（>{exec_open[1]:.0f}%） → 防高开低走，不追"
+    if open_pct >= exec_open[0] and vol_ratio >= vol_good:
+        tight_note = "；情绪收紧口径" if tight else ""
+        return "执行", (f"高开 {open_pct:.1f}% 且竞昨比 {vol_ratio:.1f}%≥{vol_good:.0f}% 放量"
+                        f" → 超预期，按计划执行{tight_note}")
+    return "观察", (f"高开 {open_pct:.1f}% / 竞昨比 {vol_ratio:.1f}%"
+                    f" → 未达执行口径（需高开 {exec_open[0]:.0f}-{exec_open[1]:.0f}% 且竞昨比 ≥{vol_good:.0f}%），观察")
 
 
-def grade_position(open_pct: float, auction_price: float, stop: float) -> Optional[str]:
-    """持仓竞价风控：竞价跌破止损 → 开盘执行止损；低开 ≤阈值 → 盯防警报；否则 None"""
+def grade_position(open_pct: float, auction_price: float, stop: float,
+                   phase: Optional[str] = None) -> Optional[str]:
+    """持仓竞价风控：竞价跌破止损 → 开盘执行止损；低开 ≤阈值 → 盯防警报；否则 None。
+    退潮/冰点相位低开警报线收紧（-2% → -1%）。"""
     if stop > 0 and auction_price > 0 and auction_price < stop:
         return f"竞价 {auction_price:.2f} 跌破止损 {stop:.2f} → 开盘即执行止损，不犹豫"
-    if open_pct <= AUCTION_POS_LOW_OPEN_ALERT:
-        return f"竞价低开 {open_pct:.1f}% → 开盘重点盯防，反弹无力按纪律减仓"
+    alert_line = AUCTION_POS_LOW_OPEN_ALERT
+    tight = _tight_params(phase)
+    if tight:
+        alert_line = tight["pos_low_open_alert"]
+    if open_pct <= alert_line:
+        tight_note = "（情绪收紧）" if tight else ""
+        return f"竞价低开 {open_pct:.1f}% ≤{alert_line:.0f}%{tight_note} → 开盘重点盯防，反弹无力按纪律减仓"
     return None
 
 
@@ -295,6 +330,23 @@ def run_auction_check(db_path=None, trade_log=None, scan: Optional[dict] = None,
         result["note"] = "无竞价观察对象（需先运行盘前流程生成候选，或有未平仓持仓）"
         return result
 
+    # 情绪周期相位：优先取 scan JSON，缺省回读 emotion_state 表；未知/缺失不收紧（默认口径）
+    phase = ((scan or {}).get("sentiment") or {}).get("phase")
+    phase_advice_text = ""
+    try:
+        from pipeline.sentiment_regime import get_latest_phase, is_banned, phase_advice
+
+        if not phase or phase == "未知":
+            row = get_latest_phase(db_path=db_path)
+            phase = row.get("phase") if row else None
+        if phase and phase != "未知":
+            phase_advice_text = phase_advice(phase)
+    except Exception as e:
+        logger.debug("情绪相位读取失败（竞价按默认口径）: %s", e)
+    result["sentiment"] = {"phase": phase or "未知", "advice": phase_advice_text}
+    if phase in ("退潮", "冰点"):
+        result["sentiment"]["tightened"] = True
+
     snapshot = snapshot if snapshot is not None else fetch_spot_snapshot()
     if not snapshot:
         result["note"] = "全市场快照获取失败（东财/新浪双源降级）；非交易时段或网络问题"
@@ -325,18 +377,18 @@ def run_auction_check(db_path=None, trade_log=None, scan: Optional[dict] = None,
         op, vr, yizi = _metrics(w["symbol"])
         if not snapshot.get(w["symbol"]):
             missing += 1
-        grade, text = grade_second_board(op, vr, w["sector"] in resonance_sectors)
+        grade, text = grade_second_board(op, vr, w["sector"] in resonance_sectors, phase)
         w.update(open_pct=op, vol_ratio=vr, is_yizi=yizi, grade=grade, text=text)
     for w in watch["hot"]:
         op, vr, yizi = _metrics(w["symbol"])
         if not snapshot.get(w["symbol"]):
             missing += 1
-        verdict, text = grade_hot_candidate(op, vr, yizi)
+        verdict, text = grade_hot_candidate(op, vr, yizi, phase)
         w.update(open_pct=op, vol_ratio=vr, is_yizi=yizi, verdict=verdict, text=text)
     for w in watch["positions"]:
         spot = snapshot.get(w["symbol"])
         op, vr, _ = _metrics(w["symbol"])
-        alert = grade_position(op, _f((spot or {}).get("open")), w.get("stop", 0)) if spot else "快照缺失，人工盯盘"
+        alert = grade_position(op, _f((spot or {}).get("open")), w.get("stop", 0), phase) if spot else "快照缺失，人工盯盘"
         w.update(open_pct=op, vol_ratio=vr, auction_price=_f((spot or {}).get("open")),
                  alert=alert)
 
@@ -354,6 +406,8 @@ def run_auction_check(db_path=None, trade_log=None, scan: Optional[dict] = None,
     notes = []
     if missing:
         notes.append(f"{missing}/{len(all_symbols)} 只快照缺失")
+    if result["sentiment"].get("tightened"):
+        notes.append(f"情绪{phase}：竞价口径收紧（S 竞昨比 10% / A 8% / 龙头执行 4-6% 且 8% / 低开警报 -1%）")
     pos_alerts = sum(1 for w in watch["positions"] if w.get("alert"))
     if pos_alerts:
         notes.append(f"持仓竞价警报 {pos_alerts} 条")
@@ -378,6 +432,12 @@ def _write_outputs(result: dict) -> None:
     (MARKET_SCAN_OUTPUT_DIR / f"auction_check_{day}.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     lines = [f"## ⏰ 9:25 竞价判定（{day} {result['time']}）", ""]
+    senti = result.get("sentiment") or {}
+    if senti.get("phase") and senti.get("phase") != "未知":
+        tight_mark = "（口径已收紧）" if senti.get("tightened") else ""
+        lines.append(f"> 🌡️ 情绪相位：**{senti['phase']}**{tight_mark}"
+                     + (f" —— {senti.get('advice', '')}" if senti.get("advice") else ""))
+        lines.append("")
     if result.get("second_board"):
         lines += ["### 🃏 二板竞价分级", "",
                   "| 代码 | 名称 | 板块 | 竞价涨幅% | 竞昨比% | 等级 | 操作 |",

@@ -32,6 +32,9 @@ _CATALYST_KEYWORDS = (
 _VERDICT_RE = re.compile(r"判定[:：]\s*(满足|不满足)")
 _TYPE_RE = re.compile(r"催化类型[:：]\s*(\S+)")
 _SUSTAIN_RE = re.compile(r"持续性[:：]\s*(.+)")
+_DATE_RE = re.compile(r"事件日期[:：]\s*(\d{4}-\d{2}-\d{2}|未知)")
+_STRENGTH_RE = re.compile(r"事件力度[:：]\s*(重磅|中等|轻微)")
+_WAVE_RE = re.compile(r"炒作波次[:：]\s*(首次|第二波及以上|无法判断)")
 _BASIS_RE = re.compile(r"依据[:：]\s*(.+)")
 
 
@@ -48,7 +51,8 @@ def _pick_relevant_announcements(df: pd.DataFrame, limit: int = 3) -> pd.DataFra
 
 
 def parse_verdict(text: str) -> dict | None:
-    """解析 LLM 四行格式输出；无法解析返回 None"""
+    """解析 LLM 七行格式输出（事件日期/力度/波次为 2026-09 扩展字段，缺失时为空，向后兼容）；
+    无法解析返回 None"""
     if not text:
         return None
     m = _VERDICT_RE.search(text)
@@ -63,8 +67,58 @@ def parse_verdict(text: str) -> dict | None:
         "satisfied": m.group(1) == "满足",
         "catalyst_type": _field(_TYPE_RE),
         "sustainability": _field(_SUSTAIN_RE),
+        "event_date": _field(_DATE_RE),
+        "strength": _field(_STRENGTH_RE),
+        "wave": _field(_WAVE_RE),
         "basis": _field(_BASIS_RE),
     }
+
+
+def event_factor(catalyst: dict | None, today: str = "") -> dict:
+    """
+    催化判定 → 事件驱动因子（EVT-S 排序用，纯函数）。
+
+    评分（满分 100，入选线 config.EVT_MIN_EVENT_SCORE=70）：
+    - 基础 20：⑧判定 satisfied=True 才有（不满足/无法判定 → 总分 0，事件驱动不参与）
+    - 力度 0-40：重磅 40 / 中等 24 / 轻微 10 / 未标注（旧数据回退）20
+    - 时效 0-25：事件日期距 today ≤1 日 25 / ≤3 日 18 / ≤5 日 8 / 更早或未知 2
+    - 波次 0-12：首次 12 / 第二波及以上 3 / 无法判断（回退）6
+
+    校准口径：重磅任意新鲜度均入选；中等须 ≤3 日内且首次/第二波新鲜；轻微一律不入选。
+
+    返回 {"score": int, "breakdown": str, "days_since": int|None}；
+    catalyst 缺失或未判定 → score 0（不构成事件驱动候选，但保留原 ⑧ 口径不受影响）。
+    """
+    cat = catalyst or {}
+    if cat.get("satisfied") is not True:
+        return {"score": 0, "breakdown": "无确认催化", "days_since": None}
+
+    strength = str(cat.get("strength", "") or "")
+    strength_score = {"重磅": 40, "中等": 24, "轻微": 10}.get(strength, 20)
+
+    days_since = None
+    freshness = 2
+    event_date = str(cat.get("event_date", "") or "")
+    if event_date and today:
+        try:
+            from datetime import datetime
+
+            d = (datetime.strptime(today, "%Y-%m-%d")
+                 - datetime.strptime(event_date, "%Y-%m-%d")).days
+            if d >= 0:
+                days_since = d
+                freshness = 25 if d <= 1 else 18 if d <= 3 else 8 if d <= 5 else 2
+        except ValueError:
+            pass
+
+    wave = str(cat.get("wave", "") or "")
+    wave_score = {"首次": 12, "第二波及以上": 3}.get(wave, 6)
+
+    score = min(100, 20 + strength_score + freshness + wave_score)
+    parts = [f"基础20+力度{strength_score}（{strength or '未标注'}）",
+             f"时效{freshness}（{f'{days_since}日前' if days_since is not None else '日期未知'}）",
+             f"波次{wave_score}（{wave or '未知'}）"]
+    return {"score": score, "breakdown": "；".join(parts), "days_since": days_since}
 
 
 def analyze_catalyst(symbol: str, name: str = "", sector: str = "") -> dict:
@@ -76,7 +130,8 @@ def analyze_catalyst(symbol: str, name: str = "", sector: str = "") -> dict:
     satisfied=None 表示无法自动判定（降级为人工核对），titles 始终尽量给出（事实）。
     """
     symbol = str(symbol).zfill(6)[-6:]
-    result = {"satisfied": None, "catalyst_type": "", "sustainability": "", "basis": "", "titles": []}
+    result = {"satisfied": None, "catalyst_type": "", "sustainability": "",
+              "event_date": "", "strength": "", "wave": "", "basis": "", "titles": []}
 
     # 1) 近期公告列表（东财/巨潮 fallback，网络失败降级空表）
     try:

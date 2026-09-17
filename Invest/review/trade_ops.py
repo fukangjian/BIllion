@@ -235,6 +235,12 @@ def execute_from_scan(
             hot_item = item
     if hot_item:
         found["HOT-S"] = hot_item
+    evt_item = None
+    for item in (scan_data.get("hot_pool") or {}).get("event_candidates", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            evt_item = item
+    if evt_item:
+        found["EVT-S"] = evt_item
     if not found:
         return {"ok": False, "reason": f"{symbol} 不在最新突破候选列表中"}
 
@@ -246,8 +252,10 @@ def execute_from_scan(
         entry_system = "S2-A"  # 同股双信号默认慢速
     elif "S1-A" in found:
         entry_system = "S1-A"
-    else:
+    elif "HOT-S" in found:
         entry_system = "HOT-S"
+    else:
+        entry_system = "EVT-S"
     item = found[entry_system]
 
     close = float(item["close"])

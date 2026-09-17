@@ -609,10 +609,10 @@ def _find_breakout_in_scan(scan_data: dict, symbol: str) -> tuple[dict | None, s
 
 
 def _default_account_for_system(entry_system: str) -> str:
-    """入场系统 → 默认账户类型（config.SYSTEM_DEFAULT_ACCOUNT：S1→产业、S2→核心；HOT-S→事件）"""
+    """入场系统 → 默认账户类型（config.SYSTEM_DEFAULT_ACCOUNT：S1→产业、S2→核心；HOT-S/EVT-S→事件）"""
     s = (entry_system or "").upper()
-    # HOT-S 映射「事件」（config 未含该键，超短热点账户依投资体系 V5.0 在 cli 本地特判）
-    if "HOT" in s:
+    # HOT-S/EVT-S 映射「事件」（config 未含该键，超短/事件驱动账户依投资体系 V5.0 在 cli 本地特判）
+    if "HOT" in s or "EVT" in s:
         return "事件"
     for key, account in SYSTEM_DEFAULT_ACCOUNT.items():
         if key in s:
@@ -623,7 +623,7 @@ def _default_account_for_system(entry_system: str) -> str:
 def _execute_from_scan(args, scan_data: dict, symbol: str):
     """from-scan --execute：扫描信号 → 仓位计算 → 合规闸门 → 落库 → 买入卡"""
     symbol = symbol.zfill(6)[-6:]
-    item_s1 = item_s2 = item_hot = None
+    item_s1 = item_s2 = item_hot = item_evt = None
     for item in scan_data.get("breakout_s1a", []):
         if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
             item_s1 = item
@@ -633,15 +633,18 @@ def _execute_from_scan(args, scan_data: dict, symbol: str):
     for item in (scan_data.get("hot_pool") or {}).get("hot_breakout", []):
         if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
             item_hot = item
+    for item in (scan_data.get("hot_pool") or {}).get("event_candidates", []):
+        if str(item.get("symbol", "")).zfill(6)[-6:] == symbol:
+            item_evt = item
 
-    if not item_s1 and not item_s2 and not item_hot:
+    if not item_s1 and not item_s2 and not item_hot and not item_evt:
         print(f"[ERROR] {symbol} 不在今日突破候选列表中")
         return
 
-    # 入场系统：--system 指定优先；同时出现 S1/S2 信号时默认 S2（慢速，更稳）；仅热点信号时按 HOT-S
+    # 入场系统：--system 指定优先；同时出现 S1/S2 信号时默认 S2（慢速，更稳）；仅热点/事件信号时按 HOT-S/EVT-S
     if args.system:
         entry_system = args.system
-        item = {"S1-A": item_s1, "S2-A": item_s2, "HOT-S": item_hot}.get(entry_system)
+        item = {"S1-A": item_s1, "S2-A": item_s2, "HOT-S": item_hot, "EVT-S": item_evt}.get(entry_system)
         if not item:
             print(f"[ERROR] {symbol} 不在 {entry_system} 候选列表中")
             return
@@ -652,10 +655,14 @@ def _execute_from_scan(args, scan_data: dict, symbol: str):
         entry_system, item = "S2-A", item_s2
     elif item_s1:
         entry_system, item = "S1-A", item_s1
-    else:
+    elif item_hot:
         entry_system, item = "HOT-S", item_hot
+    else:
+        entry_system, item = "EVT-S", item_evt
     if item_hot and entry_system != "HOT-S":
         print("[说明] 该股另有热点池突破信号（HOT-S 超短），可用 --system HOT-S 选择")
+    if item_evt and entry_system != "EVT-S":
+        print("[说明] 该股另有事件驱动候选（EVT-S，影子验证期），可用 --system EVT-S 选择")
 
     close = item["close"]
     atr = item.get("atr_20", 0) or 0

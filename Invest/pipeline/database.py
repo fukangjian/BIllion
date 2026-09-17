@@ -149,6 +149,20 @@ CREATE TABLE IF NOT EXISTS trend_pool (
     PRIMARY KEY (trade_date, symbol)
 );
 
+CREATE TABLE IF NOT EXISTS emotion_state (
+    trade_date      TEXT PRIMARY KEY,
+    phase           TEXT,
+    limit_up_count  INTEGER,
+    limit_down_count INTEGER,
+    broken_count    INTEGER,
+    broken_rate     REAL,
+    max_lbc         INTEGER,
+    lianban_count   INTEGER,
+    promotion_rate  REAL,
+    prev_phase      TEXT,
+    notes           TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_symbol ON daily_quotes(symbol);
 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_quotes(trade_date);
 CREATE INDEX IF NOT EXISTS idx_sector_date ON sector_quotes(trade_date);
@@ -302,6 +316,47 @@ def save_market_state(row: dict, db_path: Optional[Path] = None) -> None:
     df = pd.DataFrame([row])
     with get_connection(db_path) as conn:
         _replace_rows(conn, "market_state", df)
+
+
+def save_emotion_state(row: dict, db_path: Optional[Path] = None) -> None:
+    """写入情绪周期相位（每日一行，REPLACE 幂等）"""
+    df = pd.DataFrame([row])
+    with get_connection(db_path) as conn:
+        _replace_rows(conn, "emotion_state", df)
+
+
+def load_emotion_state(
+    trade_date: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """读取情绪相位；trade_date 为 None 时取最新一行"""
+    if trade_date:
+        sql = "SELECT * FROM emotion_state WHERE trade_date = ?"
+        params: list = [trade_date]
+    else:
+        sql = "SELECT * FROM emotion_state ORDER BY trade_date DESC LIMIT 1"
+        params = []
+    with get_connection(db_path) as conn:
+        return pd.read_sql_query(sql, conn, params=params)
+
+
+def load_emotion_state_history(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> pd.DataFrame:
+    """读取情绪相位时序（升序；供回看与统计）"""
+    sql = "SELECT * FROM emotion_state WHERE 1=1"
+    params: list = []
+    if start_date:
+        sql += " AND trade_date >= ?"
+        params.append(start_date)
+    if end_date:
+        sql += " AND trade_date <= ?"
+        params.append(end_date)
+    sql += " ORDER BY trade_date"
+    with get_connection(db_path) as conn:
+        return pd.read_sql_query(sql, conn, params=params)
 
 
 def _replace_rows(conn: sqlite3.Connection, table: str, df: pd.DataFrame) -> int:

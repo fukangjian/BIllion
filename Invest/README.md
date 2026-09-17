@@ -8,7 +8,7 @@
 
 | 模块 | 目录 | 功能 | 入口 |
 |------|------|------|------|
-| 数据管道 | `pipeline/` | 行情并行获取、市场扫描（三重滤网）、突破候选、信号追踪、超短热点池、趋势动态池、二板观察池 | `python pipeline/run_daily.py` |
+| 数据管道 | `pipeline/` | 行情并行获取、市场扫描（三重滤网）、突破候选、信号追踪、超短热点池、趋势动态池、二板观察池、情绪周期状态机、事件驱动短线（EVT-S） | `python pipeline/run_daily.py` |
 | 研究助手 | `research/` | 公告全文分析、财报对比、产业链、每日日报 | `python research/run_daily_report.py` |
 | 交易复盘 | `review/` | 交易日志、合规闸门（含总热度/市场状态）、持仓监控、金字塔加仓、分批卖出、券商导入、纪律审计、周/月报 | `python review/cli.py` |
 | 回测 | `backtest/` | S1-A / S2-A 策略验证（与实盘同口径参数）、批量回测汇总 | `python backtest/run_backtest.py` |
@@ -201,6 +201,13 @@ python pipeline/second_board.py
 # 9:25 竞价判定（候选分级 + 持仓竞价风控；交易日 9:26 后运行，联网取快照）
 python pipeline/auction_check.py
 
+# 情绪周期相位（冰点/修复/发酵/高潮/退潮；run=当日重算，backfill=联网回填历史，show=查看）
+python pipeline/sentiment_regime.py show
+python pipeline/sentiment_regime.py backfill --days 28   # 东财涨停/炸板池接口仅支持最近约 30 自然日
+
+# 事件驱动候选（EVT-S，读最新扫描；影子验证期只记信号不下单）
+python pipeline/event_pool.py
+
 # 初始化数据库
 python pipeline/database.py
 ```
@@ -342,7 +349,7 @@ python -m pytest tests/test_monitor.py -v
 python -m pytest tests/test_signal_tracker.py -v
 ```
 
-共 554 个用例（34 个测试文件）：信号追踪 30（含缺K线补抓/数据缺失关闭/入场形态分层）、二板观察池 46、入场合规闸门 46、竞价判定 38、持仓监控 33、龙头评分 23、合规 23、纪律审计 22、盘前清单 20 等。全部离线运行，不依赖 API Key 或网络。
+共 609 个用例（36 个测试文件）：情绪周期状态机 30（相位判定/指标/闸门/竞价收紧）、事件驱动 EVT-S 33（事件分/解析/候选构建/计划集成）、信号追踪 30（含缺K线补抓/数据缺失关闭/入场形态分层）、二板观察池 46、入场合规闸门 46、竞价判定 38、持仓监控 33、龙头评分 23、合规 23、纪律审计 22、盘前清单 20 等。全部离线运行，不依赖 API Key 或网络。
 
 ## 目录结构
 
@@ -374,7 +381,9 @@ Invest/
 │   ├── hot_pool.py        # 超短热点池构建（涨停/连板/炸板 + 强板块领涨股）与日线补抓
 │   ├── second_board.py    # 二板观察池（《二板打法》：首板硬过滤 + 软评分，扫描时离线生成）
 │   ├── auction_check.py   # 9:25 竞价判定（候选分级 + 持仓竞价风控，9:26 定时/手动，联网快照）
-│   ├── signal_tracker.py  # 信号入库/结算/统计（持有天数按系统分，HOT-S=5）
+│   ├── sentiment_regime.py # 情绪周期状态机（冰点/修复/发酵/高潮/退潮，超短开仓闸门与竞价收紧）
+│   ├── event_pool.py      # 事件驱动短线 EVT-S（事件分排序，影子验证，2-5 日）
+│   ├── signal_tracker.py  # 信号入库/结算/统计（持有天数按系统分，HOT-S/EVT-S=5）
 │   └── run_daily.py
 ├── backtest/              # 回测（与实盘共用 config 策略参数）
 │   ├── strategies.py

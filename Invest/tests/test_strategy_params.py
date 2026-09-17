@@ -135,12 +135,18 @@ class TestModuleDefaultsMatchConfig:
 # ---------- 策略枚举（STRATEGY_CODES） ----------
 
 class TestStrategyCodes:
-    def test_codes_cover_six_strategies(self):
-        """六策略清单（策略评估筛选框架 §1.1 五策略 + HOT-S 超短热点池），INFO 与 CODES 一一对应"""
-        assert STRATEGY_CODES == ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C", "HOT-S"]
+    def test_codes_cover_seven_strategies(self):
+        """策略清单（策略评估筛选框架 §1.1 五策略 + HOT-S 超短热点池 + EVT-S 事件驱动短线），INFO 与 CODES 一一对应"""
+        assert STRATEGY_CODES == ["S1-A", "S2-A", "STR-A", "STR-B", "STR-C", "HOT-S", "EVT-S"]
         assert set(STRATEGY_INFO) == set(STRATEGY_CODES)
         for info in STRATEGY_INFO.values():
             assert info["名称"] and info["适用账户"] and info["典型持有期"]
+
+    def test_evt_holding_period_registered(self):
+        """EVT-S 注册 5 日强制结算（与 HOT-S 同口径，signal_tracker 到期结算依赖）"""
+        from config import SIGNAL_MAX_HOLDING_BY_SYSTEM
+
+        assert SIGNAL_MAX_HOLDING_BY_SYSTEM.get("EVT-S") == 5
 
     def test_add_rejects_invalid_system(self, monkeypatch):
         """cli add --system 非清单值被 argparse 拒绝（SystemExit）"""
